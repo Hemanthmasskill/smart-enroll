@@ -1,0 +1,349 @@
+.login-page {
+  min-height: 100vh;
+  background: #ffffff;
+
+  --blue: #38bdf8;
+  --blue-dark: #0284c7;
+  --blue-soft: #eef9ff;
+
+  --black: #111111;
+  --muted: #667085;
+  --border: #e4eaf0;
+}
+
+.login-navbar {
+  width: min(1180px, calc(100% - 48px));
+  height: 82px;
+
+  margin: 0 auto;
+
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+
+  border-bottom: 1px solid var(--border);
+}
+
+.login-brand {
+  display: flex;
+  align-items: center;
+
+  gap: 10px;
+
+  color: var(--black);
+
+  font-weight: 750;
+
+  text-decoration: none;
+}
+
+.login-brand-mark {
+  width: 34px;
+  height: 34px;
+
+  display: grid;
+  place-items: center;
+
+  background: var(--blue);
+
+  color: #ffffff;
+
+  border-radius: 10px;
+
+  font-size: 15px;
+}
+
+.back-home {
+  color: var(--muted);
+
+  text-decoration: none;
+
+  font-size: 14px;
+
+  font-weight: 600;
+
+  transition: color 0.2s ease;
+}
+
+.back-home:hover {
+  color: var(--blue-dark);
+}
+
+.login-main {
+  min-height: calc(100vh - 82px);
+
+  display: flex;
+  justify-content: center;
+  align-items: center;
+
+  padding: 60px 20px;
+}
+
+.login-container {
+  width: 100%;
+  max-width: 440px;
+}
+
+.login-heading {
+  text-align: center;
+
+  margin-bottom: 32px;
+}
+
+.login-eyebrow {
+  color: var(--blue-dark);
+
+  font-size: 12px;
+
+  font-weight: 800;
+
+  letter-spacing: 0.1em;
+
+  text-transform: uppercase;
+}
+
+.login-heading h1 {
+  margin: 12px 0;
+
+  color: var(--black);
+
+  font-size: 38px;
+
+  letter-spacing: -0.04em;
+
+  line-height: 1.1;
+}
+
+.login-heading p {
+  max-width: 380px;
+
+  margin: 0 auto;
+
+  color: var(--muted);
+
+  font-size: 15px;
+
+  line-height: 1.7;
+}
+
+/* User / Admin toggle */
+
+.role-toggle {
+  display: grid;
+
+  grid-template-columns: 1fr 1fr;
+
+  padding: 5px;
+
+  margin-bottom: 30px;
+
+  background: #f3f7fa;
+
+  border-radius: 12px;
+}
+
+.role-button {
+  padding: 11px;
+
+  border: none;
+
+  border-radius: 9px;
+
+  background: transparent;
+
+  color: var(--muted);
+
+  font-size: 14px;
+
+  font-weight: 700;
+
+  cursor: pointer;
+
+  transition: 0.2s ease;
+}
+
+.role-button.active {
+  background: #ffffff;
+
+  color: var(--blue-dark);
+
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+}
+
+/* Form */
+
+.login-form {
+  display: flex;
+
+  flex-direction: column;
+
+  gap: 22px;
+}
+
+.form-group {
+  display: flex;
+
+  flex-direction: column;
+
+  gap: 8px;
+}
+
+.form-group label {
+  color: var(--black);
+
+  font-size: 14px;
+
+  font-weight: 700;
+}
+
+.form-group input {
+  width: 100%;
+
+  padding: 14px 15px;
+
+  border: 1px solid var(--border);
+
+  border-radius: 10px;
+
+  outline: none;
+
+  background: #ffffff;
+
+  color: var(--black);
+
+  font-size: 15px;
+
+  transition:
+    border-color 0.2s ease,
+    box-shadow 0.2s ease;
+}
+
+.form-group input::placeholder {
+  color: #98a2b3;
+}
+
+.form-group input:focus {
+  border-color: var(--blue);
+
+  box-shadow: 0 0 0 4px rgba(56, 189, 248, 0.12);
+}
+
+.password-label {
+  display: flex;
+
+  justify-content: space-between;
+
+  align-items: center;
+}
+
+.forgot-password {
+  padding: 0;
+
+  border: none;
+
+  background: transparent;
+
+  color: var(--blue-dark);
+
+  font-size: 13px;
+
+  font-weight: 650;
+
+  cursor: pointer;
+}
+
+.login-submit {
+  width: 100%;
+
+  margin-top: 4px;
+
+  padding: 14px 18px;
+
+  border: none;
+
+  border-radius: 10px;
+
+  background: var(--blue);
+
+  color: #ffffff;
+
+  font-size: 15px;
+
+  font-weight: 750;
+
+  cursor: pointer;
+
+  transition:
+    background 0.2s ease,
+    transform 0.2s ease;
+}
+
+.login-submit:hover {
+  background: var(--blue-dark);
+
+  transform: translateY(-1px);
+}
+
+.signup-text {
+  margin-top: 26px;
+
+  text-align: center;
+
+  color: var(--muted);
+
+  font-size: 14px;
+}
+
+.signup-text button {
+  padding: 0;
+
+  border: none;
+
+  background: transparent;
+
+  color: var(--blue-dark);
+
+  font-weight: 700;
+
+  cursor: pointer;
+}
+
+.admin-note {
+  margin-top: 24px;
+
+  padding: 14px 16px;
+
+  border: 1px solid #d7edf9;
+
+  border-radius: 10px;
+
+  background: var(--blue-soft);
+
+  color: #475467;
+
+  font-size: 13px;
+
+  line-height: 1.6;
+
+  text-align: center;
+}
+
+@media (max-width: 640px) {
+  .login-navbar {
+    width: calc(100% - 30px);
+
+    height: 72px;
+  }
+
+  .login-main {
+    min-height: calc(100vh - 72px);
+
+    align-items: flex-start;
+
+    padding-top: 55px;
+  }
+
+  .login-heading h1 {
+    font-size: 32px;
+  }
+}
