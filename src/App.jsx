@@ -63,7 +63,7 @@ function LandingPage() {
         </div>
       </header>
 
-      {/* Keep the rest of your existing landing page here */}
+      {/* Hero Section */}
     </div>
   );
 }
