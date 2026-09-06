@@ -1,0 +1,250 @@
+/* ============================================
+   Smart Enroll — Design Tokens
+   White + Sky Blue + Black, minimal & professional
+   ============================================ */
+:root {
+  --color-primary: #38bdf8;
+  --color-primary-dark: #0284c7;
+  --color-primary-tint: #eef9ff;
+  --color-black: #111111;
+  --color-text-secondary: #667085;
+  --color-border: #e8eef3;
+  --color-surface: #f8fbfd;
+  --color-bg: #ffffff;
+
+  --color-success: #12b76a;
+  --color-success-tint: #ecfdf5;
+  --color-warning: #f79009;
+  --color-warning-tint: #fffaeb;
+  --color-danger: #f04438;
+  --color-danger-tint: #fef3f2;
+  --color-neutral: #98a2b3;
+  --color-neutral-tint: #f2f4f7;
+
+  --font-body: "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --font-display: "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
+
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+
+  --shadow-sm: 0 1px 2px rgba(17, 17, 17, 0.06);
+  --shadow-md: 0 4px 16px rgba(17, 17, 17, 0.08);
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
+  --space-8: 64px;
+
+  --container-max: 1180px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  padding: 0;
+  margin: 0;
+}
+
+body {
+  font-family: var(--font-body);
+  color: var(--color-black);
+  background: var(--color-bg);
+  -webkit-font-smoothing: antialiased;
+  line-height: 1.5;
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  margin: 0;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+p {
+  margin: 0;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+button {
+  font-family: inherit;
+}
+
+ul,
+ol {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+img {
+  max-width: 100%;
+  display: block;
+}
+
+.container {
+  max-width: var(--container-max);
+  margin: 0 auto;
+  padding: 0 var(--space-5);
+}
+
+/* Focus visibility for accessibility */
+a:focus-visible,
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid var(--color-primary-dark);
+  outline-offset: 2px;
+}
+
+/* ---------- Shared building blocks ---------- */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  padding: 11px 20px;
+  font-size: 14.5px;
+  font-weight: 600;
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+  white-space: nowrap;
+}
+
+.btn-primary {
+  background: var(--color-black);
+  color: #ffffff;
+}
+.btn-primary:hover {
+  background: #2b2b2b;
+}
+
+.btn-accent {
+  background: var(--color-primary-dark);
+  color: #ffffff;
+}
+.btn-accent:hover {
+  background: #026aa8;
+}
+
+.btn-secondary {
+  background: #ffffff;
+  color: var(--color-black);
+  border-color: var(--color-border);
+}
+.btn-secondary:hover {
+  border-color: var(--color-primary-dark);
+}
+
+.btn-ghost {
+  background: transparent;
+  color: var(--color-black);
+}
+.btn-ghost:hover {
+  background: var(--color-surface);
+}
+
+.btn-danger-ghost {
+  background: transparent;
+  color: var(--color-danger);
+  border-color: var(--color-border);
+}
+.btn-danger-ghost:hover {
+  background: var(--color-danger-tint);
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-block {
+  width: 100%;
+}
+
+.btn-sm {
+  padding: 7px 14px;
+  font-size: 13px;
+}
+
+.card {
+  background: #ffffff;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-bottom: var(--space-4);
+}
+
+.field label {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--color-black);
+}
+
+.field .hint {
+  font-size: 12.5px;
+  color: var(--color-text-secondary);
+}
+
+.field .error {
+  font-size: 12.5px;
+  color: var(--color-danger);
+}
+
+.field input,
+.field select,
+.field textarea {
+  padding: 10px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  font-size: 14.5px;
+  color: var(--color-black);
+  background: #ffffff;
+  transition: border-color 0.15s ease;
+  width: 100%;
+}
+
+.field input:focus,
+.field select:focus,
+.field textarea:focus {
+  border-color: var(--color-primary-dark);
+  outline: none;
+}
+
+.field input.input-error,
+.field select.input-error {
+  border-color: var(--color-danger);
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}

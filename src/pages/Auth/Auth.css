@@ -1,0 +1,142 @@
+.auth-page {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--color-surface);
+  padding: var(--space-6) var(--space-4);
+}
+
+.auth-card {
+  width: 100%;
+  max-width: 420px;
+  padding: var(--space-6);
+}
+
+.auth-card-wide {
+  max-width: 560px;
+}
+
+.auth-brand {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-5);
+}
+
+.role-toggle {
+  display: inline-flex;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  padding: 3px;
+  margin-bottom: var(--space-5);
+}
+
+.role-toggle button {
+  border: none;
+  background: transparent;
+  padding: 7px 22px;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.role-toggle button.active {
+  background: #ffffff;
+  color: var(--color-black);
+  box-shadow: var(--shadow-sm);
+}
+
+.auth-heading {
+  font-size: 22px;
+  margin-bottom: var(--space-2);
+}
+
+.auth-subheading {
+  color: var(--color-text-secondary);
+  font-size: 14px;
+  margin-bottom: var(--space-5);
+}
+
+.field-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-4);
+}
+
+.password-input {
+  position: relative;
+}
+
+.password-input input {
+  padding-right: 56px;
+}
+
+.password-toggle {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  background: none;
+  border: none;
+  color: var(--color-primary-dark);
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 4px 6px;
+}
+
+.auth-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--space-5);
+}
+
+.checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: 13.5px;
+  color: var(--color-black);
+  cursor: pointer;
+}
+
+.terms-row {
+  margin: var(--space-2) 0 var(--space-2);
+}
+
+.link-muted {
+  font-size: 13px;
+  color: var(--color-primary-dark);
+  font-weight: 600;
+}
+
+.auth-footnote {
+  text-align: center;
+  font-size: 13.5px;
+  color: var(--color-text-secondary);
+  margin-top: var(--space-5);
+}
+
+.auth-footnote a {
+  color: var(--color-primary-dark);
+  font-weight: 600;
+}
+
+.admin-note {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-3);
+  color: var(--color-text-secondary);
+}
+
+@media (max-width: 520px) {
+  .field-row {
+    grid-template-columns: 1fr;
+  }
+}
