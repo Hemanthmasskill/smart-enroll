@@ -1,0 +1,73 @@
+.stepper {
+  display: flex;
+  align-items: flex-start;
+  margin-bottom: var(--space-6);
+}
+
+.stepper-item {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  flex: 1;
+  text-align: center;
+  gap: var(--space-2);
+}
+
+.stepper-marker {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  font-weight: 700;
+  background: var(--color-neutral-tint);
+  color: var(--color-text-secondary);
+  border: 1px solid var(--color-border);
+  z-index: 1;
+}
+
+.stepper-item.state-current .stepper-marker {
+  background: var(--color-primary-dark);
+  border-color: var(--color-primary-dark);
+  color: #ffffff;
+}
+
+.stepper-item.state-complete .stepper-marker {
+  background: var(--color-success);
+  border-color: var(--color-success);
+  color: #ffffff;
+}
+
+.stepper-label {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+  max-width: 110px;
+}
+
+.stepper-item.state-current .stepper-label {
+  color: var(--color-black);
+}
+
+.stepper-connector {
+  position: absolute;
+  top: 15px;
+  left: calc(50% + 20px);
+  right: calc(-50% + 20px);
+  height: 1px;
+  background: var(--color-border);
+  z-index: 0;
+}
+
+.stepper-item.state-complete .stepper-connector {
+  background: var(--color-success);
+}
+
+@media (max-width: 640px) {
+  .stepper-label {
+    display: none;
+  }
+}

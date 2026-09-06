@@ -1,0 +1,110 @@
+.applicant-layout {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.app-topbar {
+  height: 64px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  padding: 0 var(--space-5);
+  border-bottom: 1px solid var(--color-border);
+  background: #ffffff;
+  position: sticky;
+  top: 0;
+  z-index: 30;
+}
+
+.app-topbar-brand {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.app-topbar-page {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+  border-left: 1px solid var(--color-border);
+  padding-left: var(--space-4);
+  display: none;
+}
+
+.app-topbar-user {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.app-topbar-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--color-black);
+}
+
+.drawer-toggle {
+  display: none;
+  flex-direction: column;
+  gap: 4px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 8px;
+}
+
+.drawer-toggle span {
+  width: 20px;
+  height: 2px;
+  background: var(--color-black);
+  display: block;
+}
+
+.applicant-layout-body {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+.applicant-content {
+  flex: 1;
+  padding: var(--space-6);
+  background: var(--color-surface);
+  min-width: 0;
+}
+
+.drawer-scrim {
+  display: none;
+}
+
+@media (min-width: 901px) {
+  .app-topbar-page {
+    display: inline-block;
+  }
+}
+
+@media (max-width: 900px) {
+  .drawer-toggle {
+    display: flex;
+  }
+
+  .app-topbar-name {
+    display: none;
+  }
+
+  .drawer-scrim {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: rgba(17, 17, 17, 0.35);
+    border: none;
+    z-index: 45;
+  }
+
+  .applicant-content {
+    padding: var(--space-4);
+  }
+}

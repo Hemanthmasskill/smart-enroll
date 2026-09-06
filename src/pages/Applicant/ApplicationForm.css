@@ -1,0 +1,117 @@
+.application-card {
+  padding: var(--space-6);
+}
+
+.form-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-4) var(--space-5);
+  margin-bottom: var(--space-5);
+}
+
+.form-grid-span-2 {
+  grid-column: span 2;
+}
+
+.application-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-3);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--color-border);
+}
+
+.draft-message {
+  font-size: 13px;
+  color: var(--color-primary-dark);
+  background: var(--color-primary-tint);
+  padding: var(--space-3);
+  border-radius: var(--radius-sm);
+  margin-bottom: var(--space-3);
+}
+
+.review-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-5);
+  margin-bottom: var(--space-5);
+}
+
+.review-section {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: var(--space-4);
+}
+
+.review-section h3 {
+  font-size: 14px;
+  margin-bottom: var(--space-3);
+}
+
+.review-row {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-3);
+  font-size: 13.5px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.review-row:last-child {
+  border-bottom: none;
+}
+
+.review-row span:first-child {
+  color: var(--color-text-secondary);
+}
+
+.review-row span:last-child {
+  font-weight: 500;
+  text-align: right;
+}
+
+.submit-success {
+  max-width: 480px;
+  margin: var(--space-7) auto 0;
+  padding: var(--space-7) var(--space-6);
+  text-align: center;
+}
+
+.submit-success-icon {
+  display: inline-flex;
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: var(--color-success-tint);
+  color: #0a7a4a;
+  align-items: center;
+  justify-content: center;
+  font-size: 22px;
+  margin-bottom: var(--space-4);
+}
+
+.submit-success h2 {
+  font-size: 20px;
+  margin-bottom: var(--space-3);
+}
+
+.submit-success p {
+  color: var(--color-text-secondary);
+  font-size: 14px;
+  margin-bottom: var(--space-5);
+}
+
+@media (max-width: 720px) {
+  .form-grid,
+  .review-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .form-grid-span-2 {
+    grid-column: span 1;
+  }
+
+  .application-actions {
+    flex-wrap: wrap;
+  }
+}

@@ -5,6 +5,10 @@ import Register from "./pages/Auth/Register";
 import NotFound from "./pages/NotFound";
 import ProtectedRoute from "./components/ProtectedRoute";
 import ComingSoon from "./components/ComingSoon";
+import ApplicantLayout from "./layouts/ApplicantLayout";
+import Dashboard from "./pages/Applicant/Dashboard";
+import ApplicationForm from "./pages/Applicant/ApplicationForm";
+import Profile from "./pages/Applicant/Profile";
 import "./App.css";
 
 export default function App() {
@@ -17,12 +21,14 @@ export default function App() {
           <Route path="/login" element={<Login />} />
           <Route path="/register" element={<Register />} />
 
-          {/* Applicant (protected — built in Increment 2 onward) */}
+          {/* Applicant (protected) */}
           <Route
             path="/dashboard"
             element={
               <ProtectedRoute allowedRole="user">
-                <ComingSoon title="Applicant Dashboard" />
+                <ApplicantLayout>
+                  <Dashboard />
+                </ApplicantLayout>
               </ProtectedRoute>
             }
           />
@@ -30,7 +36,9 @@ export default function App() {
             path="/application"
             element={
               <ProtectedRoute allowedRole="user">
-                <ComingSoon title="Admission Application Form" />
+                <ApplicantLayout>
+                  <ApplicationForm />
+                </ApplicantLayout>
               </ProtectedRoute>
             }
           />
@@ -38,7 +46,9 @@ export default function App() {
             path="/documents"
             element={
               <ProtectedRoute allowedRole="user">
-                <ComingSoon title="Document Upload & Verification" />
+                <ApplicantLayout>
+                  <ComingSoon title="Document Upload & Verification" />
+                </ApplicantLayout>
               </ProtectedRoute>
             }
           />
@@ -46,7 +56,9 @@ export default function App() {
             path="/digilocker"
             element={
               <ProtectedRoute allowedRole="user">
-                <ComingSoon title="DigiLocker Verification" />
+                <ApplicantLayout>
+                  <ComingSoon title="DigiLocker Verification" />
+                </ApplicantLayout>
               </ProtectedRoute>
             }
           />
@@ -54,7 +66,9 @@ export default function App() {
             path="/eligibility"
             element={
               <ProtectedRoute allowedRole="user">
-                <ComingSoon title="Eligibility Status" />
+                <ApplicantLayout>
+                  <ComingSoon title="Eligibility Status" />
+                </ApplicantLayout>
               </ProtectedRoute>
             }
           />
@@ -66,7 +80,9 @@ export default function App() {
             path="/notifications"
             element={
               <ProtectedRoute allowedRole="user">
-                <ComingSoon title="Notifications" />
+                <ApplicantLayout>
+                  <ComingSoon title="Notifications" />
+                </ApplicantLayout>
               </ProtectedRoute>
             }
           />
@@ -74,7 +90,9 @@ export default function App() {
             path="/profile"
             element={
               <ProtectedRoute allowedRole="user">
-                <ComingSoon title="Applicant Profile" />
+                <ApplicantLayout>
+                  <Profile />
+                </ApplicantLayout>
               </ProtectedRoute>
             }
           />

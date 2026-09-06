@@ -31,3 +31,32 @@ export const mockPrograms = [
     fullName: "Master of Technology in Computer Science",
   },
 ];
+
+/**
+ * The applicant's admission application (demo scenario: Hemanth applying
+ * for MCA — see master prompt section 38). Keyed by applicantId so the
+ * dashboard, documents, status and profile pages all read the same state.
+ */
+export const mockApplications = {
+  "APL-1001": {
+    applicationId: "SE20260001",
+    applicantId: "APL-1001",
+    programmeId: "mca",
+    status: "WAITING_FOR_DOCUMENTS",
+    progressPercent: 45,
+    documentsSubmitted: 4,
+    documentsRequired: 6,
+    eligibilityStatus: "PENDING",
+    unreadNotifications: 3,
+    nextAction: "2 documents are still required.",
+    submittedAt: "2026-09-05",
+  },
+};
+
+export const mockRecentActivity = [
+  { id: "act-1", label: "Application submitted", timestamp: "05 Sep 2026, 10:02 AM" },
+  { id: "act-2", label: "10th Marksheet verified", timestamp: "05 Sep 2026, 11:14 AM" },
+  { id: "act-3", label: "12th Marksheet verified", timestamp: "05 Sep 2026, 11:16 AM" },
+  { id: "act-4", label: "Transfer Certificate requested", timestamp: "05 Sep 2026, 11:20 AM" },
+  { id: "act-5", label: "Degree certificate under verification", timestamp: "05 Sep 2026, 11:25 AM" },
+];

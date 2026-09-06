@@ -10,7 +10,12 @@
  *   const BASE_URL = "http://localhost:8000/api/v1";
  */
 
-import { mockApplicants } from "../data/mockData";
+import {
+  mockApplicants,
+  mockApplications,
+  mockRecentActivity,
+  mockPrograms,
+} from "../data/mockData";
 
 const BASE_URL = "http://localhost:8000/api/v1";
 
@@ -50,4 +55,53 @@ export async function registerRequest({ fullName, email }) {
     applicantId: "APL-1001",
     token: "mock-jwt-token",
   };
+}
+
+/* --------------------------- Application --------------------------- */
+// Future: GET `${BASE_URL}/applications/{id}`
+export async function getApplication(applicantId) {
+  await delay(400);
+  return mockApplications[applicantId] ?? null;
+}
+
+// Future: POST `${BASE_URL}/applications`
+export async function createApplication(applicantId, formData) {
+  await delay(700);
+  return {
+    ...mockApplications[applicantId],
+    ...formData,
+    status: "SUBMITTED",
+    progressPercent: 20,
+  };
+}
+
+// Future: PUT `${BASE_URL}/applications/{id}`
+export async function updateApplication(applicantId, partialData) {
+  await delay(500);
+  return { ...mockApplications[applicantId], ...partialData };
+}
+
+export async function getRecentActivity() {
+  await delay(300);
+  return mockRecentActivity;
+}
+
+export async function getPrograms() {
+  await delay(200);
+  return mockPrograms;
+}
+
+/* ----------------------------- Profile ------------------------------ */
+// Future: GET `${BASE_URL}/applicants/{id}`
+export async function getApplicantProfile(applicantId) {
+  await delay(300);
+  return mockApplicants.find((a) => a.id === applicantId) ?? null;
+}
+
+// Future: PATCH `${BASE_URL}/applicants/{id}`
+export async function updateApplicantProfile(applicantId, updates) {
+  await delay(500);
+  const applicant = mockApplicants.find((a) => a.id === applicantId);
+  if (applicant) Object.assign(applicant, updates);
+  return applicant;
 }
