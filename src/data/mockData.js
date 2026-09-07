@@ -49,6 +49,8 @@ export const mockApplications = {
     eligibilityStatus: "PENDING",
     unreadNotifications: 3,
     nextAction: "2 documents are still required.",
+    currentAction:
+      "Smart Enroll is verifying your submitted documents and waiting for the remaining required files.",
     submittedAt: "2026-09-05",
   },
 };
@@ -201,3 +203,75 @@ export const mockRecentActivity = [
   { id: "act-4", label: "Transfer Certificate requested", timestamp: "05 Sep 2026, 11:20 AM" },
   { id: "act-5", label: "Degree certificate under verification", timestamp: "05 Sep 2026, 11:25 AM" },
 ];
+
+/**
+ * Configured, deterministic programme admission rules (master prompt
+ * section 15): "Eligibility criteria are configured system rules. The
+ * AI does not invent admission rules." Only MCA is fully configured
+ * here since it's the only programme in the current demo application;
+ * the remaining programmes are filled in for the Admin increment.
+ */
+export const mockEligibilityRules = {
+  mca: {
+    programmeId: "mca",
+    minimumQualification: "Bachelor's Degree",
+    minimumPercentage: "50%",
+    mathematicsRequirement: "Required at 10+2 or Graduation level",
+    requiredDocuments: "All 6 programme-required documents",
+    entranceRequirement: "Not Applicable",
+  },
+};
+
+/**
+ * Notifications for the applicant's current application. Kept in sync
+ * with mockApplications.APL-1001.unreadNotifications (3 unread) and
+ * with mockDocuments (Transfer Certificate / Government ID missing,
+ * Degree Certificate still processing) so no page contradicts another.
+ */
+export const mockNotifications = {
+  "APL-1001": [
+    {
+      id: "ntf-1",
+      title: "Application submitted successfully",
+      description: "Your MCA admission application SE20260001 has been received by Smart Enroll.",
+      timestamp: "05 Sep 2026, 10:02 AM",
+      read: true,
+    },
+    {
+      id: "ntf-2",
+      title: "10th Marksheet verified",
+      description: "Your 10th Marksheet has passed content validation and document checks.",
+      timestamp: "05 Sep 2026, 11:14 AM",
+      read: true,
+    },
+    {
+      id: "ntf-3",
+      title: "12th Marksheet verified",
+      description: "Your 12th Marksheet has passed content validation and document checks.",
+      timestamp: "05 Sep 2026, 11:16 AM",
+      read: true,
+    },
+    {
+      id: "ntf-4",
+      title: "Degree Certificate verification in progress",
+      description:
+        "OCR extraction and content validation are complete. Authoritative verification via DigiLocker/NAD is still pending.",
+      timestamp: "05 Sep 2026, 11:25 AM",
+      read: false,
+    },
+    {
+      id: "ntf-5",
+      title: "Transfer Certificate required",
+      description: "Please upload your Transfer Certificate to continue processing your application.",
+      timestamp: "05 Sep 2026, 11:20 AM",
+      read: false,
+    },
+    {
+      id: "ntf-6",
+      title: "Government ID required",
+      description: "Please upload a valid Government ID to continue processing your application.",
+      timestamp: "05 Sep 2026, 11:21 AM",
+      read: false,
+    },
+  ],
+};

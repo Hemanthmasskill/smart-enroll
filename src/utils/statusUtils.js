@@ -28,6 +28,16 @@ export const DOCUMENT_STATES = {
   UNVERIFIED: "Unverified",
 };
 
+// Result of a single configured eligibility rule check (master prompt
+// section 15) — separate from application/document states because a
+// "Passed" rule result and a "Verified" document mean different things.
+export const ELIGIBILITY_RESULT_STATES = {
+  PASSED: "Passed",
+  PENDING: "Pending",
+  FAILED: "Failed",
+  NOT_APPLICABLE: "Not Applicable",
+};
+
 // Semantic tone drives the StatusBadge color — not the raw status string.
 const TONE_MAP = {
   // application states
@@ -49,10 +59,17 @@ const TONE_MAP = {
   MISMATCH: "danger",
   REJECTED: "danger",
   UNVERIFIED: "warning",
+  // eligibility rule-result states
+  PASSED: "success",
+  PENDING: "warning",
+  FAILED: "danger",
+  NOT_APPLICABLE: "neutral",
 };
 
 export function getStatusLabel(code) {
-  return APPLICATION_STATES[code] ?? DOCUMENT_STATES[code] ?? code;
+  return (
+    APPLICATION_STATES[code] ?? DOCUMENT_STATES[code] ?? ELIGIBILITY_RESULT_STATES[code] ?? code
+  );
 }
 
 export function getStatusTone(code) {

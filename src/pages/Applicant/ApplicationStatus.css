@@ -1,0 +1,149 @@
+.status-summary {
+  display: flex;
+  gap: var(--space-6);
+  padding: var(--space-5);
+  margin-bottom: var(--space-5);
+  flex-wrap: wrap;
+}
+
+.status-summary-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.status-summary-label {
+  font-size: 12.5px;
+  color: var(--color-text-secondary);
+}
+
+.status-summary-value {
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.timeline-card {
+  padding: var(--space-5);
+  margin-bottom: var(--space-5);
+}
+
+.status-card-heading {
+  font-size: 15px;
+  margin-bottom: var(--space-4);
+}
+
+.timeline-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.timeline-item {
+  position: relative;
+  display: flex;
+  gap: var(--space-4);
+  padding-bottom: var(--space-5);
+  padding-left: 4px;
+}
+
+.timeline-item:last-child {
+  padding-bottom: 0;
+}
+
+.timeline-item::before {
+  content: "";
+  position: absolute;
+  left: 15px;
+  top: 32px;
+  bottom: 0;
+  width: 1px;
+  background: var(--color-border);
+}
+
+.timeline-item:last-child::before {
+  display: none;
+}
+
+.timeline-item.state-COMPLETED::before {
+  background: var(--color-success);
+}
+
+.timeline-marker {
+  width: 30px;
+  height: 30px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: var(--color-neutral-tint);
+  border: 1px solid var(--color-border);
+  color: var(--color-text-secondary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  font-weight: 700;
+  z-index: 1;
+}
+
+.timeline-item.state-COMPLETED .timeline-marker {
+  background: var(--color-success);
+  border-color: var(--color-success);
+  color: #ffffff;
+}
+
+.timeline-item.state-CURRENT .timeline-marker {
+  background: var(--color-primary-dark);
+  border-color: var(--color-primary-dark);
+}
+
+.timeline-content {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  flex: 1;
+  padding-top: 4px;
+}
+
+.timeline-label {
+  font-size: 14.5px;
+  font-weight: 600;
+}
+
+.timeline-item.state-PENDING .timeline-label {
+  color: var(--color-text-secondary);
+}
+
+.action-card {
+  padding: var(--space-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.action-block {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  align-items: flex-start;
+}
+
+.action-label {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--color-primary-dark);
+}
+
+.applicant-action-label {
+  color: #93500a;
+}
+
+.action-text {
+  font-size: 14px;
+}
+
+@media (max-width: 560px) {
+  .timeline-content {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
+  }
+}

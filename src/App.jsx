@@ -10,6 +10,9 @@ import Dashboard from "./pages/Applicant/Dashboard";
 import ApplicationForm from "./pages/Applicant/ApplicationForm";
 import Documents from "./pages/Applicant/Documents";
 import DigiLocker from "./pages/Applicant/DigiLocker";
+import Eligibility from "./pages/Applicant/Eligibility";
+import ApplicationStatus from "./pages/Applicant/ApplicationStatus";
+import Notifications from "./pages/Applicant/Notifications";
 import Profile from "./pages/Applicant/Profile";
 import "./App.css";
 
@@ -69,21 +72,27 @@ export default function App() {
             element={
               <ProtectedRoute allowedRole="user">
                 <ApplicantLayout>
-                  <ComingSoon title="Eligibility Status" />
+                  <Eligibility />
                 </ApplicantLayout>
               </ProtectedRoute>
             }
           />
           <Route
             path="/status"
-            element={<ComingSoon title="Application Status" />}
+            element={
+              <ProtectedRoute allowedRole="user">
+                <ApplicantLayout>
+                  <ApplicationStatus />
+                </ApplicantLayout>
+              </ProtectedRoute>
+            }
           />
           <Route
             path="/notifications"
             element={
               <ProtectedRoute allowedRole="user">
                 <ApplicantLayout>
-                  <ComingSoon title="Notifications" />
+                  <Notifications />
                 </ApplicantLayout>
               </ProtectedRoute>
             }
