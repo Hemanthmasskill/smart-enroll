@@ -1,0 +1,101 @@
+.document-card {
+  padding: var(--space-4) var(--space-5);
+}
+
+.document-card-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
+}
+
+.document-card-name {
+  font-size: 15px;
+  margin-bottom: 4px;
+}
+
+.document-card-required {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+
+.document-card-file {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-3) var(--space-4);
+}
+
+.document-card-file-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.document-card-filename {
+  font-size: 13.5px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.document-card-uploaded-at {
+  font-size: 12px;
+  color: var(--color-neutral);
+}
+
+.document-card-actions {
+  display: flex;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.document-dropzone {
+  border: 1px dashed var(--color-border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-5) var(--space-4);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  text-align: center;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.document-dropzone:hover,
+.document-dropzone:focus-visible {
+  border-color: var(--color-primary-dark);
+  background: var(--color-primary-tint);
+}
+
+.document-dropzone-icon {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: var(--color-primary-tint);
+  color: var(--color-primary-dark);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 15px;
+  margin-bottom: 4px;
+}
+
+.document-dropzone-text {
+  font-size: 13.5px;
+  font-weight: 600;
+}
+
+.document-dropzone-formats {
+  font-size: 12px;
+  color: var(--color-neutral);
+}

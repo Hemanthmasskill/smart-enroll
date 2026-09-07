@@ -1,0 +1,128 @@
+.digilocker-card {
+  max-width: 680px;
+  padding: var(--space-6);
+}
+
+.digilocker-connect {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-4);
+  padding: var(--space-4) 0;
+}
+
+.digilocker-copy {
+  color: var(--color-text-secondary);
+  font-size: 14.5px;
+  line-height: 1.6;
+  max-width: 520px;
+}
+
+.digilocker-spinner {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 3px solid var(--color-border);
+  border-top-color: var(--color-primary-dark);
+  animation: digilocker-spin 0.8s linear infinite;
+}
+
+@keyframes digilocker-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.digilocker-status-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-bottom: var(--space-5);
+}
+
+.digilocker-applicant-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--color-black);
+}
+
+.digilocker-section-heading {
+  font-size: 14px;
+  margin-bottom: var(--space-3);
+}
+
+.digilocker-empty {
+  color: var(--color-text-secondary);
+  font-size: 13.5px;
+}
+
+.digilocker-records {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  margin-bottom: var(--space-5);
+}
+
+.digilocker-record {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  flex-wrap: wrap;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: var(--space-4);
+}
+
+.digilocker-record-details {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.digilocker-record-type {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.digilocker-record-issuer {
+  font-size: 13px;
+  color: var(--color-text-secondary);
+}
+
+.digilocker-record-meta {
+  font-size: 12px;
+  color: var(--color-neutral);
+}
+
+.digilocker-record-status {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.digilocker-footer-actions {
+  margin-bottom: var(--space-5);
+}
+
+.digilocker-disclaimer {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-3);
+  line-height: 1.5;
+}
+
+@media (max-width: 560px) {
+  .digilocker-record {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .digilocker-record-status {
+    width: 100%;
+    justify-content: space-between;
+  }
+}

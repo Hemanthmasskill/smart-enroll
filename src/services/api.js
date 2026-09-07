@@ -15,6 +15,8 @@ import {
   mockApplications,
   mockRecentActivity,
   mockPrograms,
+  mockDocuments,
+  mockDigiLockerRecords,
 } from "../data/mockData";
 
 const BASE_URL = "http://localhost:8000/api/v1";
@@ -104,4 +106,66 @@ export async function updateApplicantProfile(applicantId, updates) {
   const applicant = mockApplicants.find((a) => a.id === applicantId);
   if (applicant) Object.assign(applicant, updates);
   return applicant;
+}
+
+/* ---------------------------- Documents ------------------------------ */
+// Future: GET `${BASE_URL}/documents?applicationId={id}`
+export async function getDocuments(applicantId) {
+  await delay(400);
+  return mockDocuments[applicantId] ?? [];
+}
+
+// Future: POST `${BASE_URL}/documents/upload`
+// Accepts the applicantId, the document id being filled, and the browser
+// File object. Returns the updated document record. The file itself is
+// never sent anywhere in this mock — only its name is read.
+export async function uploadDocument(applicantId, documentId, file) {
+  await delay(900);
+  const documents = mockDocuments[applicantId] ?? [];
+  const doc = documents.find((d) => d.id === documentId);
+  if (!doc) throw new Error("Document not found.");
+
+  doc.status = "UPLOADED";
+  doc.fileName = file?.name ?? "uploaded_file.pdf";
+  doc.uploadedAt = new Date().toLocaleDateString("en-IN", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+  });
+  doc.details = null;
+
+  return { ...doc };
+}
+
+// Future: DELETE `${BASE_URL}/documents/{id}`
+export async function removeDocument(applicantId, documentId) {
+  await delay(400);
+  const documents = mockDocuments[applicantId] ?? [];
+  const doc = documents.find((d) => d.id === documentId);
+  if (doc) {
+    doc.status = "NOT_UPLOADED";
+    doc.fileName = null;
+    doc.uploadedAt = null;
+    doc.details = null;
+  }
+  return { ...doc };
+}
+
+// Future: GET `${BASE_URL}/documents/{id}/verification`
+export async function getVerificationStatus(applicantId, documentId) {
+  await delay(300);
+  const documents = mockDocuments[applicantId] ?? [];
+  return documents.find((d) => d.id === documentId) ?? null;
+}
+
+/* --------------------------- DigiLocker ------------------------------- */
+// Future: POST `${BASE_URL}/digilocker/connect`
+// Frontend simulation only — no live DigiLocker/NAD integration exists.
+export async function connectDigiLocker(applicantId) {
+  await delay(1400);
+  return {
+    connected: true,
+    applicantName: mockApplicants.find((a) => a.id === applicantId)?.fullName ?? "Applicant",
+    records: mockDigiLockerRecords[applicantId] ?? [],
+  };
 }

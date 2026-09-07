@@ -8,6 +8,8 @@ import ComingSoon from "./components/ComingSoon";
 import ApplicantLayout from "./layouts/ApplicantLayout";
 import Dashboard from "./pages/Applicant/Dashboard";
 import ApplicationForm from "./pages/Applicant/ApplicationForm";
+import Documents from "./pages/Applicant/Documents";
+import DigiLocker from "./pages/Applicant/DigiLocker";
 import Profile from "./pages/Applicant/Profile";
 import "./App.css";
 
@@ -47,7 +49,7 @@ export default function App() {
             element={
               <ProtectedRoute allowedRole="user">
                 <ApplicantLayout>
-                  <ComingSoon title="Document Upload & Verification" />
+                  <Documents />
                 </ApplicantLayout>
               </ProtectedRoute>
             }
@@ -57,7 +59,7 @@ export default function App() {
             element={
               <ProtectedRoute allowedRole="user">
                 <ApplicantLayout>
-                  <ComingSoon title="DigiLocker Verification" />
+                  <DigiLocker />
                 </ApplicantLayout>
               </ProtectedRoute>
             }
