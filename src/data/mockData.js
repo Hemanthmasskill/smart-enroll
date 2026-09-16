@@ -275,3 +275,30 @@ export const mockNotifications = {
     },
   ],
 };
+
+/**
+ * Increment 5 admin data. The first record is derived from the same APL-1001
+ * scenario used by the applicant portal; the additional records exist only to
+ * make admin monitoring, filtering and dashboard summaries meaningful.
+ */
+export const mockAdminApplications = [
+  {
+    applicationId: "SE20260001", applicantId: "APL-1001", applicantName: "Hemanth M.P.",
+    email: "hemanth@example.com", programmeId: "mca", submittedAt: "2026-09-05",
+    status: "WAITING_FOR_DOCUMENTS", documentStatus: "4 of 6 Submitted", eligibilityStatus: "PENDING",
+    currentAction: "Verifying submitted documents and waiting for the remaining required files.",
+    academic: { qualification: "B.Sc. Computer Science", institution: "Crescent University", result: "CGPA 6.969" },
+  },
+  { applicationId: "SE20260002", applicantId: "APL-1002", applicantName: "Aisha Rahman", email: "aisha@example.com", programmeId: "mba", submittedAt: "2026-09-06", status: "VERIFICATION_IN_PROGRESS", documentStatus: "6 of 6 Submitted", eligibilityStatus: "PENDING", currentAction: "Cross-validating submitted academic records.", academic: { qualification: "B.Com", institution: "Madras University", result: "72%" } },
+  { applicationId: "SE20260003", applicantId: "APL-1003", applicantName: "Karthik S", email: "karthik@example.com", programmeId: "msc-cs", submittedAt: "2026-09-06", status: "ELIGIBLE", documentStatus: "6 of 6 Verified", eligibilityStatus: "ELIGIBLE", currentAction: "Eligibility checks completed; preparing processing outcome.", academic: { qualification: "B.Sc. Computer Science", institution: "Bharathiar University", result: "81%" } },
+  { applicationId: "SE20260004", applicantId: "APL-1004", applicantName: "Priya N", email: "priya@example.com", programmeId: "mtech-cs", submittedAt: "2026-09-07", status: "EXCEPTION", documentStatus: "6 of 6 Submitted", eligibilityStatus: "PENDING", currentAction: "Processing paused at an exception requiring review.", academic: { qualification: "B.E. Computer Science", institution: "Anna University", result: "76%" } },
+  { applicationId: "SE20260005", applicantId: "APL-1005", applicantName: "Arun Kumar", email: "arun@example.com", programmeId: "mca", submittedAt: "2026-09-07", status: "PROCESSING_COMPLETE", documentStatus: "6 of 6 Verified", eligibilityStatus: "ELIGIBLE", currentAction: "Autonomous admission processing completed.", academic: { qualification: "BCA", institution: "University of Madras", result: "68%" } },
+  { applicationId: "SE20260006", applicantId: "APL-1006", applicantName: "Meera Joseph", email: "meera@example.com", programmeId: "mba", submittedAt: "2026-09-08", status: "INELIGIBLE", documentStatus: "6 of 6 Verified", eligibilityStatus: "INELIGIBLE", currentAction: "Eligibility evaluation completed against configured programme rules.", academic: { qualification: "B.A. Economics", institution: "Kerala University", result: "47%" } },
+];
+
+export const mockExceptions = [
+  { id: "EXC-001", applicationId: "SE20260001", applicantName: "Hemanth M.P.", type: "MISSING_DOCUMENT", description: "Transfer Certificate and Government ID have not been submitted.", severity: "MEDIUM", createdAt: "05 Sep 2026, 11:21 AM", status: "OPEN" },
+  { id: "EXC-002", applicationId: "SE20260004", applicantName: "Priya N", type: "CROSS_DOCUMENT_MISMATCH", description: "Candidate name differs between the degree certificate and application record.", severity: "HIGH", createdAt: "07 Sep 2026, 02:14 PM", status: "OPEN" },
+  { id: "EXC-003", applicationId: "SE20260002", applicantName: "Aisha Rahman", type: "VERIFICATION_UNAVAILABLE", description: "Authoritative issuer verification is temporarily unavailable for one academic record.", severity: "LOW", createdAt: "06 Sep 2026, 04:40 PM", status: "MONITORING" },
+  { id: "EXC-004", applicationId: "SE20260005", applicantName: "Arun Kumar", type: "UNSUPPORTED_FORMAT", description: "An earlier document upload used an unsupported format; a valid replacement was received.", severity: "LOW", createdAt: "07 Sep 2026, 09:30 AM", status: "RESOLVED" },
+];

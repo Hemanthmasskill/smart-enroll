@@ -19,6 +19,8 @@ import {
   mockDigiLockerRecords,
   mockEligibilityRules,
   mockNotifications,
+  mockAdminApplications,
+  mockExceptions,
 } from "../data/mockData";
 
 const BASE_URL = "http://localhost:8000/api/v1";
@@ -319,4 +321,71 @@ export async function markAllNotificationsRead(applicantId) {
     n.read = true;
   });
   return [...notifications];
+}
+
+
+/* ----------------------------- Admin ----------------------------- */
+// Future: GET `${BASE_URL}/admin/dashboard`
+export async function getAdminDashboard() {
+  await delay(350);
+  const applications = mockAdminApplications;
+  return {
+    stats: {
+      total: applications.length,
+      processing: applications.filter((a) => ["PROCESSING", "VERIFICATION_IN_PROGRESS", "ELIGIBILITY_CHECK"].includes(a.status)).length,
+      waitingForDocuments: applications.filter((a) => a.status === "WAITING_FOR_DOCUMENTS").length,
+      eligible: applications.filter((a) => ["ELIGIBLE", "PROCESSING_COMPLETE"].includes(a.status)).length,
+      exceptions: mockExceptions.filter((e) => e.status !== "RESOLVED").length,
+    },
+    recentApplications: [...applications].slice(-4).reverse(),
+    recentExceptions: mockExceptions.filter((e) => e.status !== "RESOLVED").slice(0, 3),
+  };
+}
+
+// Future: GET `${BASE_URL}/admin/applications`
+export async function getAdminApplications() {
+  await delay(400);
+  return [...mockAdminApplications];
+}
+
+// Future: GET `${BASE_URL}/admin/applications/{applicationId}`
+export async function getAdminApplicationDetails(applicationId) {
+  await delay(400);
+  const application = mockAdminApplications.find((a) => a.applicationId === applicationId);
+  if (!application) return null;
+
+  const programme = mockPrograms.find((p) => p.id === application.programmeId) ?? null;
+  const exceptions = mockExceptions.filter((e) => e.applicationId === applicationId);
+
+  if (application.applicantId === "APL-1001") {
+    const applicant = mockApplicants.find((a) => a.id === "APL-1001");
+    const documents = mockDocuments["APL-1001"] ?? [];
+    const eligibility = await getEligibility("APL-1001");
+    const timeline = await getApplicationTimeline("APL-1001");
+    return { ...application, applicant, programme, documents, eligibility, timeline, exceptions };
+  }
+
+  const currentIndex = STATUS_STAGE_INDEX[application.status] ?? 0;
+  return {
+    ...application,
+    applicant: { fullName: application.applicantName, email: application.email },
+    programme,
+    documents: [],
+    eligibility: { overall: application.eligibilityStatus, evaluation: [] },
+    timeline: {
+      applicationId: application.applicationId,
+      programmeId: application.programmeId,
+      status: application.status,
+      stages: STATUS_STAGES.map((label, index) => ({ label, state: index < currentIndex ? "COMPLETED" : index === currentIndex ? "CURRENT" : "PENDING" })),
+      currentAction: application.currentAction,
+      applicantAction: application.status === "WAITING_FOR_DOCUMENTS" ? "Upload remaining required documents." : "No applicant action currently required.",
+    },
+    exceptions,
+  };
+}
+
+// Future: GET `${BASE_URL}/admin/exceptions`
+export async function getAdminExceptions() {
+  await delay(350);
+  return [...mockExceptions];
 }

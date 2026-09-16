@@ -6,6 +6,7 @@ import NotFound from "./pages/NotFound";
 import ProtectedRoute from "./components/ProtectedRoute";
 import ComingSoon from "./components/ComingSoon";
 import ApplicantLayout from "./layouts/ApplicantLayout";
+import AdminLayout from "./layouts/AdminLayout";
 import Dashboard from "./pages/Applicant/Dashboard";
 import ApplicationForm from "./pages/Applicant/ApplicationForm";
 import Documents from "./pages/Applicant/Documents";
@@ -14,6 +15,10 @@ import Eligibility from "./pages/Applicant/Eligibility";
 import ApplicationStatus from "./pages/Applicant/ApplicationStatus";
 import Notifications from "./pages/Applicant/Notifications";
 import Profile from "./pages/Applicant/Profile";
+import AdminDashboard from "./pages/Admin/AdminDashboard";
+import Applications from "./pages/Admin/Applications";
+import ApplicationDetails from "./pages/Admin/ApplicationDetails";
+import Exceptions from "./pages/Admin/Exceptions";
 import "./App.css";
 
 export default function App() {
@@ -108,63 +113,14 @@ export default function App() {
             }
           />
 
-          {/* Admin (protected — built in later increments) */}
-          <Route
-            path="/admin"
-            element={
-              <ProtectedRoute allowedRole="admin">
-                <ComingSoon title="Admin Dashboard" />
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/admin/applications"
-            element={
-              <ProtectedRoute allowedRole="admin">
-                <ComingSoon title="Applications Management" />
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/admin/applications/:id"
-            element={
-              <ProtectedRoute allowedRole="admin">
-                <ComingSoon title="Application Details" />
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/admin/exceptions"
-            element={
-              <ProtectedRoute allowedRole="admin">
-                <ComingSoon title="Exceptions Management" />
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/admin/analytics"
-            element={
-              <ProtectedRoute allowedRole="admin">
-                <ComingSoon title="Admission Analytics" />
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/admin/programs"
-            element={
-              <ProtectedRoute allowedRole="admin">
-                <ComingSoon title="Programme & Eligibility Rules" />
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/admin/agent-activity"
-            element={
-              <ProtectedRoute allowedRole="admin">
-                <ComingSoon title="Agent Activity Logs" />
-              </ProtectedRoute>
-            }
-          />
+          {/* Admin (protected) */}
+          <Route path="/admin" element={<ProtectedRoute allowedRole="admin"><AdminLayout><AdminDashboard /></AdminLayout></ProtectedRoute>} />
+          <Route path="/admin/applications" element={<ProtectedRoute allowedRole="admin"><AdminLayout><Applications /></AdminLayout></ProtectedRoute>} />
+          <Route path="/admin/applications/:id" element={<ProtectedRoute allowedRole="admin"><AdminLayout><ApplicationDetails /></AdminLayout></ProtectedRoute>} />
+          <Route path="/admin/exceptions" element={<ProtectedRoute allowedRole="admin"><AdminLayout><Exceptions /></AdminLayout></ProtectedRoute>} />
+          <Route path="/admin/analytics" element={<ProtectedRoute allowedRole="admin"><AdminLayout><ComingSoon title="Admission Analytics" /></AdminLayout></ProtectedRoute>} />
+          <Route path="/admin/programs" element={<ProtectedRoute allowedRole="admin"><AdminLayout><ComingSoon title="Programme & Eligibility Rules" /></AdminLayout></ProtectedRoute>} />
+          <Route path="/admin/agent-activity" element={<ProtectedRoute allowedRole="admin"><AdminLayout><ComingSoon title="Agent Activity Logs" /></AdminLayout></ProtectedRoute>} />
 
           <Route path="*" element={<NotFound />} />
         </Routes>
