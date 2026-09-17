@@ -4,7 +4,6 @@ import Login from "./pages/Auth/Login";
 import Register from "./pages/Auth/Register";
 import NotFound from "./pages/NotFound";
 import ProtectedRoute from "./components/ProtectedRoute";
-import ComingSoon from "./components/ComingSoon";
 import ApplicantLayout from "./layouts/ApplicantLayout";
 import AdminLayout from "./layouts/AdminLayout";
 import Dashboard from "./pages/Applicant/Dashboard";
@@ -19,6 +18,9 @@ import AdminDashboard from "./pages/Admin/AdminDashboard";
 import Applications from "./pages/Admin/Applications";
 import ApplicationDetails from "./pages/Admin/ApplicationDetails";
 import Exceptions from "./pages/Admin/Exceptions";
+import ProgrammeRules from "./pages/Admin/ProgrammeRules";
+import AgentActivity from "./pages/Admin/AgentActivity";
+import Analytics from "./pages/Admin/Analytics";
 import "./App.css";
 
 export default function App() {
@@ -118,9 +120,9 @@ export default function App() {
           <Route path="/admin/applications" element={<ProtectedRoute allowedRole="admin"><AdminLayout><Applications /></AdminLayout></ProtectedRoute>} />
           <Route path="/admin/applications/:id" element={<ProtectedRoute allowedRole="admin"><AdminLayout><ApplicationDetails /></AdminLayout></ProtectedRoute>} />
           <Route path="/admin/exceptions" element={<ProtectedRoute allowedRole="admin"><AdminLayout><Exceptions /></AdminLayout></ProtectedRoute>} />
-          <Route path="/admin/analytics" element={<ProtectedRoute allowedRole="admin"><AdminLayout><ComingSoon title="Admission Analytics" /></AdminLayout></ProtectedRoute>} />
-          <Route path="/admin/programs" element={<ProtectedRoute allowedRole="admin"><AdminLayout><ComingSoon title="Programme & Eligibility Rules" /></AdminLayout></ProtectedRoute>} />
-          <Route path="/admin/agent-activity" element={<ProtectedRoute allowedRole="admin"><AdminLayout><ComingSoon title="Agent Activity Logs" /></AdminLayout></ProtectedRoute>} />
+          <Route path="/admin/analytics" element={<ProtectedRoute allowedRole="admin"><AdminLayout><Analytics /></AdminLayout></ProtectedRoute>} />
+          <Route path="/admin/programs" element={<ProtectedRoute allowedRole="admin"><AdminLayout><ProgrammeRules /></AdminLayout></ProtectedRoute>} />
+          <Route path="/admin/agent-activity" element={<ProtectedRoute allowedRole="admin"><AdminLayout><AgentActivity /></AdminLayout></ProtectedRoute>} />
 
           <Route path="*" element={<NotFound />} />
         </Routes>

@@ -220,6 +220,30 @@ export const mockEligibilityRules = {
     requiredDocuments: "All 6 programme-required documents",
     entranceRequirement: "Not Applicable",
   },
+  mba: {
+    programmeId: "mba",
+    minimumQualification: "Bachelor's Degree (any discipline)",
+    minimumPercentage: "50%",
+    mathematicsRequirement: "Not Required",
+    requiredDocuments: "All 6 programme-required documents",
+    entranceRequirement: "Not Applicable",
+  },
+  "msc-cs": {
+    programmeId: "msc-cs",
+    minimumQualification: "Bachelor's Degree",
+    minimumPercentage: "55%",
+    mathematicsRequirement: "Required at Graduation level",
+    requiredDocuments: "All 6 programme-required documents",
+    entranceRequirement: "Not Applicable",
+  },
+  "mtech-cs": {
+    programmeId: "mtech-cs",
+    minimumQualification: "Bachelor's Degree in Engineering/Technology",
+    minimumPercentage: "60%",
+    mathematicsRequirement: "Required at Graduation level",
+    requiredDocuments: "All 6 programme-required documents",
+    entranceRequirement: "Not Applicable",
+  },
 };
 
 /**
@@ -301,4 +325,71 @@ export const mockExceptions = [
   { id: "EXC-002", applicationId: "SE20260004", applicantName: "Priya N", type: "CROSS_DOCUMENT_MISMATCH", description: "Candidate name differs between the degree certificate and application record.", severity: "HIGH", createdAt: "07 Sep 2026, 02:14 PM", status: "OPEN" },
   { id: "EXC-003", applicationId: "SE20260002", applicantName: "Aisha Rahman", type: "VERIFICATION_UNAVAILABLE", description: "Authoritative issuer verification is temporarily unavailable for one academic record.", severity: "LOW", createdAt: "06 Sep 2026, 04:40 PM", status: "MONITORING" },
   { id: "EXC-004", applicationId: "SE20260005", applicantName: "Arun Kumar", type: "UNSUPPORTED_FORMAT", description: "An earlier document upload used an unsupported format; a valid replacement was received.", severity: "LOW", createdAt: "07 Sep 2026, 09:30 AM", status: "RESOLVED" },
+];
+
+/**
+ * Agent Activity / audit trail (master prompt sections 24 & 27).
+ *
+ * This is an observable audit log of the OBSERVE → PLAN → ACT → VERIFY →
+ * RE-PLAN workflow — tool calls, deterministic decisions, and results
+ * only. It never records private reasoning or chain-of-thought, and it
+ * is built to match each application's existing status exactly (see
+ * mockAdminApplications / mockExceptions above) so this page can't
+ * contradict the Dashboard, Applications, or Exceptions views.
+ */
+export const mockAgentActivity = [
+  // SE20260001 — Hemanth M.P. (MCA) — WAITING_FOR_DOCUMENTS
+  { id: "log-001", timestamp: "05 Sep 2026, 10:02:14 AM", applicationId: "SE20260001", applicantName: "Hemanth M.P.", stage: "OBSERVE", tool: "get_application", action: "Application received", result: "Application SE20260001 loaded", status: "COMPLETED" },
+  { id: "log-002", timestamp: "05 Sep 2026, 10:02:17 AM", applicationId: "SE20260001", applicantName: "Hemanth M.P.", stage: "PLAN", tool: "get_program_requirements", action: "Loaded MCA admission requirements", result: "Configured programme rules retrieved", status: "COMPLETED" },
+  { id: "log-003", timestamp: "05 Sep 2026, 10:02:20 AM", applicationId: "SE20260001", applicantName: "Hemanth M.P.", stage: "ACT", tool: "check_document_completeness", action: "Checked required documents", result: "4 of 6 required documents present", status: "COMPLETED" },
+  { id: "log-004", timestamp: "05 Sep 2026, 11:14:12 AM", applicationId: "SE20260001", applicantName: "Hemanth M.P.", stage: "ACT", tool: "extract_document_data", action: "OCR extraction requested and completed", result: "Extraction completed for 10th, 12th, UG Marksheet, Degree Certificate", status: "COMPLETED" },
+  { id: "log-005", timestamp: "05 Sep 2026, 11:14:18 AM", applicationId: "SE20260001", applicantName: "Hemanth M.P.", stage: "VERIFY", tool: "compare_applicant_details", action: "Content validation performed", result: "Name and academic details matched for submitted documents", status: "COMPLETED" },
+  { id: "log-006", timestamp: "05 Sep 2026, 11:14:23 AM", applicationId: "SE20260001", applicantName: "Hemanth M.P.", stage: "ACT", tool: "verify_document", action: "DigiLocker/NAD verification requested for Degree Certificate", result: "Authoritative verification pending", status: "PENDING" },
+  { id: "log-007", timestamp: "05 Sep 2026, 11:20:02 AM", applicationId: "SE20260001", applicantName: "Hemanth M.P.", stage: "RE-PLAN", tool: "request_missing_document", action: "Missing document detected", result: "Transfer Certificate and Government ID requested from applicant", status: "COMPLETED" },
+  { id: "log-008", timestamp: "05 Sep 2026, 11:20:10 AM", applicationId: "SE20260001", applicantName: "Hemanth M.P.", stage: "ACT", tool: "update_application_status", action: "Updated application status", result: "Status set to WAITING_FOR_DOCUMENTS", status: "COMPLETED" },
+  { id: "log-009", timestamp: "05 Sep 2026, 11:20:15 AM", applicationId: "SE20260001", applicantName: "Hemanth M.P.", stage: "ACT", tool: "send_notification", action: "Applicant notification generated", result: "Notifications sent for missing documents", status: "COMPLETED" },
+  { id: "log-010", timestamp: "05 Sep 2026, 11:25:00 AM", applicationId: "SE20260001", applicantName: "Hemanth M.P.", stage: "OBSERVE", tool: "get_application", action: "Workflow paused waiting for applicant", result: "No further action until remaining documents are uploaded", status: "PAUSED" },
+
+  // SE20260002 — Aisha Rahman (MBA) — VERIFICATION_IN_PROGRESS
+  { id: "log-011", timestamp: "06 Sep 2026, 09:10:04 AM", applicationId: "SE20260002", applicantName: "Aisha Rahman", stage: "OBSERVE", tool: "get_application", action: "Application received", result: "Application SE20260002 loaded", status: "COMPLETED" },
+  { id: "log-012", timestamp: "06 Sep 2026, 09:10:08 AM", applicationId: "SE20260002", applicantName: "Aisha Rahman", stage: "PLAN", tool: "get_program_requirements", action: "Loaded MBA admission requirements", result: "Configured programme rules retrieved", status: "COMPLETED" },
+  { id: "log-013", timestamp: "06 Sep 2026, 09:10:12 AM", applicationId: "SE20260002", applicantName: "Aisha Rahman", stage: "ACT", tool: "check_document_completeness", action: "Checked required documents", result: "6 of 6 required documents present", status: "COMPLETED" },
+  { id: "log-014", timestamp: "06 Sep 2026, 09:25:40 AM", applicationId: "SE20260002", applicantName: "Aisha Rahman", stage: "ACT", tool: "extract_document_data", action: "OCR extraction requested and completed", result: "Extraction completed for all submitted documents", status: "COMPLETED" },
+  { id: "log-015", timestamp: "06 Sep 2026, 04:35:00 PM", applicationId: "SE20260002", applicantName: "Aisha Rahman", stage: "VERIFY", tool: "compare_applicant_details", action: "Content validation performed", result: "Academic details cross-validated against application", status: "COMPLETED" },
+  { id: "log-016", timestamp: "06 Sep 2026, 04:40:00 PM", applicationId: "SE20260002", applicantName: "Aisha Rahman", stage: "VERIFY", tool: "verify_document", action: "DigiLocker/NAD verification requested", result: "Authoritative verification temporarily unavailable for one record", status: "IN_PROGRESS" },
+
+  // SE20260003 — Karthik S (M.Sc CS) — ELIGIBLE
+  { id: "log-017", timestamp: "06 Sep 2026, 08:05:00 AM", applicationId: "SE20260003", applicantName: "Karthik S", stage: "OBSERVE", tool: "get_application", action: "Application received", result: "Application SE20260003 loaded", status: "COMPLETED" },
+  { id: "log-018", timestamp: "06 Sep 2026, 08:05:05 AM", applicationId: "SE20260003", applicantName: "Karthik S", stage: "PLAN", tool: "get_program_requirements", action: "Loaded M.Sc Computer Science admission requirements", result: "Configured programme rules retrieved", status: "COMPLETED" },
+  { id: "log-019", timestamp: "06 Sep 2026, 08:10:00 AM", applicationId: "SE20260003", applicantName: "Karthik S", stage: "ACT", tool: "check_document_completeness", action: "Checked required documents", result: "6 of 6 required documents present", status: "COMPLETED" },
+  { id: "log-020", timestamp: "06 Sep 2026, 08:40:00 AM", applicationId: "SE20260003", applicantName: "Karthik S", stage: "ACT", tool: "extract_document_data", action: "OCR extraction and DigiLocker/NAD verification completed", result: "All submitted documents verified", status: "COMPLETED" },
+  { id: "log-021", timestamp: "06 Sep 2026, 09:00:00 AM", applicationId: "SE20260003", applicantName: "Karthik S", stage: "VERIFY", tool: "check_eligibility", action: "Eligibility rules evaluated", result: "All configured M.Sc CS criteria satisfied", status: "COMPLETED" },
+  { id: "log-022", timestamp: "06 Sep 2026, 09:02:00 AM", applicationId: "SE20260003", applicantName: "Karthik S", stage: "ACT", tool: "update_application_status", action: "Updated application status", result: "Application marked ELIGIBLE", status: "COMPLETED" },
+  { id: "log-023", timestamp: "06 Sep 2026, 09:03:00 AM", applicationId: "SE20260003", applicantName: "Karthik S", stage: "ACT", tool: "send_notification", action: "Applicant notification generated", result: "Applicant notified of eligibility outcome", status: "COMPLETED" },
+
+  // SE20260004 — Priya N (M.Tech CS) — EXCEPTION
+  { id: "log-024", timestamp: "07 Sep 2026, 01:00:00 PM", applicationId: "SE20260004", applicantName: "Priya N", stage: "OBSERVE", tool: "get_application", action: "Application received", result: "Application SE20260004 loaded", status: "COMPLETED" },
+  { id: "log-025", timestamp: "07 Sep 2026, 01:00:05 PM", applicationId: "SE20260004", applicantName: "Priya N", stage: "PLAN", tool: "get_program_requirements", action: "Loaded M.Tech Computer Science admission requirements", result: "Configured programme rules retrieved", status: "COMPLETED" },
+  { id: "log-026", timestamp: "07 Sep 2026, 01:10:00 PM", applicationId: "SE20260004", applicantName: "Priya N", stage: "ACT", tool: "check_document_completeness", action: "Checked required documents", result: "6 of 6 required documents present", status: "COMPLETED" },
+  { id: "log-027", timestamp: "07 Sep 2026, 01:40:00 PM", applicationId: "SE20260004", applicantName: "Priya N", stage: "ACT", tool: "extract_document_data", action: "OCR extraction completed", result: "Extraction completed for all submitted documents", status: "COMPLETED" },
+  { id: "log-028", timestamp: "07 Sep 2026, 02:10:00 PM", applicationId: "SE20260004", applicantName: "Priya N", stage: "VERIFY", tool: "compare_applicant_details", action: "Content validation performed", result: "Name mismatch detected between Degree Certificate and application record", status: "FLAGGED" },
+  { id: "log-029", timestamp: "07 Sep 2026, 02:14:00 PM", applicationId: "SE20260004", applicantName: "Priya N", stage: "RE-PLAN", tool: "create_exception", action: "Exception generated", result: "Cross-document mismatch exception EXC-002 created", status: "COMPLETED" },
+  { id: "log-030", timestamp: "07 Sep 2026, 02:16:00 PM", applicationId: "SE20260004", applicantName: "Priya N", stage: "ACT", tool: "send_notification", action: "Applicant notification generated", result: "Supporting evidence requested from applicant", status: "COMPLETED" },
+  { id: "log-031", timestamp: "07 Sep 2026, 02:17:00 PM", applicationId: "SE20260004", applicantName: "Priya N", stage: "OBSERVE", tool: "get_application", action: "Workflow paused at exception", result: "Processing paused pending review", status: "PAUSED" },
+
+  // SE20260005 — Arun Kumar (MCA) — PROCESSING_COMPLETE
+  { id: "log-032", timestamp: "07 Sep 2026, 08:00:00 AM", applicationId: "SE20260005", applicantName: "Arun Kumar", stage: "OBSERVE", tool: "get_application", action: "Application received", result: "Application SE20260005 loaded", status: "COMPLETED" },
+  { id: "log-033", timestamp: "07 Sep 2026, 08:00:05 AM", applicationId: "SE20260005", applicantName: "Arun Kumar", stage: "PLAN", tool: "get_program_requirements", action: "Loaded MCA admission requirements", result: "Configured programme rules retrieved", status: "COMPLETED" },
+  { id: "log-034", timestamp: "07 Sep 2026, 08:30:00 AM", applicationId: "SE20260005", applicantName: "Arun Kumar", stage: "ACT", tool: "extract_document_data", action: "OCR extraction and DigiLocker/NAD verification completed", result: "All 6 documents verified", status: "COMPLETED" },
+  { id: "log-035", timestamp: "07 Sep 2026, 09:00:00 AM", applicationId: "SE20260005", applicantName: "Arun Kumar", stage: "VERIFY", tool: "check_eligibility", action: "Eligibility rules evaluated", result: "All configured MCA criteria satisfied", status: "COMPLETED" },
+  { id: "log-036", timestamp: "07 Sep 2026, 09:02:00 AM", applicationId: "SE20260005", applicantName: "Arun Kumar", stage: "ACT", tool: "update_application_status", action: "Updated application status", result: "Application marked ELIGIBLE", status: "COMPLETED" },
+  { id: "log-037", timestamp: "07 Sep 2026, 09:05:00 AM", applicationId: "SE20260005", applicantName: "Arun Kumar", stage: "ACT", tool: "record_audit_event", action: "Admission processing marked complete", result: "Status set to PROCESSING_COMPLETE", status: "COMPLETED" },
+
+  // SE20260006 — Meera Joseph (MBA) — INELIGIBLE
+  { id: "log-038", timestamp: "08 Sep 2026, 10:00:00 AM", applicationId: "SE20260006", applicantName: "Meera Joseph", stage: "OBSERVE", tool: "get_application", action: "Application received", result: "Application SE20260006 loaded", status: "COMPLETED" },
+  { id: "log-039", timestamp: "08 Sep 2026, 10:00:05 AM", applicationId: "SE20260006", applicantName: "Meera Joseph", stage: "PLAN", tool: "get_program_requirements", action: "Loaded MBA admission requirements", result: "Minimum percentage configured at 50%", status: "COMPLETED" },
+  { id: "log-040", timestamp: "08 Sep 2026, 10:30:00 AM", applicationId: "SE20260006", applicantName: "Meera Joseph", stage: "ACT", tool: "extract_document_data", action: "OCR extraction and verification completed", result: "All 6 documents verified", status: "COMPLETED" },
+  { id: "log-041", timestamp: "08 Sep 2026, 11:00:00 AM", applicationId: "SE20260006", applicantName: "Meera Joseph", stage: "VERIFY", tool: "check_eligibility", action: "Eligibility rules evaluated", result: "Minimum percentage criterion not met (47% recorded against 50% required)", status: "COMPLETED" },
+  { id: "log-042", timestamp: "08 Sep 2026, 11:02:00 AM", applicationId: "SE20260006", applicantName: "Meera Joseph", stage: "ACT", tool: "update_application_status", action: "Updated application status", result: "Application marked INELIGIBLE", status: "COMPLETED" },
+  { id: "log-043", timestamp: "08 Sep 2026, 11:03:00 AM", applicationId: "SE20260006", applicantName: "Meera Joseph", stage: "ACT", tool: "send_notification", action: "Applicant notification generated", result: "Applicant notified of ineligibility outcome", status: "COMPLETED" },
 ];

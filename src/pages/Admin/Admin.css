@@ -36,3 +36,27 @@
 @media(max-width:1100px){.admin-stat-grid{grid-template-columns:repeat(3,1fr)}.admin-grid-2{grid-template-columns:1fr}}
 @media(max-width:700px){.admin-stat-grid{grid-template-columns:repeat(2,1fr)}.admin-detail-grid{grid-template-columns:1fr}.admin-kv{grid-template-columns:1fr}.admin-kv dd{margin-bottom:6px}}
 @media(max-width:480px){.admin-stat-grid{grid-template-columns:1fr}}
+
+/* Increment 6 — Programme Rules */
+.programme-rules-list { display:flex; flex-direction:column; gap:var(--space-5); }
+.programme-rules-edit-grid { display:grid; grid-template-columns:1fr 1fr; gap:var(--space-4); margin:var(--space-4) 0; }
+@media(max-width:700px){.programme-rules-edit-grid{grid-template-columns:1fr}}
+
+/* Increment 6 — Agent Activity */
+.stage-tag { display:inline-flex; align-items:center; padding:2px 10px; border-radius:999px; font-size:11.5px; font-weight:700; letter-spacing:0.02em; background:var(--color-neutral-tint); color:var(--color-text-secondary); }
+.stage-OBSERVE { background:var(--color-neutral-tint); color:#475467; }
+.stage-PLAN { background:var(--color-primary-tint); color:var(--color-primary-dark); }
+.stage-ACT { background:#eef2ff; color:#4338ca; }
+.stage-VERIFY { background:var(--color-success-tint); color:#0a7a4a; }
+.stage-RE-PLAN { background:var(--color-warning-tint); color:#93500a; }
+.agent-tool { font-family: "SFMono-Regular", Consolas, monospace; font-size:12px; color:var(--color-text-secondary); }
+
+/* Increment 6 — Analytics */
+.analytics-grid { display:grid; grid-template-columns:1fr 1fr; gap:var(--space-5); }
+.bar-list { display:flex; flex-direction:column; gap:var(--space-3); }
+.bar-row-top { display:flex; justify-content:space-between; font-size:13px; margin-bottom:4px; }
+.bar-row-label { font-weight:500; color:var(--color-black); }
+.bar-row-count { color:var(--color-text-secondary); font-weight:600; }
+.bar-track { height:8px; border-radius:999px; background:var(--color-neutral-tint); overflow:hidden; }
+.bar-fill { height:100%; background:var(--color-primary); border-radius:999px; }
+@media(max-width:900px){.analytics-grid{grid-template-columns:1fr}}

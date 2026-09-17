@@ -21,6 +21,7 @@ import {
   mockNotifications,
   mockAdminApplications,
   mockExceptions,
+  mockAgentActivity,
 } from "../data/mockData";
 
 const BASE_URL = "http://localhost:8000/api/v1";
@@ -388,4 +389,107 @@ export async function getAdminApplicationDetails(applicationId) {
 export async function getAdminExceptions() {
   await delay(350);
   return [...mockExceptions];
+}
+
+/* ----------------------------- Programme Rules ----------------------------- */
+// Future: GET `${BASE_URL}/admin/programs`
+//
+// Programme eligibility rules are system-owned, deterministic
+// configuration (master prompt section 15/23). This returns exactly
+// the same mockEligibilityRules object the applicant-facing
+// getEligibility() reads from, so the Admin Programme Rules screen
+// can never show different criteria than what Applicant Eligibility
+// evaluates against.
+export async function getProgrammeRules() {
+  await delay(350);
+  return mockPrograms.map((programme) => ({
+    programme,
+    rules: mockEligibilityRules[programme.id] ?? null,
+  }));
+}
+
+// Future: PUT `${BASE_URL}/admin/programs/{programmeId}`
+// Frontend/mock only — no backend persistence exists yet. Updates the
+// same mockEligibilityRules object read by getEligibility(), so any
+// change made here is immediately reflected on the applicant side too.
+export async function updateProgrammeRules(programmeId, updates) {
+  await delay(500);
+  const existing = mockEligibilityRules[programmeId] ?? { programmeId };
+  mockEligibilityRules[programmeId] = { ...existing, ...updates };
+  return { ...mockEligibilityRules[programmeId] };
+}
+
+/* ----------------------------- Agent Activity ----------------------------- */
+// Future: GET `${BASE_URL}/admin/agent-activity`
+//
+// This is an observable audit trail only — timestamps, tool calls,
+// deterministic results and workflow status. It never includes
+// private reasoning, internal chain-of-thought, or fabricated model
+// thoughts (master prompt section 24/27).
+export async function getAgentActivity() {
+  await delay(400);
+  return [...mockAgentActivity];
+}
+
+/* ------------------------------- Analytics ------------------------------- */
+// Future: GET `${BASE_URL}/admin/analytics`
+//
+// Every figure below is derived from mockAdminApplications and
+// mockExceptions at call time — nothing here is an independently
+// hardcoded number, so Analytics can't drift out of sync with the
+// Admin Dashboard or Applications list.
+export async function getAdminAnalytics() {
+  await delay(400);
+
+  const applications = mockAdminApplications;
+  const total = applications.length;
+
+  const countBy = (list, key) => {
+    const counts = {};
+    list.forEach((item) => {
+      const value = item[key];
+      counts[value] = (counts[value] ?? 0) + 1;
+    });
+    return Object.entries(counts).map(([value, count]) => ({ value, count }));
+  };
+
+  const statusDistribution = countBy(applications, "status");
+  const eligibilityDistribution = countBy(applications, "eligibilityStatus");
+
+  const documentCompletionDistribution = [
+    {
+      value: "Fully Submitted",
+      count: applications.filter((a) => a.documentStatus.startsWith("6 of 6")).length,
+    },
+    {
+      value: "Partially Submitted",
+      count: applications.filter((a) => !a.documentStatus.startsWith("6 of 6")).length,
+    },
+  ];
+
+  const programmeDistribution = mockPrograms
+    .map((programme) => ({
+      value: programme.name,
+      count: applications.filter((a) => a.programmeId === programme.id).length,
+    }))
+    .filter((row) => row.count > 0);
+
+  const exceptionSeverityDistribution = countBy(mockExceptions, "severity");
+  const exceptionStatusDistribution = countBy(mockExceptions, "status");
+
+  const processingComplete = applications.filter((a) => a.status === "PROCESSING_COMPLETE").length;
+  const completionRate = total ? Math.round((processingComplete / total) * 100) : 0;
+
+  return {
+    total,
+    statusDistribution,
+    eligibilityDistribution,
+    documentCompletionDistribution,
+    programmeDistribution,
+    exceptionSeverityDistribution,
+    exceptionStatusDistribution,
+    completionRate,
+    totalExceptions: mockExceptions.length,
+    openExceptions: mockExceptions.filter((e) => e.status !== "RESOLVED").length,
+  };
 }
