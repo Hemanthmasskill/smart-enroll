@@ -108,3 +108,21 @@
     padding: var(--space-4);
   }
 }
+
+.skip-link {
+  position: fixed;
+  left: var(--space-3);
+  top: -48px;
+  z-index: 100;
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--color-black);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  transition: top 0.15s ease;
+}
+
+.skip-link:focus {
+  top: var(--space-3);
+}

@@ -47,3 +47,15 @@ npm run cy:open
 The custom commands in `cypress/support/commands.js` create mock applicant/admin sessions directly in localStorage for tests that do not need to exercise the login UI. This keeps the regression suite fast while `01-auth.cy.js` still tests the real login workflow.
 
 After Increment 6 is integrated, rerun the entire suite before adding Increment 6-specific specs for Programme Rules, Agent Activity, and Analytics.
+
+## Increment 7 integration coverage
+
+`12-increment7-integration.cy.js` adds 5 end-to-end checks for the frontend freeze candidate:
+
+- integrated observable 8-stage admission workflow
+- document upload -> dashboard count/next-action synchronization
+- simulated DigiLocker record -> document verification synchronization
+- notification read state -> dashboard unread-count synchronization
+- applicant/admin workflow consistency for the main demo application
+
+Expected cumulative result after Increment 7: **12 specs / 34 tests**.

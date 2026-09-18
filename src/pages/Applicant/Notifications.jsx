@@ -3,18 +3,31 @@ import { useAuth } from "../../context/AuthContext";
 import { getNotifications, markNotificationRead, markAllNotificationsRead } from "../../services/api";
 import PageHeader from "../../components/PageHeader";
 import NotificationItem from "../../components/NotificationItem";
+import { EmptyState, ErrorState, LoadingState } from "../../components/AsyncState";
 import "./Notifications.css";
 
 export default function Notifications() {
   const { session } = useAuth();
   const [notifications, setNotifications] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [feedback, setFeedback] = useState("");
 
   useEffect(() => {
-    getNotifications(session?.applicantId).then((data) => {
-      setNotifications(data);
-      setIsLoading(false);
-    });
+    let mounted = true;
+    getNotifications(session?.applicantId)
+      .then((data) => {
+        if (mounted) setNotifications(data);
+      })
+      .catch((loadError) => {
+        if (mounted) setError(loadError.message || "Unable to load notifications.");
+      })
+      .finally(() => {
+        if (mounted) setIsLoading(false);
+      });
+    return () => {
+      mounted = false;
+    };
   }, [session]);
 
   const unreadCount = notifications.filter((n) => !n.read).length;
@@ -22,14 +35,17 @@ export default function Notifications() {
   const handleMarkRead = async (notificationId) => {
     const updated = await markNotificationRead(session?.applicantId, notificationId);
     setNotifications(updated);
+    setFeedback("Notification marked as read. Dashboard unread count is synchronized.");
   };
 
   const handleMarkAllRead = async () => {
     const updated = await markAllNotificationsRead(session?.applicantId);
     setNotifications(updated);
+    setFeedback("All notifications marked as read. Dashboard unread count is now synchronized.");
   };
 
-  if (isLoading) return <p>Loading notifications...</p>;
+  if (isLoading) return <LoadingState message="Loading notifications…" />;
+  if (error) return <ErrorState message={error} />;
 
   return (
     <div>
@@ -45,10 +61,14 @@ export default function Notifications() {
         }
       />
 
-      {notifications.length === 0 ? (
-        <div className="card notifications-empty">
-          <p>You have no notifications yet.</p>
+      {feedback && (
+        <div className="notification-feedback" role="status" aria-live="polite">
+          {feedback}
         </div>
+      )}
+
+      {notifications.length === 0 ? (
+        <EmptyState title="No notifications yet" message="Workflow updates will appear here." />
       ) : (
         <ul className="notifications-list">
           {notifications.map((notification) => (

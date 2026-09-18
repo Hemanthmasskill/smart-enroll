@@ -26,6 +26,7 @@ export const DOCUMENT_STATES = {
   MISMATCH: "Mismatch",
   REJECTED: "Rejected",
   UNVERIFIED: "Unverified",
+  UNAVAILABLE: "Unavailable",
 };
 
 // Result of a single configured eligibility rule check (master prompt
@@ -59,6 +60,7 @@ const TONE_MAP = {
   MISMATCH: "danger",
   REJECTED: "danger",
   UNVERIFIED: "warning",
+  UNAVAILABLE: "neutral",
   // eligibility rule-result states
   PASSED: "success",
   PENDING: "warning",

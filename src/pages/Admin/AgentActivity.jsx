@@ -49,7 +49,10 @@ export default function AgentActivity() {
 
       <section className="card admin-panel">
         <div className="admin-controls">
-          <select
+          <label className="admin-filter-field">
+            <span className="visually-hidden">Filter by application</span>
+            <select
+            aria-label="Filter by application"
             className="admin-control"
             value={applicationFilter}
             onChange={(e) => setApplicationFilter(e.target.value)}
@@ -60,8 +63,12 @@ export default function AgentActivity() {
                 {id}
               </option>
             ))}
-          </select>
-          <select
+            </select>
+          </label>
+          <label className="admin-filter-field">
+            <span className="visually-hidden">Filter by workflow stage</span>
+            <select
+            aria-label="Filter by workflow stage"
             className="admin-control"
             value={stageFilter}
             onChange={(e) => setStageFilter(e.target.value)}
@@ -72,8 +79,12 @@ export default function AgentActivity() {
                 {stage}
               </option>
             ))}
-          </select>
-          <select
+            </select>
+          </label>
+          <label className="admin-filter-field">
+            <span className="visually-hidden">Filter by status</span>
+            <select
+            aria-label="Filter by status"
             className="admin-control"
             value={statusFilter}
             onChange={(e) => setStatusFilter(e.target.value)}
@@ -84,7 +95,8 @@ export default function AgentActivity() {
                 {status}
               </option>
             ))}
-          </select>
+            </select>
+          </label>
         </div>
 
         <div className="admin-table-wrap">

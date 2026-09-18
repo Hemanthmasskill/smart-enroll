@@ -1,9 +1,11 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../../context/AuthContext";
-import { getApplicationTimeline, getPrograms } from "../../services/api";
+import { getApplicationTimeline, getApplicationWorkflow, getPrograms } from "../../services/api";
 import PageHeader from "../../components/PageHeader";
 import StatusBadge from "../../components/StatusBadge";
+import WorkflowPipeline from "../../components/WorkflowPipeline";
+import { EmptyState, ErrorState, LoadingState } from "../../components/AsyncState";
 import "./ApplicationStatus.css";
 
 const STAGE_TONE = {
@@ -22,28 +24,43 @@ export default function ApplicationStatus() {
   const { session } = useAuth();
   const navigate = useNavigate();
   const [timeline, setTimeline] = useState(null);
+  const [workflow, setWorkflow] = useState(null);
   const [programme, setProgramme] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState("");
 
   useEffect(() => {
     let isMounted = true;
 
-    Promise.all([getApplicationTimeline(session?.applicantId), getPrograms()]).then(
-      ([timelineResult, programs]) => {
+    Promise.all([
+      getApplicationTimeline(session?.applicantId),
+      getApplicationWorkflow(session?.applicantId),
+      getPrograms(),
+    ])
+      .then(([timelineResult, workflowResult, programs]) => {
         if (!isMounted) return;
         setTimeline(timelineResult);
+        setWorkflow(workflowResult);
         setProgramme(programs.find((p) => p.id === timelineResult?.programmeId) ?? null);
-        setIsLoading(false);
-      }
-    );
+      })
+      .catch((loadError) => {
+        if (isMounted) setError(loadError.message || "Unable to load application status.");
+      })
+      .finally(() => {
+        if (isMounted) setIsLoading(false);
+      });
 
     return () => {
       isMounted = false;
     };
   }, [session]);
 
-  if (isLoading) return <p>Loading your application status...</p>;
-  if (!timeline) return <p>No application found.</p>;
+  if (isLoading) return <LoadingState message="Loading your application status…" />;
+  if (error) return <ErrorState message={error} />;
+  if (!timeline) return <EmptyState title="No application found" />;
+
+  const applicantActionRequired =
+    timeline.status === "WAITING_FOR_DOCUMENTS" || timeline.status === "EXCEPTION";
 
   return (
     <div>
@@ -66,6 +83,8 @@ export default function ApplicationStatus() {
           <StatusBadge code={timeline.status} />
         </div>
       </div>
+
+      <WorkflowPipeline workflow={workflow} />
 
       <div className="card timeline-card">
         <h3 className="status-card-heading">Processing Timeline</h3>
@@ -91,11 +110,15 @@ export default function ApplicationStatus() {
         </div>
         {timeline.applicantAction && (
           <div className="action-block">
-            <span className="action-label applicant-action-label">Applicant Action Required</span>
+            <span className="action-label applicant-action-label">
+              {applicantActionRequired ? "Applicant Action Required" : "Applicant Action"}
+            </span>
             <p className="action-text">{timeline.applicantAction}</p>
-            <button className="btn btn-accent" onClick={() => navigate("/documents")}>
-              Upload Documents
-            </button>
+            {applicantActionRequired && (
+              <button className="btn btn-accent" onClick={() => navigate("/documents")}>
+                Upload Documents
+              </button>
+            )}
           </div>
         )}
       </div>

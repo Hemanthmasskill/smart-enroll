@@ -60,3 +60,7 @@
 .bar-track { height:8px; border-radius:999px; background:var(--color-neutral-tint); overflow:hidden; }
 .bar-fill { height:100%; background:var(--color-primary); border-radius:999px; }
 @media(max-width:900px){.analytics-grid{grid-template-columns:1fr}}
+
+.admin-filter-field { display:inline-flex; }
+
+.admin-feedback { margin-bottom:var(--space-4); padding:10px 12px; border:1px solid #bae6fd; border-radius:var(--radius-sm); background:var(--color-primary-tint); color:#075985; font-size:13px; }

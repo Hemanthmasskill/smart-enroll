@@ -32,6 +32,7 @@ export default function ApplicantLayout({ children }) {
 
   return (
     <div className="applicant-layout">
+      <a className="skip-link" href="#main-content">Skip to main content</a>
       <header className="app-topbar">
         <button
           className="drawer-toggle"
@@ -67,7 +68,7 @@ export default function ApplicantLayout({ children }) {
             onClick={() => setDrawerOpen(false)}
           />
         )}
-        <main className="applicant-content">{children}</main>
+        <main id="main-content" className="applicant-content" tabIndex="-1">{children}</main>
       </div>
     </div>
   );

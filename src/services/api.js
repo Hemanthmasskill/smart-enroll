@@ -23,11 +23,107 @@ import {
   mockExceptions,
   mockAgentActivity,
 } from "../data/mockData";
+import { countRequiredDocuments, deriveEligibility, deriveWorkflow } from "../utils/workflowUtils";
 
 const BASE_URL = "http://localhost:8000/api/v1";
 
 // Simulates network latency for a more realistic demo.
 const delay = (ms = 500) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function getSynchronousEligibility(applicantId) {
+  const application = mockApplications[applicantId];
+  const documents = mockDocuments[applicantId] ?? [];
+  const rules = application ? mockEligibilityRules[application.programmeId] : null;
+  return deriveEligibility(application, documents, rules);
+}
+
+function syncPrimaryAdminApplication(applicantId) {
+  const application = mockApplications[applicantId];
+  if (!application) return;
+  const adminRow = mockAdminApplications.find((row) => row.applicantId === applicantId);
+  if (!adminRow) return;
+  adminRow.status = application.status;
+  adminRow.documentStatus = `${application.documentsSubmitted} of ${application.documentsRequired} Submitted`;
+  adminRow.eligibilityStatus = application.eligibilityStatus;
+  adminRow.currentAction = application.currentAction;
+}
+
+function syncApplicationState(applicantId) {
+  const application = mockApplications[applicantId];
+  if (!application) return null;
+
+  const documents = mockDocuments[applicantId] ?? [];
+  const notifications = mockNotifications[applicantId] ?? [];
+  const counts = countRequiredDocuments(documents);
+  const eligibility = getSynchronousEligibility(applicantId);
+  const hasDocumentFailure = documents.some((doc) => ["MISMATCH", "REJECTED"].includes(doc.status));
+  const hasVerificationPending = documents.some((doc) =>
+    ["UPLOADED", "PROCESSING"].includes(doc.status) || doc.details?.authoritative?.status === "PENDING"
+  );
+
+  application.documentsSubmitted = counts.submitted;
+  application.documentsRequired = counts.required;
+  application.unreadNotifications = notifications.filter((item) => !item.read).length;
+
+  const missingException = mockExceptions.find(
+    (item) => item.applicationId === application.applicationId && item.type === "MISSING_DOCUMENT"
+  );
+  if (missingException) {
+    const missingNames = documents
+      .filter((doc) => doc.required !== false && doc.status === "NOT_UPLOADED")
+      .map((doc) => doc.name);
+    if (missingNames.length === 0) {
+      missingException.status = "RESOLVED";
+      missingException.description = "All previously missing required documents have now been submitted.";
+    } else {
+      missingException.status = "OPEN";
+      missingException.description = `${missingNames.join(" and ")} ${missingNames.length === 1 ? "has" : "have"} not been submitted.`;
+    }
+  }
+
+  application.eligibilityStatus =
+    eligibility?.overall === "ELIGIBLE"
+      ? "ELIGIBLE"
+      : eligibility?.overall === "INELIGIBLE"
+        ? "INELIGIBLE"
+        : "PENDING";
+
+  if (hasDocumentFailure) {
+    application.status = "EXCEPTION";
+    application.progressPercent = Math.max(application.progressPercent ?? 0, 65);
+    application.nextAction = "Review the document issue shown in your application status.";
+    application.currentAction = "Smart Enroll has paused automated processing because a document validation exception was detected.";
+  } else if (counts.missing > 0) {
+    application.status = "WAITING_FOR_DOCUMENTS";
+    application.progressPercent = Math.min(65, 25 + counts.submitted * 5);
+    application.nextAction = `${counts.missing} document${counts.missing === 1 ? " is" : "s are"} still required.`;
+    application.currentAction =
+      "Smart Enroll is verifying your submitted documents and waiting for the remaining required files.";
+  } else if (hasVerificationPending) {
+    application.status = "VERIFICATION_IN_PROGRESS";
+    application.progressPercent = 72;
+    application.nextAction = "No additional document upload is required right now.";
+    application.currentAction = "Smart Enroll is completing OCR, content validation and supported authoritative verification checks.";
+  } else if (eligibility?.overall === "ELIGIBLE") {
+    application.status = "PROCESSING_COMPLETE";
+    application.progressPercent = 100;
+    application.nextAction = "No applicant action is currently required.";
+    application.currentAction = "Configured eligibility checks are complete and the autonomous processing workflow has reached its current endpoint.";
+  } else if (eligibility?.overall === "INELIGIBLE") {
+    application.status = "INELIGIBLE";
+    application.progressPercent = 92;
+    application.nextAction = "Review the eligibility result and configured programme criteria.";
+    application.currentAction = "Eligibility evaluation completed against configured programme rules.";
+  } else {
+    application.status = "ELIGIBILITY_CHECK";
+    application.progressPercent = 84;
+    application.nextAction = "No applicant action is currently required.";
+    application.currentAction = "Smart Enroll is evaluating the application against configured deterministic programme rules.";
+  }
+
+  syncPrimaryAdminApplication(applicantId);
+  return application;
+}
 
 /* ----------------------------- Auth ----------------------------- */
 // Future: POST `${BASE_URL}/auth/login`
@@ -68,7 +164,7 @@ export async function registerRequest({ fullName, email }) {
 // Future: GET `${BASE_URL}/applications/{id}`
 export async function getApplication(applicantId) {
   await delay(400);
-  return mockApplications[applicantId] ?? null;
+  return syncApplicationState(applicantId);
 }
 
 // Future: POST `${BASE_URL}/applications`
@@ -138,6 +234,7 @@ export async function uploadDocument(applicantId, documentId, file) {
     year: "numeric",
   });
   doc.details = null;
+  syncApplicationState(applicantId);
 
   return { ...doc };
 }
@@ -153,6 +250,7 @@ export async function removeDocument(applicantId, documentId) {
     doc.uploadedAt = null;
     doc.details = null;
   }
+  syncApplicationState(applicantId);
   return { ...doc };
 }
 
@@ -175,6 +273,29 @@ export async function connectDigiLocker(applicantId) {
   };
 }
 
+// Future: POST `${BASE_URL}/digilocker/records/{recordId}/use`
+// Simulates linking an authoritative record to the matching uploaded document.
+export async function useVerifiedDigiLockerRecord(applicantId, recordId) {
+  await delay(650);
+  const record = (mockDigiLockerRecords[applicantId] ?? []).find((item) => item.id === recordId);
+  if (!record) throw new Error("Verified record not found.");
+
+  const documents = mockDocuments[applicantId] ?? [];
+  const target = record.id === "dl-degree" ? documents.find((doc) => doc.id === "doc-degree") : null;
+  if (!target) throw new Error("No matching uploaded document was found for this record.");
+
+  target.status = "VERIFIED";
+  target.details = target.details ?? { extraction: {}, validation: {} };
+  target.details.authoritative = {
+    status: "VERIFIED",
+    source: "DigiLocker/NAD simulation",
+    recordId: record.id,
+    issuer: record.issuer,
+  };
+  syncApplicationState(applicantId);
+  return { document: { ...target }, application: { ...mockApplications[applicantId] } };
+}
+
 /* --------------------------- Eligibility ------------------------------ */
 // Future: GET `${BASE_URL}/eligibility/{application_id}`
 //
@@ -186,70 +307,22 @@ export async function connectDigiLocker(applicantId) {
 // the demo can't drift out of sync with the Documents page.
 export async function getEligibility(applicantId) {
   await delay(500);
+  return getSynchronousEligibility(applicantId);
+}
 
-  const application = mockApplications[applicantId];
-  const documents = mockDocuments[applicantId] ?? [];
-  const rules = application ? mockEligibilityRules[application.programmeId] : null;
-  if (!application || !rules) return null;
-
-  const degreeDoc = documents.find((d) => d.id === "doc-degree");
-  const ugDoc = documents.find((d) => d.id === "doc-ug-marksheet");
-  const allDocumentsSubmitted = application.documentsSubmitted >= application.documentsRequired;
-
-  const bachelorDegree = {
-    label: "Bachelor's Degree",
-    configured: rules.minimumQualification,
-    result:
-      ugDoc?.status !== "NOT_UPLOADED" && degreeDoc?.status !== "NOT_UPLOADED"
-        ? "PASSED"
-        : "PENDING",
-  };
-
-  const minimumPercentage = {
-    label: "Minimum Percentage",
-    configured: rules.minimumPercentage,
-    result: degreeDoc?.details?.extraction?.CGPA ? "PASSED" : "PENDING",
-  };
-
-  const mathematicsRequirement = {
-    label: "Mathematics Requirement",
-    configured: rules.mathematicsRequirement,
-    result: "PENDING",
-  };
-
-  const requiredDocuments = {
-    label: "Required Documents",
-    configured: rules.requiredDocuments,
-    result: allDocumentsSubmitted ? "PASSED" : "PENDING",
-  };
-
-  const entranceRequirement = {
-    label: "Entrance Requirement",
-    configured: rules.entranceRequirement,
-    result: "NOT_APPLICABLE",
-  };
-
-  const evaluation = [
-    bachelorDegree,
-    minimumPercentage,
-    mathematicsRequirement,
-    requiredDocuments,
-    entranceRequirement,
-  ];
-
-  const hasFailed = evaluation.some((item) => item.result === "FAILED");
-  const allDecided = evaluation.every(
-    (item) => item.result === "PASSED" || item.result === "NOT_APPLICABLE"
-  );
-
-  const overall = hasFailed ? "INELIGIBLE" : allDecided ? "ELIGIBLE" : "ELIGIBILITY_CHECK";
-
-  return {
-    programmeId: application.programmeId,
-    rules,
-    evaluation,
-    overall,
-  };
+/* ----------------------------- Integrated Workflow ----------------------------- */
+// Future: GET `${BASE_URL}/applications/{id}/workflow`
+// Returns only observable workflow state/actions/results. No private reasoning.
+export async function getApplicationWorkflow(applicantId) {
+  await delay(350);
+  const application = syncApplicationState(applicantId);
+  if (!application) return null;
+  return deriveWorkflow({
+    application,
+    documents: mockDocuments[applicantId] ?? [],
+    eligibility: getSynchronousEligibility(applicantId),
+    notifications: mockNotifications[applicantId] ?? [],
+  });
 }
 
 /* ----------------------------- Application Status ----------------------------- */
@@ -278,7 +351,7 @@ const STATUS_STAGES = [
 // Future: GET `${BASE_URL}/applications/{id}/timeline`
 export async function getApplicationTimeline(applicantId) {
   await delay(400);
-  const application = mockApplications[applicantId];
+  const application = syncApplicationState(applicantId);
   if (!application) return null;
 
   const currentIndex = STATUS_STAGE_INDEX[application.status] ?? 0;
@@ -311,6 +384,7 @@ export async function markNotificationRead(applicantId, notificationId) {
   const notifications = mockNotifications[applicantId] ?? [];
   const notification = notifications.find((n) => n.id === notificationId);
   if (notification) notification.read = true;
+  syncApplicationState(applicantId);
   return [...notifications];
 }
 
@@ -321,6 +395,7 @@ export async function markAllNotificationsRead(applicantId) {
   notifications.forEach((n) => {
     n.read = true;
   });
+  syncApplicationState(applicantId);
   return [...notifications];
 }
 
@@ -329,6 +404,7 @@ export async function markAllNotificationsRead(applicantId) {
 // Future: GET `${BASE_URL}/admin/dashboard`
 export async function getAdminDashboard() {
   await delay(350);
+  syncApplicationState("APL-1001");
   const applications = mockAdminApplications;
   return {
     stats: {
@@ -346,12 +422,14 @@ export async function getAdminDashboard() {
 // Future: GET `${BASE_URL}/admin/applications`
 export async function getAdminApplications() {
   await delay(400);
+  syncApplicationState("APL-1001");
   return [...mockAdminApplications];
 }
 
 // Future: GET `${BASE_URL}/admin/applications/{applicationId}`
 export async function getAdminApplicationDetails(applicationId) {
   await delay(400);
+  syncApplicationState("APL-1001");
   const application = mockAdminApplications.find((a) => a.applicationId === applicationId);
   if (!application) return null;
 
@@ -363,7 +441,13 @@ export async function getAdminApplicationDetails(applicationId) {
     const documents = mockDocuments["APL-1001"] ?? [];
     const eligibility = await getEligibility("APL-1001");
     const timeline = await getApplicationTimeline("APL-1001");
-    return { ...application, applicant, programme, documents, eligibility, timeline, exceptions };
+    const workflow = deriveWorkflow({
+      application: mockApplications["APL-1001"],
+      documents,
+      eligibility,
+      notifications: mockNotifications["APL-1001"] ?? [],
+    });
+    return { ...application, applicant, programme, documents, eligibility, timeline, workflow, exceptions };
   }
 
   const currentIndex = STATUS_STAGE_INDEX[application.status] ?? 0;
@@ -440,6 +524,7 @@ export async function getAgentActivity() {
 // Admin Dashboard or Applications list.
 export async function getAdminAnalytics() {
   await delay(400);
+  syncApplicationState("APL-1001");
 
   const applications = mockAdminApplications;
   const total = applications.length;

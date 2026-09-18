@@ -1,10 +1,18 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../../context/AuthContext";
-import { getApplication, getRecentActivity, getPrograms } from "../../services/api";
+import {
+  getApplication,
+  getApplicationWorkflow,
+  getRecentActivity,
+  getPrograms,
+} from "../../services/api";
 import PageHeader from "../../components/PageHeader";
 import StatCard from "../../components/StatCard";
 import StatusBadge from "../../components/StatusBadge";
+import WorkflowPipeline from "../../components/WorkflowPipeline";
+import PrototypeNotice from "../../components/PrototypeNotice";
+import { ErrorState, LoadingState } from "../../components/AsyncState";
 import "./Dashboard.css";
 
 export default function Dashboard() {
@@ -14,22 +22,33 @@ export default function Dashboard() {
   const [application, setApplication] = useState(null);
   const [activity, setActivity] = useState([]);
   const [programme, setProgramme] = useState(null);
+  const [workflow, setWorkflow] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState("");
 
   useEffect(() => {
     let isMounted = true;
 
     async function load() {
-      const [app, recentActivity, programs] = await Promise.all([
-        getApplication(session?.applicantId),
-        getRecentActivity(),
-        getPrograms(),
-      ]);
-      if (!isMounted) return;
-      setApplication(app);
-      setActivity(recentActivity);
-      setProgramme(programs.find((p) => p.id === app?.programmeId) ?? null);
-      setIsLoading(false);
+      setIsLoading(true);
+      setError("");
+      try {
+        const [app, recentActivity, programs, workflowResult] = await Promise.all([
+          getApplication(session?.applicantId),
+          getRecentActivity(),
+          getPrograms(),
+          getApplicationWorkflow(session?.applicantId),
+        ]);
+        if (!isMounted) return;
+        setApplication(app);
+        setActivity(recentActivity);
+        setProgramme(programs.find((p) => p.id === app?.programmeId) ?? null);
+        setWorkflow(workflowResult);
+      } catch (loadError) {
+        if (isMounted) setError(loadError.message || "Unable to load the dashboard.");
+      } finally {
+        if (isMounted) setIsLoading(false);
+      }
     }
 
     load();
@@ -40,9 +59,8 @@ export default function Dashboard() {
 
   const firstName = session?.name?.split(" ")[0] ?? "Applicant";
 
-  if (isLoading) {
-    return <p>Loading your dashboard...</p>;
-  }
+  if (isLoading) return <LoadingState message="Loading your dashboard…" />;
+  if (error) return <ErrorState message={error} />;
 
   return (
     <div>
@@ -50,6 +68,8 @@ export default function Dashboard() {
         title={`Welcome, ${firstName}`}
         subtitle="Track and manage your admission application."
       />
+
+      <PrototypeNotice />
 
       <div className="progress-card card">
         <div className="progress-card-top">
@@ -59,7 +79,14 @@ export default function Dashboard() {
           </div>
           <span className="progress-card-percent">{application?.progressPercent}% Complete</span>
         </div>
-        <div className="progress-track">
+        <div
+          className="progress-track"
+          role="progressbar"
+          aria-label="Application completion"
+          aria-valuemin="0"
+          aria-valuemax="100"
+          aria-valuenow={application?.progressPercent ?? 0}
+        >
           <div
             className="progress-fill"
             style={{ width: `${application?.progressPercent ?? 0}%` }}
@@ -73,12 +100,14 @@ export default function Dashboard() {
           label="Documents"
           value={`${application?.documentsSubmitted} of ${application?.documentsRequired} Submitted`}
         />
-        <StatCard label="Eligibility" value="Pending" />
         <StatCard
-          label="Notifications"
-          value={`${application?.unreadNotifications} New`}
+          label="Eligibility"
+          value={application?.eligibilityStatus === "PENDING" ? "Pending" : application?.eligibilityStatus}
         />
+        <StatCard label="Notifications" value={`${application?.unreadNotifications} New`} />
       </div>
+
+      <WorkflowPipeline workflow={workflow} compact />
 
       <div className="dashboard-columns">
         <div className="card next-action-card">

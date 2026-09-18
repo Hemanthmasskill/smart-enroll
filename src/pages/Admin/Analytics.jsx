@@ -15,7 +15,7 @@ function BarList({ rows, labelFormatter }) {
             <span className="bar-row-label">{labelFormatter ? labelFormatter(row.value) : row.value}</span>
             <span className="bar-row-count">{row.count}</span>
           </div>
-          <div className="bar-track">
+          <div className="bar-track" role="progressbar" aria-label={`${labelFormatter ? labelFormatter(row.value) : row.value}: ${row.count}`} aria-valuemin="0" aria-valuemax={max} aria-valuenow={row.count}>
             <div className="bar-fill" style={{ width: `${(row.count / max) * 100}%` }} />
           </div>
         </div>

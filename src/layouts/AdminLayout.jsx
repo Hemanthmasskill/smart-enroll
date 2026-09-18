@@ -24,6 +24,7 @@ export default function AdminLayout({ children }) {
 
   return (
     <div className="applicant-layout">
+      <a className="skip-link" href="#main-content">Skip to main content</a>
       <header className="app-topbar">
         <button className="drawer-toggle" aria-label="Toggle navigation menu" onClick={() => setDrawerOpen((v) => !v)}><span/><span/><span/></button>
         <div className="brand app-topbar-brand"><span className="brand-mark">S</span><span className="brand-name">Smart Enroll</span></div>
@@ -33,7 +34,7 @@ export default function AdminLayout({ children }) {
       <div className="applicant-layout-body">
         <Sidebar items={navItems} open={drawerOpen} onNavigate={() => setDrawerOpen(false)} />
         {drawerOpen && <button className="drawer-scrim" aria-label="Close navigation menu" onClick={() => setDrawerOpen(false)} />}
-        <main className="applicant-content">{children}</main>
+        <main id="main-content" className="applicant-content" tabIndex="-1">{children}</main>
       </div>
     </div>
   );

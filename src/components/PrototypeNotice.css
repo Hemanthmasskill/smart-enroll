@@ -1,0 +1,21 @@
+.prototype-notice {
+  display: flex;
+  gap: var(--space-3);
+  align-items: flex-start;
+  padding: 12px 14px;
+  margin-bottom: var(--space-5);
+  border: 1px solid #bae6fd;
+  border-radius: var(--radius-sm);
+  background: var(--color-primary-tint);
+  color: #075985;
+  font-size: 12.5px;
+}
+
+.prototype-notice strong {
+  white-space: nowrap;
+  color: #0c4a6e;
+}
+
+@media (max-width: 600px) {
+  .prototype-notice { flex-direction: column; gap: 4px; }
+}

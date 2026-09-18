@@ -3,6 +3,8 @@ import { useAuth } from "../../context/AuthContext";
 import { getEligibility, getPrograms } from "../../services/api";
 import PageHeader from "../../components/PageHeader";
 import StatusBadge from "../../components/StatusBadge";
+import PrototypeNotice from "../../components/PrototypeNotice";
+import { EmptyState, ErrorState, LoadingState } from "../../components/AsyncState";
 import "./Eligibility.css";
 
 const OVERALL_COPY = {
@@ -29,28 +31,36 @@ export default function Eligibility() {
   const [eligibility, setEligibility] = useState(null);
   const [programme, setProgramme] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState("");
 
   useEffect(() => {
     let isMounted = true;
 
-    Promise.all([getEligibility(session?.applicantId), getPrograms()]).then(
-      ([eligibilityResult, programs]) => {
+    Promise.all([getEligibility(session?.applicantId), getPrograms()])
+      .then(([eligibilityResult, programs]) => {
         if (!isMounted) return;
         setEligibility(eligibilityResult);
         setProgramme(programs.find((p) => p.id === eligibilityResult?.programmeId) ?? null);
-        setIsLoading(false);
-      }
-    );
+      })
+      .catch((loadError) => {
+        if (isMounted) setError(loadError.message || "Unable to load eligibility status.");
+      })
+      .finally(() => {
+        if (isMounted) setIsLoading(false);
+      });
 
     return () => {
       isMounted = false;
     };
   }, [session]);
 
-  if (isLoading) return <p>Loading your eligibility status...</p>;
-  if (!eligibility) return <p>No eligibility evaluation is available yet.</p>;
+  if (isLoading) return <LoadingState message="Loading your eligibility status…" />;
+  if (error) return <ErrorState message={error} />;
+  if (!eligibility) {
+    return <EmptyState title="No eligibility evaluation yet" message="Submit an application to begin evaluation." />;
+  }
 
-  const overall = OVERALL_COPY[eligibility.overall];
+  const overall = OVERALL_COPY[eligibility.overall] ?? OVERALL_COPY.ELIGIBILITY_CHECK;
 
   return (
     <div>
@@ -58,6 +68,11 @@ export default function Eligibility() {
         title="Eligibility Status"
         subtitle={programme ? `${programme.name} — ${programme.fullName}` : "Programme"}
       />
+
+      <PrototypeNotice>
+        Eligibility is evaluated only against institution-configured deterministic rules. The AI
+        workflow does not create, infer or modify admission criteria.
+      </PrototypeNotice>
 
       <div className="card eligibility-overall">
         <div>

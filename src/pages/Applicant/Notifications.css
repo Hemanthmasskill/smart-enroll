@@ -10,3 +10,13 @@
   color: var(--color-text-secondary);
   font-size: 14px;
 }
+
+.notification-feedback {
+  margin-bottom: var(--space-4);
+  padding: 10px 12px;
+  border: 1px solid #bae6fd;
+  border-radius: var(--radius-sm);
+  background: var(--color-primary-tint);
+  color: #075985;
+  font-size: 13px;
+}

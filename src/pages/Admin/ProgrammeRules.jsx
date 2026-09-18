@@ -15,12 +15,14 @@ export default function ProgrammeRules() {
   const [items, setItems] = useState([]);
   const [editingId, setEditingId] = useState(null);
   const [formValues, setFormValues] = useState({});
+  const [feedback, setFeedback] = useState("");
 
   useEffect(() => {
     getProgrammeRules().then(setItems);
   }, []);
 
   const startEdit = (programmeId, rules) => {
+    setFeedback("");
     setEditingId(programmeId);
     setFormValues(rules ?? {});
   };
@@ -31,11 +33,16 @@ export default function ProgrammeRules() {
   };
 
   const saveEdit = async (programmeId) => {
-    const updated = await updateProgrammeRules(programmeId, formValues);
-    setItems((prev) =>
-      prev.map((item) => (item.programme.id === programmeId ? { ...item, rules: updated } : item))
-    );
-    setEditingId(null);
+    try {
+      const updated = await updateProgrammeRules(programmeId, formValues);
+      setItems((prev) =>
+        prev.map((item) => (item.programme.id === programmeId ? { ...item, rules: updated } : item))
+      );
+      setEditingId(null);
+      setFeedback("Programme rules saved in the frontend simulation. Applicant eligibility now reads the updated configuration.");
+    } catch (error) {
+      setFeedback(`Unable to save programme rules: ${error.message}`);
+    }
   };
 
   return (
@@ -44,6 +51,10 @@ export default function ProgrammeRules() {
         title="Programme Rules"
         subtitle="Deterministic, system-owned eligibility configuration for each programme."
       />
+
+      {feedback && (
+        <div className="admin-feedback" role="status" aria-live="polite">{feedback}</div>
+      )}
 
       <div className="card admin-panel" style={{ marginBottom: "var(--space-5)" }}>
         <p className="admin-muted">

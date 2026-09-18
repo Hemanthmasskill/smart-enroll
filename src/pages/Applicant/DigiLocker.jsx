@@ -1,9 +1,10 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../../context/AuthContext";
-import { connectDigiLocker } from "../../services/api";
+import { connectDigiLocker, useVerifiedDigiLockerRecord } from "../../services/api";
 import PageHeader from "../../components/PageHeader";
 import StatusBadge from "../../components/StatusBadge";
+import PrototypeNotice from "../../components/PrototypeNotice";
 import "./DigiLocker.css";
 
 const CONNECTION_STATES = {
@@ -19,16 +20,36 @@ export default function DigiLocker() {
   const [connectionState, setConnectionState] = useState(CONNECTION_STATES.IDLE);
   const [result, setResult] = useState(null);
   const [usedRecordIds, setUsedRecordIds] = useState([]);
+  const [feedback, setFeedback] = useState("");
+  const [isUsingRecord, setIsUsingRecord] = useState(false);
 
   const handleConnect = async () => {
     setConnectionState(CONNECTION_STATES.CONNECTING);
-    const response = await connectDigiLocker(session?.applicantId);
-    setResult(response);
-    setConnectionState(CONNECTION_STATES.CONNECTED);
+    setFeedback("");
+    try {
+      const response = await connectDigiLocker(session?.applicantId);
+      setResult(response);
+      setConnectionState(CONNECTION_STATES.CONNECTED);
+    } catch (error) {
+      setConnectionState(CONNECTION_STATES.IDLE);
+      setFeedback(`Connection failed: ${error.message}`);
+    }
   };
 
-  const handleUseRecord = (recordId) => {
-    setUsedRecordIds((prev) => [...prev, recordId]);
+  const handleUseRecord = async (recordId) => {
+    setIsUsingRecord(true);
+    setFeedback("");
+    try {
+      const response = await useVerifiedDigiLockerRecord(session?.applicantId, recordId);
+      setUsedRecordIds((prev) => (prev.includes(recordId) ? prev : [...prev, recordId]));
+      setFeedback(
+        `${response.document.name} is now authoritatively verified in the frontend simulation.`
+      );
+    } catch (error) {
+      setFeedback(`Unable to use verified record: ${error.message}`);
+    } finally {
+      setIsUsingRecord(false);
+    }
   };
 
   return (
@@ -37,6 +58,17 @@ export default function DigiLocker() {
         title="Verify Academic Records with DigiLocker"
         subtitle="Smart Enroll can verify supported academic records using authoritative credentials available through DigiLocker/NAD with your consent."
       />
+
+      <PrototypeNotice>
+        DigiLocker/NAD integration on this page is a frontend simulation only. A production system
+        requires authorized APIs, applicant consent and issuer-record availability.
+      </PrototypeNotice>
+
+      {feedback && (
+        <div className="digilocker-feedback" role="status" aria-live="polite">
+          {feedback}
+        </div>
+      )}
 
       <div className="card digilocker-card">
         {connectionState === CONNECTION_STATES.IDLE && (
@@ -53,7 +85,7 @@ export default function DigiLocker() {
         )}
 
         {connectionState === CONNECTION_STATES.CONNECTING && (
-          <div className="digilocker-connect">
+          <div className="digilocker-connect" role="status" aria-live="polite">
             <div className="digilocker-spinner" aria-hidden="true" />
             <p className="digilocker-copy">Connecting...</p>
           </div>
@@ -88,9 +120,9 @@ export default function DigiLocker() {
                         <button
                           className="btn btn-secondary btn-sm"
                           onClick={() => handleUseRecord(record.id)}
-                          disabled={isUsed}
+                          disabled={isUsed || isUsingRecord}
                         >
-                          {isUsed ? "Record in Use" : "Use Verified Record"}
+                          {isUsed ? "Record in Use" : isUsingRecord ? "Linking…" : "Use Verified Record"}
                         </button>
                       </div>
                     </div>
