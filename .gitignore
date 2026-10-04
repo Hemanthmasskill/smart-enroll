@@ -3,3 +3,12 @@ dist
 .vite/
 .env
 *.local
+repomix-output.xml
+repomix-output*
+.agent
+.agent/
+.agents
+.agents/
+__pycache__/
+*.py[cod]
+.venv/
