@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import applications
+from app.api import applications, auth
 from app.core.config import settings
 from app.core.database import close_mongo_connection, connect_to_mongo, get_db
 
@@ -27,6 +27,12 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+)
+
+app.include_router(
+    auth.router,
+    prefix=f"{settings.API_V1_STR}/auth",
+    tags=["Authentication"],
 )
 
 app.include_router(

@@ -8,6 +8,9 @@ client: MongoClient | None = None
 def connect_to_mongo():
     global client
     client = MongoClient(settings.MONGODB_URI)
+    db = client[settings.DATABASE_NAME]
+    db["users"].create_index("email", unique=True)
+
 
 
 def close_mongo_connection():
