@@ -64,7 +64,7 @@ def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    user = db["users"].find_one({"_id": user_id})
+    user = db["users"].find_one({"_id": user_id}, {"hashed_password": 0})
     if user is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

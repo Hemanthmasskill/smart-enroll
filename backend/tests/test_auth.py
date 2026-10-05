@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 import jwt
 import pytest
 
-from app.api.deps import RequireRole
+from app.api.deps import RequireRole, get_current_user
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.security import get_password_hash
@@ -29,6 +29,13 @@ def applicant_test_route(user: dict = Depends(RequireRole(["applicant"]))):
 @auth_test_router.get("/admin-test")
 def admin_test_route(user: dict = Depends(RequireRole(["admin"]))):
     return {"message": "Admin access granted", "role": user["role"]}
+
+
+@auth_test_router.get("/me-test")
+def me_test_route(user: dict = Depends(get_current_user)):
+    user_copy = user.copy()
+    user_copy["_id"] = str(user_copy["_id"])
+    return user_copy
 
 
 # Register test routes if not already registered
@@ -344,6 +351,35 @@ def test_hashed_password_never_exposed(seeded_admin):
         )
         assert "hashed_password" not in adm_login.json()
         assert "password" not in adm_login.json()
+
+        # get_current_user response for authenticated user
+        token = reg_res.json()["token"]
+        me_res = client.get("/me-test", headers={"Authorization": f"Bearer {token}"})
+        assert me_res.status_code == 200
+        assert "hashed_password" not in me_res.json()
+        assert "password" not in me_res.json()
+
+
+# Focused test: get_current_user excludes hashed_password and retains required fields
+def test_get_current_user_excludes_hashed_password():
+    with TestClient(app) as client:
+        reg_res = client.post("/api/v1/auth/register", json=APPLICANT_PAYLOAD)
+        token = reg_res.json()["token"]
+
+        me_res = client.get("/me-test", headers={"Authorization": f"Bearer {token}"})
+        assert me_res.status_code == 200
+        user_data = me_res.json()
+
+        # Focused assertion: hashed_password must never be returned by get_current_user()
+        assert "hashed_password" not in user_data
+        assert "password" not in user_data
+
+        # Required fields for authorization and downstream endpoints
+        assert "_id" in user_data
+        assert user_data["email"] == "hemanth@example.com"
+        assert user_data["full_name"] == "Hemanth M.P."
+        assert user_data["role"] == "applicant"
+        assert user_data["applicant_id"].startswith("APL-")
 
 
 # 16. Verify frontend-compatible response structure and role mapping
