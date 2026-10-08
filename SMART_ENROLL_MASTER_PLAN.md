@@ -1504,18 +1504,16 @@ Application/document relationship
 
 The document-management state model should support the planned states:
 
-DRAFT
-SUBMITTED
+NOT_UPLOADED
+UPLOADED
 PROCESSING
-WAITING_FOR_DOCUMENTS
-VERIFICATION_IN_PROGRESS
-EXCEPTION
-ELIGIBILITY_CHECK
-ELIGIBLE
-INELIGIBLE
-PROCESSING_COMPLETE
+VALIDATED
+VERIFIED
+MISMATCH
+REJECTED
+UNVERIFIED
 
-Do not silently redefine Increment 11. Any proposed scope change must be explicitly presented as a change to the roadmap.
+Do not silently redefine Increment 12. Any proposed scope change must be explicitly presented as a change to the roadmap.
 
 Project Memory Instruction
 
