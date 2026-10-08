@@ -632,18 +632,18 @@ clean
 
 9. CURRENT STATE
 
-The previous Increment 9 status snapshot is now superseded.
+The previous Increment 10 status snapshot is now superseded.
 
 The actual current project state is:
 
 Current branch:
-increment-10-authentication
+increment-11-application-management
 
 Current completed increment:
-Increment 10 — Authentication & Authorization
+Increment 11 — Application Management
 
 Next increment:
-Increment 11 — Application Management
+Increment 12 — Document Management
 
 Current project progression:
 
@@ -665,6 +665,10 @@ Increment 10 — Authentication & Authorization
         ↓
 Increment 11 — Application Management
         ↓
+     COMPLETE
+        ↓
+Increment 12 — Document Management
+        ↓
      CURRENT / NEXT
 
 The next target architecture is:
@@ -673,9 +677,11 @@ Authenticated API Router
         ↓
 Application Service
         ↓
-MongoDB
+Document Service
+        ↓
+MongoDB + File Storage
 
-Increment 11 will build the real application domain on top of the persistence and authentication foundations already implemented.
+Increment 12 will build the backend document-management foundation on top of the completed application, persistence, and authentication layers.
 
 10. COMPLETE DEVELOPMENT ROADMAP
 
@@ -767,7 +773,7 @@ Role authorization
 
 Increment 11 — Application Management
 
-STATUS: CURRENT / NEXT
+STATUS: COMPLETE
 
 Implement the real application domain.
 
@@ -812,7 +818,7 @@ Increment 11 should build on Increment 9 persistence and Increment 10 authentica
 
 Increment 12 — Document Management
 
-STATUS: UPCOMING
+STATUS: CURRENT / NEXT
 
 Implement backend document management.
 
@@ -1419,10 +1425,12 @@ Authentication & Authorization
 COMPLETE
    ↓
 Increment 11
-Application Management ← CURRENT / NEXT
+Application Management
+   ↓
+COMPLETE
    ↓
 Increment 12
-Document Management
+Document Management ← CURRENT / NEXT
    ↓
 Increment 13
 OCR / Document Processing
@@ -1456,47 +1464,45 @@ Testing / Demo / Documentation
 Right now:
 
 Branch:
-increment-10-authentication
+increment-11-application-management
 
 Current completed increment:
-Increment 10 — Authentication & Authorization
+Increment 11 — Application Management
 
 Current target:
-Increment 11 — Application Management
+Increment 12 — Document Management
 
 The immediate work for the next increment is:
 
 Authenticated applicant/admin
         ↓
-Application API
+Document API
         ↓
-Application Service
+Document Service
         ↓
-MongoDB
+MongoDB + File Storage
 
-Increment 11 should implement the real application domain, including:
+Increment 12 will implement the backend document-management foundation, including:
 
-Application model
+Document metadata
 
-Application schemas
+Upload handling
 
-Create application
+File validation
 
-Update application
+Allowed file types
 
-Get application
+File size validation
 
-Submit application
+Document ownership
 
-Application status
+Document status
 
-Applicant/application relationship
+Storage strategy
 
-Programme selection
+Application/document relationship
 
-Basic application validation
-
-The application state machine should support:
+The document-management state model should support the planned states:
 
 DRAFT
 SUBMITTED
@@ -1549,9 +1555,11 @@ Increment 9 — Database Persistence & Service Layer: Complete
 
 Increment 10 — Authentication & Authorization: Complete
 
-Increment 11 — Application Management: Current / Next
+Increment 11 — Application Management: Complete
 
-Increment 12 onward: Follow the roadmap defined above.
+Increment 12 — Document Management: Current / Next
+
+Increment 13 onward: Follow the roadmap defined above.
 
 Please use this document as the Smart Enroll Master Project Plan and baseline for future project discussions.
 
