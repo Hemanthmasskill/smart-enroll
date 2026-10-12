@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 import pytest
 from fastapi.testclient import TestClient
 
+from app.core.config import settings
 from app.core.database import get_db
 from app.core.security import create_access_token, get_password_hash
 from app.main import app
@@ -24,15 +25,20 @@ from app.main import app
 
 @pytest.fixture(autouse=True)
 def clean_db():
-    """Ensure clean collections and correct indexes for each test."""
+    """Ensure clean collections and correct indexes for each test in test database."""
+    assert settings.DATABASE_NAME == "smartenroll_test", (
+        f"Safety assertion failed: Expected 'smartenroll_test', got '{settings.DATABASE_NAME}'"
+    )
     with TestClient(app):
         db = get_db()
+        assert db.name == "smartenroll_test"
         db["users"].delete_many({})
         db["applications"].delete_many({})
         db["users"].create_index("email", unique=True)
         db["applications"].create_index("userId", unique=True, sparse=True)
         db["applications"].create_index("applicationId", unique=True, sparse=True)
         yield
+        assert db.name == "smartenroll_test"
         db["users"].delete_many({})
         db["applications"].delete_many({})
 

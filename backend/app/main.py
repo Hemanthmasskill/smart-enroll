@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import applications, auth
+from app.api import applications, auth, documents
 from app.core.config import settings
 from app.core.database import close_mongo_connection, connect_to_mongo, get_db
 
@@ -39,6 +39,12 @@ app.include_router(
     applications.router,
     prefix=f"{settings.API_V1_STR}/applications",
     tags=["Applications"],
+)
+
+app.include_router(
+    documents.router,
+    prefix=f"{settings.API_V1_STR}/documents",
+    tags=["Documents"],
 )
 
 

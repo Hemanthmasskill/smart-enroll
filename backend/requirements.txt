@@ -25,3 +25,4 @@ httpx
 argon2-cffi
 PyJWT
 pydantic[email]
+python-multipart

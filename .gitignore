@@ -13,3 +13,5 @@ repomix-output*
 __pycache__/
 *.py[cod]
 .venv/
+backend/storage/
+storage/

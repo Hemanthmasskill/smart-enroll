@@ -45,12 +45,17 @@ if not any(getattr(route, "path", None) == "/applicant-test" for route in app.ro
 
 @pytest.fixture(autouse=True)
 def clean_users_collection():
-    """Ensure clean users collection before each test."""
+    """Ensure clean users collection before each test in test database."""
+    assert settings.DATABASE_NAME == "smartenroll_test", (
+        f"Safety assertion failed: Expected 'smartenroll_test', got '{settings.DATABASE_NAME}'"
+    )
     with TestClient(app):
         db = get_db()
+        assert db.name == "smartenroll_test"
         db["users"].delete_many({})
         db["users"].create_index("email", unique=True)
         yield
+        assert db.name == "smartenroll_test"
         db["users"].delete_many({})
 
 

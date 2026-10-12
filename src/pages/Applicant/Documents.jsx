@@ -22,7 +22,7 @@ export default function Documents() {
   useEffect(() => {
     let mounted = true;
     setError("");
-    getDocuments(session?.applicantId)
+    getDocuments(session?.applicantId, session?.token)
       .then((docs) => {
         if (mounted) setDocuments(docs);
       })
@@ -41,10 +41,10 @@ export default function Documents() {
     setDocuments((prev) => prev.map((d) => (d.id === updatedDoc.id ? updatedDoc : d)));
   };
 
-  const handleUpload = async (documentId, file) => {
+  const handleUpload = async (documentId, file, variant) => {
     setFeedback("");
     try {
-      const updated = await uploadDocument(session?.applicantId, documentId, file);
+      const updated = await uploadDocument(session?.applicantId, documentId, file, variant, session?.token);
       refreshDoc(updated);
       setFeedback(`${updated.name} uploaded. Application state has been recalculated.`);
     } catch (uploadError) {
@@ -56,9 +56,15 @@ export default function Documents() {
     if (!removingDoc) return;
     setFeedback("");
     try {
-      const updated = await removeDocument(session?.applicantId, removingDoc.id);
+      const updated = await removeDocument(
+        session?.applicantId,
+        removingDoc.id,
+        session?.token,
+        removingDoc.documentId,
+        removingDoc
+      );
       refreshDoc(updated);
-      setFeedback(`${updated.name} removed. Application state has been recalculated.`);
+      setFeedback(`${updated.name || removingDoc.name} removed. Application state has been recalculated.`);
     } catch (removeError) {
       setFeedback(`Remove failed: ${removeError.message}`);
     } finally {
@@ -94,7 +100,7 @@ export default function Documents() {
           <DocumentCard
             key={doc.id}
             doc={doc}
-            onUpload={(file) => handleUpload(doc.id, file)}
+            onUpload={(file, variant) => handleUpload(doc.id, file, variant)}
             onView={() => setViewingDoc(doc)}
             onRemove={() => setRemovingDoc(doc)}
           />

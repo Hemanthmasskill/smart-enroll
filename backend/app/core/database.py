@@ -40,6 +40,23 @@ def connect_to_mongo():
                     seen.add(uid)
         db["applications"].create_index("userId", unique=True, sparse=True)
 
+    # Ensure unique compound index on (applicationId, documentType) for documents
+    try:
+        db["documents"].create_index([("applicationId", 1), ("documentType", 1)], unique=True)
+    except DuplicateKeyError:
+        pass
+
+    try:
+        db["documents"].create_index("documentId", unique=True, sparse=True)
+    except DuplicateKeyError:
+        pass
+
+    # Ensure storage directory exists
+    try:
+        settings.storage_path.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+
 
 def close_mongo_connection():
     global client
@@ -49,4 +66,7 @@ def close_mongo_connection():
 
 
 def get_db():
+    global client
+    if client is None:
+        connect_to_mongo()
     return client[settings.DATABASE_NAME]

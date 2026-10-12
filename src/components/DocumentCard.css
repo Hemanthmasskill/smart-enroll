@@ -99,3 +99,44 @@
   font-size: 12px;
   color: var(--color-neutral);
 }
+
+.document-variant-container {
+  margin-bottom: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.document-variant-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+}
+
+.document-variant-select {
+  padding: 6px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-size: 13px;
+  cursor: pointer;
+  outline: none;
+  transition: border-color 0.15s ease;
+}
+
+.document-variant-select:focus {
+  border-color: var(--color-primary-dark);
+}
+
+.document-card-variant-badge {
+  display: inline-block;
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--color-primary-dark);
+  background: var(--color-primary-tint);
+  padding: 2px 8px;
+  border-radius: var(--radius-full, 9999px);
+  width: fit-content;
+  margin-top: 4px;
+}

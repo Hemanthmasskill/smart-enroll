@@ -210,17 +210,108 @@ export async function updateApplicantProfile(applicantId, updates) {
 }
 
 /* ---------------------------- Documents ------------------------------ */
-// Future: GET `${BASE_URL}/documents?applicationId={id}`
-export async function getDocuments(applicantId) {
+const FRONTEND_ID_TO_DOC_TYPE = {
+  "doc-10th": "10TH_MARKSHEET",
+  "doc-12th": "12TH_MARKSHEET",
+  "doc-ug-marksheet": "UG_MARKSHEET",
+  "doc-degree": "DEGREE_CERTIFICATE",
+  "doc-transfer": "TRANSFER_CERTIFICATE",
+  "doc-govt-id": "GOVERNMENT_ID",
+};
+
+const DOC_TYPE_TO_FRONTEND_ID = {
+  "10TH_MARKSHEET": "doc-10th",
+  "12TH_MARKSHEET": "doc-12th",
+  "UG_MARKSHEET": "doc-ug-marksheet",
+  "DEGREE_CERTIFICATE": "doc-degree",
+  "TRANSFER_CERTIFICATE": "doc-transfer",
+  "GOVERNMENT_ID": "doc-govt-id",
+};
+
+// GET `${BASE_URL}/documents` (uses backend when token is present, mock fallback)
+export async function getDocuments(applicantId, token) {
+  if (token && token !== "mock-jwt-token") {
+    try {
+      const response = await fetch(`${BASE_URL}/documents`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+      if (response.ok) {
+        const slots = await response.json();
+        return slots.map((s) => ({
+          id: s.id || DOC_TYPE_TO_FRONTEND_ID[s.documentType] || s.documentType.toLowerCase(),
+          documentId: s.documentId,
+          documentType: s.documentType,
+          documentVariant: s.documentVariant,
+          variant: s.documentVariant,
+          name: s.name,
+          required: s.required ?? true,
+          status: s.status,
+          fileName: s.originalFileName || s.fileName,
+          uploadedAt: s.uploadedAt
+            ? new Date(s.uploadedAt).toLocaleDateString("en-IN", {
+                day: "2-digit",
+                month: "short",
+                year: "numeric",
+              })
+            : null,
+          details: null,
+        }));
+      }
+    } catch {
+      // Fallback to mock data if backend request fails
+    }
+  }
+
   await delay(400);
   return mockDocuments[applicantId] ?? [];
 }
 
-// Future: POST `${BASE_URL}/documents/upload`
-// Accepts the applicantId, the document id being filled, and the browser
-// File object. Returns the updated document record. The file itself is
-// never sent anywhere in this mock — only its name is read.
-export async function uploadDocument(applicantId, documentId, file) {
+// POST `${BASE_URL}/documents/upload`
+export async function uploadDocument(applicantId, documentId, file, variant, token) {
+  if (token && token !== "mock-jwt-token") {
+    const formData = new FormData();
+    formData.append("file", file);
+    const docType = FRONTEND_ID_TO_DOC_TYPE[documentId] || documentId;
+    formData.append("documentType", docType);
+    if (variant) {
+      formData.append("documentVariant", variant);
+    }
+
+    const response = await fetch(`${BASE_URL}/documents/upload`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+      body: formData,
+    });
+
+    if (!response.ok) {
+      const errJson = await response.json().catch(() => ({}));
+      throw new Error(errJson.detail || "Document upload failed.");
+    }
+
+    const saved = await response.json();
+    return {
+      id: documentId,
+      documentId: saved.documentId,
+      documentType: saved.documentType,
+      documentVariant: saved.documentVariant,
+      variant: saved.documentVariant,
+      name: saved.name || documentId,
+      required: saved.required ?? true,
+      status: saved.status,
+      fileName: saved.originalFileName || saved.fileName,
+      uploadedAt: new Date(saved.uploadedAt).toLocaleDateString("en-IN", {
+        day: "2-digit",
+        month: "short",
+        year: "numeric",
+      }),
+      details: null,
+    };
+  }
+
   await delay(900);
   const documents = mockDocuments[applicantId] ?? [];
   const doc = documents.find((d) => d.id === documentId);
@@ -228,6 +319,10 @@ export async function uploadDocument(applicantId, documentId, file) {
 
   doc.status = "UPLOADED";
   doc.fileName = file?.name ?? "uploaded_file.pdf";
+  if (variant) {
+    doc.documentVariant = variant;
+    doc.variant = variant;
+  }
   doc.uploadedAt = new Date().toLocaleDateString("en-IN", {
     day: "2-digit",
     month: "short",
@@ -239,20 +334,59 @@ export async function uploadDocument(applicantId, documentId, file) {
   return { ...doc };
 }
 
-// Future: DELETE `${BASE_URL}/documents/{id}`
-export async function removeDocument(applicantId, documentId) {
+// DELETE `${BASE_URL}/documents/{id}`
+export async function removeDocument(applicantId, documentSlotId, token, backendDocumentId, docContext) {
+  if (token && token !== "mock-jwt-token") {
+    const targetDocId = backendDocumentId || docContext?.documentId;
+
+    if (!targetDocId) {
+      throw new Error("Cannot delete document: missing backend document identifier.");
+    }
+
+    const response = await fetch(`${BASE_URL}/documents/${targetDocId}`, {
+      method: "DELETE",
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    });
+
+    if (!response.ok) {
+      const errJson = await response.json().catch(() => null);
+      throw new Error(errJson?.detail || `Document removal failed (${response.status}).`);
+    }
+
+    // Successfully deleted on real backend: return slot in NOT_UPLOADED state
+    return {
+      id: docContext?.id || documentSlotId,
+      documentId: null,
+      documentType: docContext?.documentType || FRONTEND_ID_TO_DOC_TYPE[documentSlotId] || documentSlotId,
+      documentVariant: null,
+      variant: null,
+      name: docContext?.name || documentSlotId,
+      required: docContext?.required ?? true,
+      status: "NOT_UPLOADED",
+      fileName: null,
+      uploadedAt: null,
+      details: null,
+    };
+  }
+
   await delay(400);
   const documents = mockDocuments[applicantId] ?? [];
-  const doc = documents.find((d) => d.id === documentId);
+  const doc = documents.find((d) => d.id === documentSlotId);
   if (doc) {
     doc.status = "NOT_UPLOADED";
     doc.fileName = null;
+    doc.documentVariant = null;
+    doc.variant = null;
     doc.uploadedAt = null;
     doc.details = null;
   }
   syncApplicationState(applicantId);
   return { ...doc };
 }
+
+
 
 // Future: GET `${BASE_URL}/documents/{id}/verification`
 export async function getVerificationStatus(applicantId, documentId) {
