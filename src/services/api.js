@@ -248,6 +248,8 @@ export async function getDocuments(applicantId, token) {
           name: s.name,
           required: s.required ?? true,
           status: s.status,
+          processingStatus: s.processingStatus || null,
+          processingConfidence: s.processingConfidence || null,
           fileName: s.originalFileName || s.fileName,
           uploadedAt: s.uploadedAt
             ? new Date(s.uploadedAt).toLocaleDateString("en-IN", {
@@ -302,6 +304,8 @@ export async function uploadDocument(applicantId, documentId, file, variant, tok
       name: saved.name || documentId,
       required: saved.required ?? true,
       status: saved.status,
+      processingStatus: saved.processingStatus || null,
+      processingConfidence: saved.processingConfidence || null,
       fileName: saved.originalFileName || saved.fileName,
       uploadedAt: new Date(saved.uploadedAt).toLocaleDateString("en-IN", {
         day: "2-digit",
@@ -365,6 +369,8 @@ export async function removeDocument(applicantId, documentSlotId, token, backend
       name: docContext?.name || documentSlotId,
       required: docContext?.required ?? true,
       status: "NOT_UPLOADED",
+      processingStatus: null,
+      processingConfidence: null,
       fileName: null,
       uploadedAt: null,
       details: null,
@@ -380,10 +386,113 @@ export async function removeDocument(applicantId, documentSlotId, token, backend
     doc.documentVariant = null;
     doc.variant = null;
     doc.uploadedAt = null;
+    doc.processingStatus = null;
+    doc.processingConfidence = null;
     doc.details = null;
   }
   syncApplicationState(applicantId);
   return { ...doc };
+}
+
+// POST `${BASE_URL}/documents/{document_id}/process`
+export async function processDocument(applicantId, documentSlotId, token, backendDocumentId) {
+  if (token && token !== "mock-jwt-token") {
+    if (!backendDocumentId) {
+      throw new Error("Cannot process document: missing backend document identifier.");
+    }
+
+    const response = await fetch(`${BASE_URL}/documents/${backendDocumentId}/process`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    });
+
+    if (!response.ok) {
+      const errJson = await response.json().catch(() => ({}));
+      throw new Error(errJson.detail || `Document processing failed (${response.status}).`);
+    }
+
+    return await response.json();
+  }
+
+  await delay(700);
+  const documents = mockDocuments[applicantId] ?? [];
+  const doc = documents.find((d) => d.id === documentSlotId);
+  if (!doc) throw new Error("Document not found for processing.");
+
+  doc.processingStatus = "COMPLETED";
+  doc.processingConfidence = 0.90;
+  doc.details = doc.details ?? {
+    extraction: {
+      "Candidate Name": "Hemanth M.P.",
+      "Roll Number": "2022MCA041",
+      "Marks/Percentage": "86.5%",
+      "Institution": "B.S. Abdur Rahman Crescent Institute",
+      "Overall Confidence": "90%",
+    },
+    validation: {
+      "Name Match": "Matches application record",
+      "DOB Match": "Matches application record",
+      "Academic Qualification": "Meets criteria",
+    },
+    authoritative: {
+      status: "PENDING",
+    },
+  };
+  syncApplicationState(applicantId);
+
+  return {
+    documentId: backendDocumentId || documentSlotId,
+    processingState: "COMPLETED",
+    overallConfidence: 0.90,
+    textExtracted: true,
+    classification: {
+      predictedType: FRONTEND_ID_TO_DOC_TYPE[documentSlotId] || "10TH_MARKSHEET",
+      confidence: 0.92,
+      typeMismatch: false,
+    },
+    fields: {
+      candidateName: { rawValue: "Hemanth M.P.", normalizedValue: "Hemanth M.P.", confidence: 0.92 },
+      registrationNumber: { rawValue: "2022MCA041", normalizedValue: "2022MCA041", confidence: 0.88 },
+      percentage: { rawValue: "86.5%", normalizedValue: 86.5, confidence: 0.90 },
+    },
+  };
+}
+
+// GET `${BASE_URL}/documents/{document_id}/processing-result`
+export async function getDocumentProcessingResult(applicantId, documentSlotId, token, backendDocumentId) {
+  if (token && token !== "mock-jwt-token") {
+    if (!backendDocumentId) {
+      throw new Error("Cannot retrieve processing result: missing backend document identifier.");
+    }
+
+    const response = await fetch(`${BASE_URL}/documents/${backendDocumentId}/processing-result`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    });
+
+    if (!response.ok) {
+      const errJson = await response.json().catch(() => ({}));
+      throw new Error(errJson.detail || `Failed to retrieve processing result (${response.status}).`);
+    }
+
+    return await response.json();
+  }
+
+  await delay(300);
+  return {
+    documentId: backendDocumentId || documentSlotId,
+    processingState: "COMPLETED",
+    overallConfidence: 0.90,
+    textExtracted: true,
+    classification: {
+      predictedType: FRONTEND_ID_TO_DOC_TYPE[documentSlotId] || "10TH_MARKSHEET",
+      confidence: 0.92,
+      typeMismatch: false,
+    },
+  };
 }
 
 

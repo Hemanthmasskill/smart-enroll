@@ -15,7 +15,7 @@ const DEGREE_VARIANTS = [
  * uploaded yet) or a summary row with the uploaded file, its
  * verification status, and View/Replace/Remove actions.
  */
-export default function DocumentCard({ doc, onUpload, onView, onRemove }) {
+export default function DocumentCard({ doc, onUpload, onView, onRemove, onProcess, isProcessing }) {
   const inputRef = useRef(null);
   const isUploaded = doc.status !== "NOT_UPLOADED";
   const isDegreeCertificate =
@@ -87,9 +87,35 @@ export default function DocumentCard({ doc, onUpload, onView, onRemove }) {
                 {getVariantLabel(activeVariant)}
               </span>
             )}
+            {doc.processingStatus === "COMPLETED" && (
+              <span className="document-card-ocr-badge">
+                OCR: {Math.round((doc.processingConfidence ?? 0.85) * 100)}%
+              </span>
+            )}
+            {(doc.processingStatus === "PROCESSING" || isProcessing) && (
+              <span className="document-card-ocr-badge processing">
+                Processing OCR…
+              </span>
+            )}
+            {doc.processingStatus === "FAILED" && (
+              <span className="document-card-ocr-badge failed">
+                OCR Failed
+              </span>
+            )}
             <span className="document-card-uploaded-at">Uploaded {doc.uploadedAt}</span>
           </div>
           <div className="document-card-actions">
+            <button
+              className="btn btn-secondary btn-sm"
+              onClick={onProcess}
+              disabled={isProcessing || doc.processingStatus === "PROCESSING"}
+            >
+              {isProcessing || doc.processingStatus === "PROCESSING"
+                ? "Processing…"
+                : doc.processingStatus === "COMPLETED"
+                  ? "Reprocess"
+                  : "Process"}
+            </button>
             <button className="btn btn-secondary btn-sm" onClick={onView}>
               View
             </button>

@@ -11,6 +11,8 @@ class Settings(BaseSettings):
     SECRET_KEY: str
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 1440
     STORAGE_DIR: str = "storage/documents"
+    TESSERACT_CMD: str | None = None
+    OCR_LANGUAGES: str = "eng+tam+hin"
 
     @property
     def storage_path(self) -> Path:

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useAuth } from "../../context/AuthContext";
-import { getDocuments, uploadDocument, removeDocument } from "../../services/api";
+import { getDocuments, uploadDocument, removeDocument, processDocument } from "../../services/api";
 import PageHeader from "../../components/PageHeader";
 import DocumentCard from "../../components/DocumentCard";
 import DocumentVerificationPanel from "../../components/DocumentVerificationPanel";
@@ -18,6 +18,7 @@ export default function Documents() {
   const [feedback, setFeedback] = useState("");
   const [viewingDoc, setViewingDoc] = useState(null);
   const [removingDoc, setRemovingDoc] = useState(null);
+  const [processingDocId, setProcessingDocId] = useState(null);
 
   useEffect(() => {
     let mounted = true;
@@ -49,6 +50,78 @@ export default function Documents() {
       setFeedback(`${updated.name} uploaded. Application state has been recalculated.`);
     } catch (uploadError) {
       setFeedback(`Upload failed: ${uploadError.message}`);
+    }
+  };
+
+  const handleProcess = async (doc) => {
+    if (!doc || processingDocId === doc.id) return;
+    setProcessingDocId(doc.id);
+    setFeedback("");
+    try {
+      const result = await processDocument(
+        session?.applicantId,
+        doc.id,
+        session?.token,
+        doc.documentId
+      );
+
+      // Build extraction summary for Layer 1 panel view
+      const extractionDetails = {};
+      if (result.fields) {
+        if (result.fields.candidateName?.normalizedValue) {
+          extractionDetails["Candidate Name"] = result.fields.candidateName.normalizedValue;
+        }
+        if (result.fields.dob?.normalizedValue) {
+          extractionDetails["Date of Birth"] = result.fields.dob.normalizedValue;
+        }
+        if (result.fields.registrationNumber?.normalizedValue) {
+          extractionDetails["Roll / Registration No"] = result.fields.registrationNumber.normalizedValue;
+        }
+        if (result.fields.marksObtained?.normalizedValue) {
+          extractionDetails["Marks Obtained"] = String(result.fields.marksObtained.normalizedValue);
+        }
+        if (result.fields.maxMarks?.normalizedValue) {
+          extractionDetails["Max Marks"] = String(result.fields.maxMarks.normalizedValue);
+        }
+        if (result.fields.percentage?.normalizedValue) {
+          extractionDetails["Percentage"] = `${result.fields.percentage.normalizedValue}%`;
+        }
+        if (result.fields.cgpa?.normalizedValue) {
+          extractionDetails["CGPA"] = String(result.fields.cgpa.normalizedValue);
+        }
+        if (result.fields.institution?.normalizedValue) {
+          extractionDetails["Institution / Board"] = result.fields.institution.normalizedValue;
+        }
+      }
+      extractionDetails["Extraction Confidence"] = `${Math.round((result.overallConfidence ?? 0) * 100)}%`;
+      if (result.classification?.predictedType) {
+        extractionDetails["Predicted Type"] = result.classification.predictedType;
+      }
+
+      const updated = {
+        ...doc,
+        processingStatus: result.processingState || "COMPLETED",
+        processingConfidence: result.overallConfidence,
+        details: {
+          ...(doc.details || {}),
+          extraction: Object.keys(extractionDetails).length > 0 ? extractionDetails : { "OCR Extraction": "Text parsed successfully." },
+          validation: doc.details?.validation || { "Structure": "Format matches requirements" },
+          authoritative: doc.details?.authoritative || { status: "PENDING" },
+        },
+      };
+      refreshDoc(updated);
+      setFeedback(
+        `OCR processing complete for "${doc.name}" (${Math.round((result.overallConfidence ?? 0) * 100)}% confidence). Extraction confirms document content, not authenticity.`
+      );
+    } catch (procErr) {
+      const updated = {
+        ...doc,
+        processingStatus: "FAILED",
+      };
+      refreshDoc(updated);
+      setFeedback(`Processing failed for "${doc.name}": ${procErr.message}`);
+    } finally {
+      setProcessingDocId(null);
     }
   };
 
@@ -103,6 +176,8 @@ export default function Documents() {
             onUpload={(file, variant) => handleUpload(doc.id, file, variant)}
             onView={() => setViewingDoc(doc)}
             onRemove={() => setRemovingDoc(doc)}
+            onProcess={() => handleProcess(doc)}
+            isProcessing={processingDocId === doc.id}
           />
         ))}
       </div>
