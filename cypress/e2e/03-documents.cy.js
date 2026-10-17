@@ -1,3 +1,5 @@
+import { getVerificationStatus } from "../../src/services/api";
+
 describe("Smart Enroll - Documents and Verification", () => {
   it("shows the expected document state", () => {
     cy.visitAsApplicant("/documents");
@@ -487,5 +489,281 @@ describe("Smart Enroll - Documents and Verification", () => {
     });
 
     cy.contains("Processing failed for \"10th Marksheet\": Cannot process document: missing backend document identifier.").should("be.visible");
+  });
+
+  it("verifies getVerificationStatus rejects on non-success HTTP response and network failure without returning mock data", () => {
+    const realToken = "real-authenticated-jwt-token";
+
+    // 1. Missing backend document identifier is rejected safely
+    cy.wrap(null).then(async () => {
+      let threw = false;
+      try {
+        await getVerificationStatus("APL-1001", "doc-10th", realToken, null);
+      } catch (err) {
+        threw = true;
+        expect(err.message).to.include("missing backend document identifier");
+      }
+      expect(threw).to.be.true;
+    });
+
+    // 2. Non-success HTTP response (500) does NOT return mock data; throws instead
+    cy.intercept("GET", "**/api/v1/documents/doc_backend_500/verification", {
+      statusCode: 500,
+      body: { detail: "Verification backend internal error" },
+    }).as("getVerif500");
+
+    cy.wrap(null).then(async () => {
+      let threw = false;
+      try {
+        await getVerificationStatus("APL-1001", "doc-10th", realToken, "doc_backend_500");
+      } catch (err) {
+        threw = true;
+        expect(err.message).to.include("Verification backend internal error");
+      }
+      expect(threw).to.be.true;
+    });
+
+    // 3. Network failure does NOT return mock data; throws instead
+    cy.intercept("GET", "**/api/v1/documents/doc_backend_net_err/verification", {
+      forceNetworkError: true,
+    }).as("getVerifNetErr");
+
+    cy.wrap(null).then(async () => {
+      let threw = false;
+      try {
+        await getVerificationStatus("APL-1001", "doc-10th", realToken, "doc_backend_net_err");
+      } catch (err) {
+        threw = true;
+        expect(err.message).to.exist;
+      }
+      expect(threw).to.be.true;
+    });
+  });
+
+  it("surfaces safe unavailable/error state in Documents UI when verification API fails and does not display mock results", () => {
+    const realSession = {
+      role: "user",
+      name: "Hemanth M.P.",
+      email: "hemanth@example.com",
+      applicantId: "APL-1001",
+      token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.real-applicant-token",
+    };
+
+    const mockBackendDocs = [
+      {
+        id: "doc-10th",
+        documentId: "doc_10th_verif_err",
+        documentType: "10TH_MARKSHEET",
+        name: "10th Marksheet",
+        required: true,
+        status: "UPLOADED",
+        originalFileName: "10th_marksheet.pdf",
+        fileName: "10th_marksheet.pdf",
+        uploadedAt: "2026-09-05T10:00:00Z",
+      },
+    ];
+
+    const mockProcessingResult = {
+      documentId: "doc_10th_verif_err",
+      applicationId: "SE20260001",
+      documentType: "10TH_MARKSHEET",
+      processingState: "COMPLETED",
+      engine: "pymupdf+tesseract-ocr",
+      pageCount: 1,
+      textExtracted: true,
+      overallConfidence: 0.91,
+      classification: {
+        predictedType: "10TH_MARKSHEET",
+        confidence: 0.95,
+        typeMismatch: false,
+      },
+      fields: {
+        candidateName: { rawValue: "Priya Sharma", normalizedValue: "Priya Sharma", confidence: 0.95 },
+        dob: { rawValue: "15/08/2004", normalizedValue: "2004-08-15", confidence: 0.92 },
+        percentage: { rawValue: "90.0%", normalizedValue: 90.0, confidence: 0.92 },
+      },
+    };
+
+    cy.intercept("GET", "**/api/v1/documents*", {
+      statusCode: 200,
+      body: mockBackendDocs,
+    }).as("getDocsForVerifFail");
+
+    cy.intercept("POST", "**/api/v1/documents/doc_10th_verif_err/process", {
+      statusCode: 200,
+      body: mockProcessingResult,
+    }).as("processDoc");
+
+    // Intercept verification status with 500 internal server error
+    cy.intercept("GET", "**/api/v1/documents/doc_10th_verif_err/verification", {
+      statusCode: 500,
+      body: { detail: "Verification engine temporarily unavailable." },
+    }).as("getVerifStatus500");
+
+    cy.visit("/documents", {
+      onBeforeLoad(win) {
+        win.localStorage.setItem("smartenroll_auth", JSON.stringify(realSession));
+      },
+    });
+
+    cy.wait("@getDocsForVerifFail");
+
+    cy.contains(".document-card", "10th Marksheet").within(() => {
+      cy.contains("button", "Process").click();
+    });
+
+    cy.wait("@processDoc");
+    cy.wait("@getVerifStatus500");
+
+    // Open verification details modal
+    cy.contains(".document-card", "10th Marksheet").within(() => {
+      cy.contains("button", "View").click();
+    });
+
+    cy.get('[role="dialog"][aria-label="Document Verification"]').within(() => {
+      // 1. Content Validation section shows safe unavailable/error state
+      cy.contains("Content Validation").should("be.visible");
+      cy.contains("Verification details unavailable (network or service error)").should("be.visible");
+
+      // 2. Authoritative Verification section shows safe unavailable state
+      cy.contains("Authoritative Verification").should("be.visible");
+      cy.contains("Authoritative verification unavailable").should("be.visible");
+
+      // 3. Stale mock validation results ("Format matches requirements") MUST NOT be displayed
+      cy.contains("Format matches requirements").should("not.exist");
+      // 4. Stale mock authoritative verification ("Verified via DigiLocker/NAD") MUST NOT be displayed
+      cy.contains("Verified via Live DigiLocker/NAD").should("not.exist");
+
+      cy.get('button[aria-label="Close dialog"]').click();
+    });
+  });
+
+  it("displays simulated match label, disclaimer, and 3 distinct sections without displaying verified state", () => {
+    const realSession = {
+      role: "user",
+      name: "Hemanth M.P.",
+      email: "hemanth@example.com",
+      applicantId: "APL-1001",
+      token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.real-applicant-token",
+    };
+
+    const mockBackendDocs = [
+      {
+        id: "doc-10th",
+        documentId: "doc_10th_sim_match",
+        documentType: "10TH_MARKSHEET",
+        name: "10th Marksheet",
+        required: true,
+        status: "UPLOADED",
+        originalFileName: "10th_marksheet.pdf",
+        fileName: "10th_marksheet.pdf",
+        uploadedAt: "2026-09-05T10:00:00Z",
+      },
+    ];
+
+    const mockProcessingResult = {
+      documentId: "doc_10th_sim_match",
+      applicationId: "SE20260001",
+      documentType: "10TH_MARKSHEET",
+      processingState: "COMPLETED",
+      engine: "pymupdf+tesseract-ocr",
+      pageCount: 1,
+      textExtracted: true,
+      overallConfidence: 0.94,
+      classification: {
+        predictedType: "10TH_MARKSHEET",
+        confidence: 0.95,
+        typeMismatch: false,
+      },
+      fields: {
+        candidateName: { rawValue: "Hemanth M.P.", normalizedValue: "Hemanth M.P.", confidence: 0.95 },
+        registrationNumber: { rawValue: "SYNTH-10TH-12345", normalizedValue: "SYNTH-10TH-12345", confidence: 0.92 },
+        dob: { rawValue: "15/05/2000", normalizedValue: "2000-05-15", confidence: 0.92 },
+        percentage: { rawValue: "86.5%", normalizedValue: 86.5, confidence: 0.92 },
+      },
+    };
+
+    const mockVerificationResult = {
+      documentId: "doc_10th_sim_match",
+      documentType: "10TH_MARKSHEET",
+      lifecycleStatus: "VALIDATED",
+      processingStatus: "COMPLETED",
+      processingConfidence: 0.94,
+      validationStatus: "VALIDATED",
+      validationResult: {
+        documentId: "doc_10th_sim_match",
+        documentType: "10TH_MARKSHEET",
+        validationStatus: "VALIDATED",
+        fieldResults: {
+          candidateName: { fieldName: "candidateName", status: "MATCH", extractedValue: "Hemanth M.P.", authoritativeValue: "Hemanth M.P.", confidence: 0.95, message: "Exact name match." },
+          percentage: { fieldName: "percentage", status: "MATCH", extractedValue: "86.5", authoritativeValue: "86.5", confidence: 0.92, message: "Percentage matches." },
+        },
+        reasons: [],
+      },
+      authoritativeVerification: {
+        status: "SIMULATED_MATCH",
+        provider: "SyntheticDigiLockerProvider",
+        lookupIdentifier: "SYNTH-10TH-12345",
+        isSimulated: true,
+        disclaimer: "Simulated record for testing/evaluation. Not connected to live DigiLocker/government APIs.",
+        message: "Simulated authoritative credential verified via DigiLocker simulation.",
+      },
+    };
+
+    cy.intercept("GET", "**/api/v1/documents*", {
+      statusCode: 200,
+      body: mockBackendDocs,
+    }).as("getDocsForSim");
+
+    cy.intercept("POST", "**/api/v1/documents/doc_10th_sim_match/process", {
+      statusCode: 200,
+      body: mockProcessingResult,
+    }).as("processDocSim");
+
+    cy.intercept("GET", "**/api/v1/documents/doc_10th_sim_match/verification", {
+      statusCode: 200,
+      body: mockVerificationResult,
+    }).as("getVerifSimMatch");
+
+    cy.visit("/documents", {
+      onBeforeLoad(win) {
+        win.localStorage.setItem("smartenroll_auth", JSON.stringify(realSession));
+      },
+    });
+
+    cy.wait("@getDocsForSim");
+
+    cy.contains(".document-card", "10th Marksheet").within(() => {
+      cy.contains("button", "Process").click();
+    });
+
+    cy.wait("@processDocSim");
+    cy.wait("@getVerifSimMatch");
+
+    cy.contains(".document-card", "10th Marksheet").within(() => {
+      cy.contains("button", "View").click();
+    });
+
+    cy.get('[role="dialog"][aria-label="Document Verification"]').within(() => {
+      // 1. Verify all three distinct sections are present
+      cy.contains("h4", "OCR Extraction").should("be.visible");
+      cy.contains("h4", "Content Validation").should("be.visible");
+      cy.contains("h4", "Authoritative Verification").should("be.visible");
+
+      // 2. SIMULATED_MATCH displays a clearly simulated label
+      cy.contains("Simulated Match (Synthetic Fixture Only)").should("be.visible");
+
+      // 3. It DOES NOT display as VERIFIED or as a real DigiLocker/NAD confirmation
+      cy.contains("Verified via Live DigiLocker/NAD").should("not.exist");
+      cy.contains("Verified via DigiLocker/NAD").should("not.exist");
+      cy.get(".status-badge.status-verified").should("not.exist");
+
+      // 4. The disclaimer makes clear that a synthetic fixture result does not establish document authenticity
+      cy.contains(
+        "Simulated fixture matches are synthetic evaluation aids only and do not establish document authenticity."
+      ).should("be.visible");
+
+      cy.get('button[aria-label="Close dialog"]').click();
+    });
   });
 });

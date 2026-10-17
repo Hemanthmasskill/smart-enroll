@@ -2,9 +2,13 @@ import StatusBadge from "./StatusBadge";
 import "./DocumentVerificationPanel.css";
 
 const AUTHORITATIVE_LABELS = {
-  VERIFIED: { code: "VERIFIED", text: "Verified via DigiLocker/NAD" },
+  VERIFIED: { code: "VERIFIED", text: "Verified via Live DigiLocker/NAD" },
+  SIMULATED_MATCH: { code: "SIMULATED_MATCH", text: "Simulated Match (Synthetic Fixture Only)" },
+  SIMULATED_MISMATCH: { code: "SIMULATED_MISMATCH", text: "Simulated Mismatch (Conflict in fixture)" },
+  SIMULATED_NOT_FOUND: { code: "SIMULATED_NOT_FOUND", text: "Simulated Record Not Found" },
+  SIMULATION_UNAVAILABLE: { code: "SIMULATION_UNAVAILABLE", text: "Authoritative simulation unavailable" },
   PENDING: { code: "PROCESSING", text: "Authoritative verification pending" },
-  UNAVAILABLE: { code: "UNVERIFIED", text: "Authoritative verification unavailable" },
+  UNAVAILABLE: { code: "UNAVAILABLE", text: "Authoritative verification unavailable" },
 };
 
 /**
@@ -59,11 +63,10 @@ export default function DocumentVerificationPanel({ documentName, details }) {
       <section className="verification-section">
         <h4>Authoritative Verification</h4>
         <p className="verification-caption">
-          Whether the academic record is confirmed through DigiLocker/NAD or another authoritative
-          issuer source.
+          Whether the academic record is confirmed through DigiLocker/NAD or a synthetic fixture simulation.
         </p>
         <div className="verification-row">
-          <dt>DigiLocker/NAD</dt>
+          <dt>DigiLocker / NAD Status</dt>
           <dd>
             <StatusBadge code={authoritative.code} label={authoritative.text} />
           </dd>
@@ -72,7 +75,8 @@ export default function DocumentVerificationPanel({ documentName, details }) {
 
       <p className="verification-disclaimer">
         OCR extraction confirms only what the document states, not that it is genuine.
-        Authenticity is established solely through authoritative verification where available.
+        Authenticity is established solely through live authoritative verification where available.
+        Simulated fixture matches are synthetic evaluation aids only and do not establish document authenticity.
       </p>
     </div>
   );

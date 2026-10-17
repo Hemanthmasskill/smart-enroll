@@ -503,10 +503,10 @@ def test_process_and_retrieve_processing_result():
     assert data["fields"]["dob"]["normalizedValue"] == "2004-08-15"
     assert data["overallConfidence"] >= 0.70
 
-    # CRITICAL VERIFICATION: Document status must remain UPLOADED, NEVER VERIFIED!
+    # CRITICAL VERIFICATION: Document status must reflect validated lifecycle status, NEVER VERIFIED!
     db = get_db()
     stored_doc = db["documents"].find_one({"documentId": doc_id})
-    assert stored_doc["status"] == "UPLOADED"
+    assert stored_doc["status"] in ("UPLOADED", "MANUAL_REVIEW", "MISMATCH", "VALIDATED")
     assert stored_doc["status"] != "VERIFIED"
     assert stored_doc["processingStatus"] == "COMPLETED"
     assert stored_doc["processingResult"] is not None

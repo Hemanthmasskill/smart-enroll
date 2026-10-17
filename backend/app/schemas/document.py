@@ -25,6 +25,7 @@ DOCUMENT_STATUSES = [
     "MISMATCH",
     "REJECTED",
     "UNVERIFIED",
+    "MANUAL_REVIEW",
 ]
 
 FRONTEND_ID_TO_TYPE: dict[str, str] = {
@@ -103,6 +104,7 @@ class DocumentResponse(BaseModel):
     status: str
     processingStatus: str | None = None
     processingConfidence: float | None = None
+    validationStatus: str | None = None
     required: bool = True
     uploadedAt: str | None = None
     updatedAt: str | None = None

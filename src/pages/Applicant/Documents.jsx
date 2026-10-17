@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useAuth } from "../../context/AuthContext";
-import { getDocuments, uploadDocument, removeDocument, processDocument } from "../../services/api";
+import { getDocuments, uploadDocument, removeDocument, processDocument, getVerificationStatus } from "../../services/api";
 import PageHeader from "../../components/PageHeader";
 import DocumentCard from "../../components/DocumentCard";
 import DocumentVerificationPanel from "../../components/DocumentVerificationPanel";
@@ -98,6 +98,63 @@ export default function Documents() {
         extractionDetails["Predicted Type"] = result.classification.predictedType;
       }
 
+      let validationDetails = {};
+      let authDetails = { status: "UNAVAILABLE" };
+
+      if (session?.token && session.token !== "mock-jwt-token") {
+        if (doc.documentId) {
+          try {
+            const verifRes = await getVerificationStatus(
+              session?.applicantId,
+              doc.id,
+              session?.token,
+              doc.documentId
+            );
+            if (verifRes?.validationResult) {
+              const vRes = verifRes.validationResult;
+              const fr = vRes.fieldResults || {};
+              for (const [k, v] of Object.entries(fr)) {
+                validationDetails[k] = `${v.status}: ${v.message || ""}`;
+              }
+              if (vRes.reasons && vRes.reasons.length > 0) {
+                validationDetails["Validation Notes"] = vRes.reasons.join("; ");
+              }
+              if (Object.keys(validationDetails).length === 0) {
+                validationDetails["Validation Outcome"] = vRes.validationStatus;
+              }
+            } else {
+              validationDetails["Validation Outcome"] = "Validation pending or record unavailable";
+            }
+            if (verifRes?.authoritativeVerification) {
+              authDetails = {
+                status: verifRes.authoritativeVerification.status,
+                source: verifRes.authoritativeVerification.provider,
+                recordId: verifRes.authoritativeVerification.lookupIdentifier,
+              };
+            }
+          } catch {
+            // Surface a safe error/unavailable state, never display mock data when real token is active
+            validationDetails = {
+              "Validation Status": "Verification details unavailable (network or service error)",
+            };
+            authDetails = {
+              status: "UNAVAILABLE",
+            };
+          }
+        } else {
+          validationDetails = {
+            "Validation Status": "Document identifier not yet assigned",
+          };
+          authDetails = {
+            status: "UNAVAILABLE",
+          };
+        }
+      } else {
+        // Intentional mock mode fallback
+        validationDetails = doc.details?.validation || { "Structure": "Format matches requirements" };
+        authDetails = doc.details?.authoritative || { status: "PENDING" };
+      }
+
       const updated = {
         ...doc,
         processingStatus: result.processingState || "COMPLETED",
@@ -105,8 +162,8 @@ export default function Documents() {
         details: {
           ...(doc.details || {}),
           extraction: Object.keys(extractionDetails).length > 0 ? extractionDetails : { "OCR Extraction": "Text parsed successfully." },
-          validation: doc.details?.validation || { "Structure": "Format matches requirements" },
-          authoritative: doc.details?.authoritative || { status: "PENDING" },
+          validation: validationDetails,
+          authoritative: authDetails,
         },
       };
       refreshDoc(updated);

@@ -497,11 +497,91 @@ export async function getDocumentProcessingResult(applicantId, documentSlotId, t
 
 
 
-// Future: GET `${BASE_URL}/documents/{id}/verification`
-export async function getVerificationStatus(applicantId, documentId) {
+// GET `${BASE_URL}/documents/{id}/verification`
+export async function getVerificationStatus(applicantId, documentSlotId, token, backendDocumentId) {
+  if (token && token !== "mock-jwt-token") {
+    if (!backendDocumentId) {
+      throw new Error("Cannot fetch verification status: missing backend document identifier.");
+    }
+    const response = await fetch(`${BASE_URL}/documents/${backendDocumentId}/verification`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    });
+    if (!response.ok) {
+      const errJson = await response.json().catch(() => ({}));
+      throw new Error(errJson.detail || `Failed to fetch verification status (${response.status}).`);
+    }
+    return await response.json();
+  }
+
   await delay(300);
   const documents = mockDocuments[applicantId] ?? [];
-  return documents.find((d) => d.id === documentId) ?? null;
+  return documents.find((d) => d.id === documentSlotId) ?? null;
+}
+
+// POST `${BASE_URL}/documents/{id}/verify`
+export async function verifyDocument(applicantId, documentSlotId, token, backendDocumentId) {
+  if (token && token !== "mock-jwt-token") {
+    if (!backendDocumentId) {
+      throw new Error("Cannot verify document: missing backend document identifier.");
+    }
+    const response = await fetch(`${BASE_URL}/documents/${backendDocumentId}/verify`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    });
+    if (!response.ok) {
+      const errJson = await response.json().catch(() => ({}));
+      throw new Error(errJson.detail || `Document verification failed (${response.status}).`);
+    }
+    return await response.json();
+  }
+
+  await delay(500);
+  const documents = mockDocuments[applicantId] ?? [];
+  const doc = documents.find((d) => d.id === documentSlotId);
+  if (!doc) throw new Error("Document not found for verification.");
+  doc.validationStatus = "VALIDATED";
+  syncApplicationState(applicantId);
+  return {
+    documentId: backendDocumentId || documentSlotId,
+    documentType: FRONTEND_ID_TO_DOC_TYPE[documentSlotId] || "10TH_MARKSHEET",
+    validationStatus: "VALIDATED",
+    fieldResults: {},
+    crossDocumentResults: [],
+    reasons: [],
+  };
+}
+
+// POST `${BASE_URL}/documents/{id}/authoritative-verify`
+export async function authoritativeVerifyDocument(applicantId, documentSlotId, token, backendDocumentId) {
+  if (token && token !== "mock-jwt-token") {
+    if (!backendDocumentId) {
+      throw new Error("Cannot run authoritative verification: missing backend document identifier.");
+    }
+    const response = await fetch(`${BASE_URL}/documents/${backendDocumentId}/authoritative-verify`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    });
+    if (!response.ok) {
+      const errJson = await response.json().catch(() => ({}));
+      throw new Error(errJson.detail || `Authoritative verification failed (${response.status}).`);
+    }
+    return await response.json();
+  }
+
+  await delay(600);
+  return {
+    provider: "SyntheticDigiLockerProvider",
+    status: "SIMULATED_MATCH",
+    isSimulated: true,
+    disclaimer: "Simulated record for testing/evaluation. Not connected to live DigiLocker/government APIs.",
+    message: "Simulated authoritative credential verified via DigiLocker simulation.",
+  };
 }
 
 /* --------------------------- DigiLocker ------------------------------- */
