@@ -27,6 +27,8 @@ export default function DocumentVerificationPanel({ documentName, details }) {
   }
 
   const authoritative = AUTHORITATIVE_LABELS[details.authoritative?.status] ?? AUTHORITATIVE_LABELS.UNAVAILABLE;
+  const extractionEntries = details.extraction ? Object.entries(details.extraction) : [];
+  const validationEntries = details.validation ? Object.entries(details.validation) : [];
 
   return (
     <div className="verification-panel">
@@ -35,14 +37,18 @@ export default function DocumentVerificationPanel({ documentName, details }) {
       <section className="verification-section">
         <h4>OCR Extraction</h4>
         <p className="verification-caption">What the document contains, as read by OCR.</p>
-        <dl className="verification-list">
-          {Object.entries(details.extraction).map(([label, value]) => (
-            <div key={label} className="verification-row">
-              <dt>{label}</dt>
-              <dd>{value}</dd>
-            </div>
-          ))}
-        </dl>
+        {extractionEntries.length > 0 ? (
+          <dl className="verification-list">
+            {extractionEntries.map(([label, value]) => (
+              <div key={label} className="verification-row">
+                <dt>{label}</dt>
+                <dd>{value}</dd>
+              </div>
+            ))}
+          </dl>
+        ) : (
+          <p className="verification-empty">No extraction data available.</p>
+        )}
       </section>
 
       <section className="verification-section">
@@ -50,14 +56,23 @@ export default function DocumentVerificationPanel({ documentName, details }) {
         <p className="verification-caption">
           Whether the extracted content structurally matches the applicant and application.
         </p>
-        <dl className="verification-list">
-          {Object.entries(details.validation).map(([label, value]) => (
-            <div key={label} className="verification-row">
-              <dt>{label}</dt>
-              <dd>{value}</dd>
+        {validationEntries.length > 0 ? (
+          <dl className="verification-list">
+            {validationEntries.map(([label, value]) => (
+              <div key={label} className="verification-row">
+                <dt>{label}</dt>
+                <dd>{value}</dd>
+              </div>
+            ))}
+          </dl>
+        ) : (
+          <dl className="verification-list">
+            <div className="verification-row">
+              <dt>Status</dt>
+              <dd>Pending — validation not performed</dd>
             </div>
-          ))}
-        </dl>
+          </dl>
+        )}
       </section>
 
       <section className="verification-section">

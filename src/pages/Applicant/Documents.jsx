@@ -65,6 +65,24 @@ export default function Documents() {
         doc.documentId
       );
 
+      if (result.processingState === "FAILED") {
+        const failMsg = result.errorMessage || "Document processing failed.";
+        const updated = {
+          ...doc,
+          processingStatus: "FAILED",
+          processingConfidence: 0.0,
+          details: doc.details
+            ? {
+                ...doc.details,
+                extraction: { "Status": "OCR processing failed", "Error": failMsg },
+              }
+            : null,
+        };
+        refreshDoc(updated);
+        setFeedback(`Processing failed for "${doc.name}": ${failMsg}`);
+        return;
+      }
+
       // Build extraction summary for Layer 1 panel view
       const extractionDetails = {};
       if (result.fields) {
@@ -99,7 +117,7 @@ export default function Documents() {
       }
 
       let validationDetails = {};
-      let authDetails = { status: "UNAVAILABLE" };
+      let authDetails = { status: "PENDING" };
 
       if (session?.token && session.token !== "mock-jwt-token") {
         if (doc.documentId) {
@@ -123,7 +141,9 @@ export default function Documents() {
                 validationDetails["Validation Outcome"] = vRes.validationStatus;
               }
             } else {
-              validationDetails["Validation Outcome"] = "Validation pending or record unavailable";
+              validationDetails = {
+                "Status": "Pending — validation not performed",
+              };
             }
             if (verifRes?.authoritativeVerification) {
               authDetails = {
@@ -131,27 +151,50 @@ export default function Documents() {
                 source: verifRes.authoritativeVerification.provider,
                 recordId: verifRes.authoritativeVerification.lookupIdentifier,
               };
+            } else {
+              authDetails = { status: "PENDING" };
             }
-          } catch {
-            // Surface a safe error/unavailable state, never display mock data when real token is active
-            validationDetails = {
-              "Validation Status": "Verification details unavailable (network or service error)",
-            };
-            authDetails = {
-              status: "UNAVAILABLE",
-            };
+          } catch (verifErr) {
+            const errMsg = String(verifErr?.message || "").toLowerCase();
+            const status = verifErr?.status;
+            const isServerError =
+              (typeof status === "number" && status >= 500) ||
+              errMsg.includes("500") ||
+              errMsg.includes("temporarily unavailable") ||
+              errMsg.includes("service error");
+
+            if (isServerError) {
+              // Surface a safe error/unavailable state when verification API explicitly fails
+              validationDetails = {
+                "Validation Status": "Verification details unavailable (network or service error)",
+              };
+              authDetails = {
+                status: "UNAVAILABLE",
+              };
+            } else {
+              // Real backend verification has not occurred or record not found — preserve pending state
+              validationDetails = {
+                "Status": "Pending — validation not performed",
+              };
+              authDetails = {
+                status: "PENDING",
+              };
+            }
           }
         } else {
           validationDetails = {
-            "Validation Status": "Document identifier not yet assigned",
+            "Status": "Pending — validation not performed",
           };
           authDetails = {
-            status: "UNAVAILABLE",
+            status: "PENDING",
           };
         }
       } else {
         // Intentional mock mode fallback
-        validationDetails = doc.details?.validation || { "Structure": "Format matches requirements" };
+        validationDetails = doc.details?.validation || {
+          "Name Match": "Matches application record",
+          "DOB Match": "Matches application record",
+        };
         authDetails = doc.details?.authoritative || { status: "PENDING" };
       }
 

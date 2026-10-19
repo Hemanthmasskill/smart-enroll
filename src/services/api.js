@@ -508,9 +508,12 @@ export async function getVerificationStatus(applicantId, documentSlotId, token, 
         Authorization: `Bearer ${token}`,
       },
     });
-    if (!response.ok) {
-      const errJson = await response.json().catch(() => ({}));
-      throw new Error(errJson.detail || `Failed to fetch verification status (${response.status}).`);
+    const contentType = response.headers.get("content-type") || "";
+    if (!response.ok || !contentType.includes("json")) {
+      const errJson = contentType.includes("json") ? await response.json().catch(() => ({})) : {};
+      const err = new Error(errJson.detail || `Verification record not found or unavailable (${response.status}).`);
+      err.status = response.status;
+      throw err;
     }
     return await response.json();
   }

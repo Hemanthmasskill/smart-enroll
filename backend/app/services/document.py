@@ -723,83 +723,85 @@ def process_document(
         },
     )
 
-    # Increment 14: Synchronously run deterministic content validation
+    # Increment 14: Synchronously run deterministic content validation when processing succeeds
+    # If processing failed (e.g. engine error), leave document in UPLOADED state and do not validate.
     # If validation fails unexpectedly, preserve processingStatus = COMPLETED and original processingResult!
-    try:
-        app_record = db["applications"].find_one({"applicationId": app_id}) if app_id else None
-        user_record = None
-        user_id_str = doc.get("userId")
-        if user_id_str:
-            try:
-                user_record = db["users"].find_one({"_id": ObjectId(user_id_str)})
-            except Exception:
-                user_record = db["users"].find_one({"_id": user_id_str})
+    if result.processingState == "COMPLETED":
+        try:
+            app_record = db["applications"].find_one({"applicationId": app_id}) if app_id else None
+            user_record = None
+            user_id_str = doc.get("userId")
+            if user_id_str:
+                try:
+                    user_record = db["users"].find_one({"_id": ObjectId(user_id_str)})
+                except Exception:
+                    user_record = db["users"].find_one({"_id": user_id_str})
 
-        sibling_docs = []
-        if app_id:
-            sibling_docs = list(
-                db["documents"].find({"applicationId": app_id, "documentId": {"$ne": document_id}})
+            sibling_docs = []
+            if app_id:
+                sibling_docs = list(
+                    db["documents"].find({"applicationId": app_id, "documentId": {"$ne": document_id}})
+                )
+
+            updated_doc = dict(doc)
+            updated_doc["processingResult"] = result_dict
+            updated_doc["processingStatus"] = result.processingState
+            updated_doc["processingConfidence"] = result.overallConfidence
+
+            val_result = validate_document_content(
+                db=db,
+                document=updated_doc,
+                application=app_record,
+                user=user_record,
+                sibling_documents=sibling_docs,
             )
 
-        updated_doc = dict(doc)
-        updated_doc["processingResult"] = result_dict
-        updated_doc["processingStatus"] = result.processingState
-        updated_doc["processingConfidence"] = result.overallConfidence
+            new_status = (
+                "VALIDATED" if val_result.validationStatus == "VALIDATED"
+                else "MISMATCH" if val_result.validationStatus == "MISMATCH"
+                else "MANUAL_REVIEW"
+            )
 
-        val_result = validate_document_content(
-            db=db,
-            document=updated_doc,
-            application=app_record,
-            user=user_record,
-            sibling_documents=sibling_docs,
-        )
-
-        new_status = (
-            "VALIDATED" if val_result.validationStatus == "VALIDATED"
-            else "MISMATCH" if val_result.validationStatus == "MISMATCH"
-            else "MANUAL_REVIEW"
-        )
-
-        db["documents"].update_one(
-            {"_id": doc["_id"]},
-            {
-                "$set": {
-                    "validationResult": val_result.model_dump(),
-                    "validationStatus": val_result.validationStatus,
-                    "status": new_status,
-                    "updatedAt": datetime.now(timezone.utc).isoformat(),
-                }
-            },
-        )
-    except Exception as val_err:
-        logger.error(
-            "Unexpected error during content validation for document %s: %s",
-            document_id,
-            str(val_err),
-            exc_info=True,
-        )
-        now_err = datetime.now(timezone.utc).isoformat()
-        db["documents"].update_one(
-            {"_id": doc["_id"]},
-            {
-                "$set": {
-                    "validationStatus": "ERROR",
-                    "status": "MANUAL_REVIEW",
-                    "validationResult": {
-                        "documentId": document_id,
-                        "documentType": doc_type,
+            db["documents"].update_one(
+                {"_id": doc["_id"]},
+                {
+                    "$set": {
+                        "validationResult": val_result.model_dump(),
+                        "validationStatus": val_result.validationStatus,
+                        "status": new_status,
+                        "updatedAt": datetime.now(timezone.utc).isoformat(),
+                    }
+                },
+            )
+        except Exception as val_err:
+            logger.error(
+                "Unexpected error during content validation for document %s: %s",
+                document_id,
+                str(val_err),
+                exc_info=True,
+            )
+            now_err = datetime.now(timezone.utc).isoformat()
+            db["documents"].update_one(
+                {"_id": doc["_id"]},
+                {
+                    "$set": {
                         "validationStatus": "ERROR",
-                        "fieldResults": {},
-                        "crossDocumentResults": [],
-                        "missingMandatoryFields": [],
-                        "reasons": ["Unexpected error during content validation execution."],
-                        "validatedAt": now_err,
-                        "errorSummary": "Internal error occurred during validation execution.",
-                    },
-                    "updatedAt": now_err,
-                }
-            },
-        )
+                        "status": "MANUAL_REVIEW",
+                        "validationResult": {
+                            "documentId": document_id,
+                            "documentType": doc_type,
+                            "validationStatus": "ERROR",
+                            "fieldResults": {},
+                            "crossDocumentResults": [],
+                            "missingMandatoryFields": [],
+                            "reasons": ["Unexpected error during content validation execution."],
+                            "validatedAt": now_err,
+                            "errorSummary": "Internal error occurred during validation execution.",
+                        },
+                        "updatedAt": now_err,
+                    }
+                },
+            )
 
     return result
 
