@@ -1173,4 +1173,83 @@ describe("Smart Enroll - Documents and Verification", () => {
       cy.get('button[aria-label="Close dialog"]').click();
     });
   });
+
+  it("disables authoritative verification button when document OCR processing state is FAILED even with retained extraction details", () => {
+    const realSession = {
+      role: "user",
+      name: "Hemanth M.P.",
+      email: "hemanth@example.com",
+      applicantId: "APL-1001",
+      token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.real-applicant-token",
+    };
+
+    const mockBackendDocs = [
+      {
+        id: "doc-10th",
+        documentId: "doc_10th_failed_ocr",
+        documentType: "10TH_MARKSHEET",
+        name: "10th Marksheet",
+        required: true,
+        status: "UPLOADED",
+        originalFileName: "10th_marksheet.pdf",
+        fileName: "10th_marksheet.pdf",
+        uploadedAt: "2026-09-05T10:00:00Z",
+      },
+    ];
+
+    cy.intercept("GET", "**/api/v1/documents*", {
+      statusCode: 200,
+      body: mockBackendDocs,
+    }).as("getDocsFailedOcr");
+
+    cy.intercept("POST", "**/api/v1/documents/doc_10th_failed_ocr/process", {
+      statusCode: 200,
+      body: {
+        documentId: "doc_10th_failed_ocr",
+        processingState: "FAILED",
+        errorMessage: "Document text unreadable due to low contrast.",
+        fields: {
+          candidateName: { rawValue: "Hemanth M.P.", confidence: 0.2 },
+        },
+      },
+    }).as("processDocFailedOcr");
+
+    const authVerifySpy = cy.spy().as("authVerifySpy");
+    cy.intercept("POST", "**/api/v1/documents/doc_10th_failed_ocr/authoritative-verify", (req) => {
+      authVerifySpy();
+      req.reply({ statusCode: 200, body: {} });
+    });
+
+    cy.visit("/documents", {
+      onBeforeLoad(win) {
+        win.localStorage.setItem("smartenroll_auth", JSON.stringify(realSession));
+      },
+    });
+
+    cy.wait("@getDocsFailedOcr");
+
+    cy.contains(".document-card", "10th Marksheet").within(() => {
+      cy.contains("button", "Process").click();
+    });
+
+    cy.wait("@processDocFailedOcr");
+
+    cy.contains(".document-card", "10th Marksheet").within(() => {
+      cy.contains(".document-card-ocr-badge.failed", "OCR Failed").should("be.visible");
+      cy.contains("button", "View").click();
+    });
+
+    cy.get('[role="dialog"][aria-label="Document Verification"]').within(() => {
+      cy.contains("OCR processing failed").should("be.visible");
+      cy.contains("Document text unreadable due to low contrast.").should("be.visible");
+
+      cy.get('[data-testid="run-authoritative-verify-btn"]').should("be.disabled");
+      cy.contains("Document must complete OCR processing before running authoritative verification.").should("be.visible");
+
+      cy.get('[data-testid="run-authoritative-verify-btn"]').click({ force: true });
+      cy.get('button[aria-label="Close dialog"]').click();
+    });
+
+    cy.get("@authVerifySpy").should("not.have.been.called");
+  });
 });

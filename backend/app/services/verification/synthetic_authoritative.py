@@ -152,6 +152,34 @@ class SyntheticAuthoritativeVerificationProvider:
                 message="Simulated authoritative verification provider network timeout.",
             )
 
+        # Finding 1 / Finding 3: Validate field-level confidence of lookup identifier before registry query
+        CONFIDENCE_THRESHOLD = 0.80
+
+        def _get_field_confidence(field_dict: Any) -> float:
+            if isinstance(field_dict, dict):
+                conf = field_dict.get("confidence")
+                if conf is not None:
+                    try:
+                        val = float(conf)
+                        return val if val >= 0.0 else 0.0
+                    except (ValueError, TypeError):
+                        return 0.0
+            return 0.0
+
+        lookup_field_dict = extracted_fields.get(lookup_field) or {}
+        lookup_conf = _get_field_confidence(lookup_field_dict)
+        if lookup_conf < CONFIDENCE_THRESHOLD:
+            return AuthoritativeVerificationRecord(
+                status="SIMULATION_UNAVAILABLE",
+                lookupIdentifier=lookup_identifier,
+                lookupField=lookup_field,
+                verifiedAt=now,
+                message=(
+                    f"Extracted lookup identifier '{lookup_field}' confidence ({lookup_conf:.2f}) "
+                    f"is below the required {CONFIDENCE_THRESHOLD:.2f} threshold for authoritative verification."
+                ),
+            )
+
         # Outcome 2: Identifier provided but not found in synthetic fixture registry -> SIMULATED_NOT_FOUND
         record = SYNTHETIC_REGISTRY.get(lookup_identifier)
         if not record:
@@ -203,6 +231,21 @@ class SyntheticAuthoritativeVerificationProvider:
                 message="Insufficient identity evidence (candidate name missing on document or fixture) to establish authoritative match.",
             )
 
+        # Candidate name confidence check before decisive comparison
+        name_conf = _get_field_confidence(cand_field)
+        if name_conf < CONFIDENCE_THRESHOLD:
+            return AuthoritativeVerificationRecord(
+                status="SIMULATION_UNAVAILABLE",
+                lookupIdentifier=lookup_identifier,
+                lookupField=lookup_field,
+                verifiedAt=now,
+                recordData=record,
+                message=(
+                    f"Candidate name extraction confidence ({name_conf:.2f}) "
+                    f"is below the required {CONFIDENCE_THRESHOLD:.2f} threshold for authoritative verification."
+                ),
+            )
+
         name_status, name_msg = compare_names(submitted_name, fixture_name)
         if name_status == "MISMATCH":
             return AuthoritativeVerificationRecord(
@@ -240,6 +283,21 @@ class SyntheticAuthoritativeVerificationProvider:
                     message="Date of birth is required by the authoritative fixture but missing from extracted document fields.",
                 )
 
+            # DOB confidence check before decisive comparison
+            dob_conf = _get_field_confidence(dob_field)
+            if dob_conf < CONFIDENCE_THRESHOLD:
+                return AuthoritativeVerificationRecord(
+                    status="SIMULATION_UNAVAILABLE",
+                    lookupIdentifier=lookup_identifier,
+                    lookupField=lookup_field,
+                    verifiedAt=now,
+                    recordData=record,
+                    message=(
+                        f"Date of birth extraction confidence ({dob_conf:.2f}) "
+                        f"is below the required {CONFIDENCE_THRESHOLD:.2f} threshold for authoritative verification."
+                    ),
+                )
+
             dob_status, dob_msg, _ = parse_and_compare_dob(submitted_dob, fixture_dob)
             if dob_status == "MISMATCH":
                 return AuthoritativeVerificationRecord(
@@ -259,63 +317,6 @@ class SyntheticAuthoritativeVerificationProvider:
                     verifiedAt=now,
                     recordData=record,
                     message=f"Date of birth on document could not be decisively verified against authoritative fixture ({dob_msg}).",
-                )
-
-        # Finding 3: Before returning SIMULATED_MATCH, require sufficient confidence for the extracted identity evidence (>= 0.80)
-        CONFIDENCE_THRESHOLD = 0.80
-
-        def _get_field_confidence(field_dict: Any) -> float:
-            if isinstance(field_dict, dict):
-                conf = field_dict.get("confidence")
-                if conf is not None:
-                    try:
-                        return float(conf)
-                    except (ValueError, TypeError):
-                        return 0.0
-            return 0.0
-
-        lookup_field_dict = extracted_fields.get(lookup_field) or {}
-        lookup_conf = _get_field_confidence(lookup_field_dict)
-        if lookup_conf < CONFIDENCE_THRESHOLD:
-            return AuthoritativeVerificationRecord(
-                status="SIMULATION_UNAVAILABLE",
-                lookupIdentifier=lookup_identifier,
-                lookupField=lookup_field,
-                verifiedAt=now,
-                recordData=record,
-                message=(
-                    f"Extracted lookup identifier '{lookup_field}' confidence ({lookup_conf:.2f}) "
-                    f"is below the required {CONFIDENCE_THRESHOLD:.2f} threshold for authoritative verification."
-                ),
-            )
-
-        name_conf = _get_field_confidence(cand_field)
-        if name_conf < CONFIDENCE_THRESHOLD:
-            return AuthoritativeVerificationRecord(
-                status="SIMULATION_UNAVAILABLE",
-                lookupIdentifier=lookup_identifier,
-                lookupField=lookup_field,
-                verifiedAt=now,
-                recordData=record,
-                message=(
-                    f"Candidate name extraction confidence ({name_conf:.2f}) "
-                    f"is below the required {CONFIDENCE_THRESHOLD:.2f} threshold for authoritative verification."
-                ),
-            )
-
-        if fixture_dob:
-            dob_conf = _get_field_confidence(dob_field)
-            if dob_conf < CONFIDENCE_THRESHOLD:
-                return AuthoritativeVerificationRecord(
-                    status="SIMULATION_UNAVAILABLE",
-                    lookupIdentifier=lookup_identifier,
-                    lookupField=lookup_field,
-                    verifiedAt=now,
-                    recordData=record,
-                    message=(
-                        f"Date of birth extraction confidence ({dob_conf:.2f}) "
-                        f"is below the required {CONFIDENCE_THRESHOLD:.2f} threshold for authoritative verification."
-                    ),
                 )
 
         # Outcome 3: Registered synthetic fixture matches with verified identity

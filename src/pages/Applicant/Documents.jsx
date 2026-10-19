@@ -73,12 +73,20 @@ export default function Documents() {
           ...doc,
           processingStatus: "FAILED",
           processingConfidence: 0.0,
-          details: doc.details
-            ? {
-                ...doc.details,
-                extraction: { "Status": "OCR processing failed", "Error": failMsg },
-              }
-            : null,
+          details: {
+            ...(doc.details || {}),
+            extraction: {
+              ...(doc.details?.extraction || {}),
+              "Status": "OCR processing failed",
+              "Error": failMsg,
+            },
+            validation: doc.details?.validation || {
+              "Status": "Pending — validation not performed",
+            },
+            authoritative: doc.details?.authoritative || {
+              status: "PENDING",
+            },
+          },
         };
         refreshDoc(updated);
         setFeedback(`Processing failed for "${doc.name}": ${failMsg}`);
@@ -249,6 +257,7 @@ export default function Documents() {
 
   const handleAuthoritativeVerify = async (doc) => {
     if (!doc || verifyingAuthDocId === doc.id) return;
+    if (doc.processingStatus !== "COMPLETED") return;
     setVerifyingAuthDocId(doc.id);
     setAuthError("");
     try {
@@ -358,7 +367,7 @@ export default function Documents() {
             authoritativeError={authError}
             isEligibleForAuthoritative={
               viewingDoc.status !== "NOT_UPLOADED" &&
-              (viewingDoc.processingStatus === "COMPLETED" || Boolean(viewingDoc.details?.extraction))
+              viewingDoc.processingStatus === "COMPLETED"
             }
           />
         </Modal>

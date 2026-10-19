@@ -459,7 +459,7 @@ def test_authoritative_simulation_no_identifier_returns_unavailable():
 
 def test_authoritative_simulation_unknown_identifier_returns_not_found():
     provider = SyntheticAuthoritativeVerificationProvider()
-    fields = {"registrationNumber": {"normalizedValue": "UNKNOWN-ID-9999"}}
+    fields = {"registrationNumber": {"normalizedValue": "UNKNOWN-ID-9999", "confidence": 0.95}}
     record = provider.verify_document_credential("10TH_MARKSHEET", fields)
     assert record.status == "SIMULATED_NOT_FOUND"
 
@@ -479,14 +479,14 @@ def test_authoritative_simulation_matching_fixture_returns_simulated_match():
 
 def test_authoritative_simulation_conflicting_fixture_returns_simulated_mismatch():
     provider = SyntheticAuthoritativeVerificationProvider()
-    fields = {"registrationNumber": {"normalizedValue": "SYNTH-REG-CONFLICT-002"}}
+    fields = {"registrationNumber": {"normalizedValue": "SYNTH-REG-CONFLICT-002", "confidence": 0.95}}
     record = provider.verify_document_credential("UG_MARKSHEET", fields)
     assert record.status == "SIMULATED_MISMATCH"
 
 
 def test_authoritative_simulation_fault_returns_unavailable():
     provider = SyntheticAuthoritativeVerificationProvider(simulate_provider_fault=True)
-    fields = {"registrationNumber": {"normalizedValue": "SYNTH-REG-2022-001"}}
+    fields = {"registrationNumber": {"normalizedValue": "SYNTH-REG-2022-001", "confidence": 0.95}}
     record = provider.verify_document_credential("UG_MARKSHEET", fields)
     assert record.status == "SIMULATION_UNAVAILABLE"
 
@@ -600,6 +600,114 @@ def test_authoritative_simulation_low_confidence_dob_returns_unavailable():
     assert record.status == "SIMULATION_UNAVAILABLE"
     assert "0.80" in record.message
     assert "date of birth" in record.message.lower()
+
+
+def test_authoritative_simulation_low_confidence_lookup_identifier_prevents_not_found_and_mismatch():
+    """
+    Finding 1: Low-confidence lookup identifier (<0.80) must return SIMULATION_UNAVAILABLE,
+    and must not produce a decisive SIMULATED_NOT_FOUND or SIMULATED_MISMATCH.
+    """
+    provider = SyntheticAuthoritativeVerificationProvider()
+
+    # 1. Unknown identifier with low confidence -> SIMULATION_UNAVAILABLE, not SIMULATED_NOT_FOUND
+    fields_unknown_low_conf = {
+        "registrationNumber": {"normalizedValue": "UNKNOWN-ID-9999", "confidence": 0.60},
+        "candidateName": {"normalizedValue": "Hemanth M.P.", "confidence": 0.95},
+    }
+    rec_unknown = provider.verify_document_credential("10TH_MARKSHEET", fields_unknown_low_conf)
+    assert rec_unknown.status == "SIMULATION_UNAVAILABLE"
+    assert rec_unknown.status != "SIMULATED_NOT_FOUND"
+    assert "0.80" in rec_unknown.message
+
+    # 2. Conflicting fixture identifier with low confidence -> SIMULATION_UNAVAILABLE, not SIMULATED_MISMATCH
+    fields_conflict_low_conf = {
+        "registrationNumber": {"normalizedValue": "SYNTH-REG-CONFLICT-002", "confidence": 0.55},
+        "candidateName": {"normalizedValue": "Hemanth M.P.", "confidence": 0.95},
+    }
+    rec_conflict = provider.verify_document_credential("UG_MARKSHEET", fields_conflict_low_conf)
+    assert rec_conflict.status == "SIMULATION_UNAVAILABLE"
+    assert rec_conflict.status != "SIMULATED_MISMATCH"
+    assert "0.80" in rec_conflict.message
+
+    # 3. Matching fixture identifier with low confidence -> SIMULATION_UNAVAILABLE, not SIMULATED_MATCH
+    fields_match_low_conf = {
+        "registrationNumber": {"normalizedValue": "SYNTH-REG-2022-001", "confidence": 0.79},
+        "candidateName": {"normalizedValue": "Hemanth M.P.", "confidence": 0.95},
+        "dob": {"normalizedValue": "2000-05-15", "confidence": 0.95},
+    }
+    rec_match = provider.verify_document_credential("UG_MARKSHEET", fields_match_low_conf, candidate_name="Hemanth M.P.")
+    assert rec_match.status == "SIMULATION_UNAVAILABLE"
+    assert rec_match.status != "SIMULATED_MATCH"
+    assert "0.80" in rec_match.message
+
+
+def test_authoritative_simulation_low_conf_conflicting_name_returns_unavailable_not_mismatch():
+    """
+    Finding 1: A low-confidence candidate name that conflicts with the fixture
+    must return SIMULATION_UNAVAILABLE, not SIMULATED_MISMATCH.
+    """
+    provider = SyntheticAuthoritativeVerificationProvider()
+    fields = {
+        "registrationNumber": {"normalizedValue": "SYNTH-REG-2022-001", "confidence": 0.95},
+        # Candidate name conflicts with fixture 'Hemanth M.P.', but confidence is 0.70 (<0.80)
+        "candidateName": {"normalizedValue": "Completely Wrong Name", "confidence": 0.70},
+        "dob": {"normalizedValue": "2000-05-15", "confidence": 0.95},
+    }
+    record = provider.verify_document_credential("UG_MARKSHEET", fields, candidate_name="Completely Wrong Name")
+    assert record.status == "SIMULATION_UNAVAILABLE"
+    assert record.status != "SIMULATED_MISMATCH"
+    assert "candidate name extraction confidence" in record.message.lower()
+    assert "0.80" in record.message
+
+
+def test_authoritative_simulation_low_conf_conflicting_dob_returns_unavailable_not_mismatch():
+    """
+    Finding 1: A low-confidence DOB that conflicts with the fixture
+    must return SIMULATION_UNAVAILABLE, not SIMULATED_MISMATCH.
+    """
+    provider = SyntheticAuthoritativeVerificationProvider()
+    fields = {
+        "registrationNumber": {"normalizedValue": "SYNTH-REG-2022-001", "confidence": 0.95},
+        "candidateName": {"normalizedValue": "Hemanth M.P.", "confidence": 0.95},
+        # DOB conflicts with fixture '2000-05-15', but confidence is 0.75 (<0.80)
+        "dob": {"normalizedValue": "1999-12-31", "confidence": 0.75},
+    }
+    record = provider.verify_document_credential("UG_MARKSHEET", fields, candidate_name="Hemanth M.P.")
+    assert record.status == "SIMULATION_UNAVAILABLE"
+    assert record.status != "SIMULATED_MISMATCH"
+    assert "date of birth extraction confidence" in record.message.lower()
+    assert "0.80" in record.message
+
+
+def test_authoritative_simulation_missing_or_invalid_confidence_rejected():
+    """
+    Finding 1: Missing or invalid confidence values must not silently become high confidence.
+    """
+    provider = SyntheticAuthoritativeVerificationProvider()
+
+    # 1. Non-numeric confidence string
+    fields_str_conf = {
+        "registrationNumber": {"normalizedValue": "SYNTH-REG-2022-001", "confidence": "high"},
+        "candidateName": {"normalizedValue": "Hemanth M.P.", "confidence": 0.95},
+    }
+    rec_str = provider.verify_document_credential("UG_MARKSHEET", fields_str_conf, candidate_name="Hemanth M.P.")
+    assert rec_str.status == "SIMULATION_UNAVAILABLE"
+
+    # 2. Negative confidence
+    fields_neg_conf = {
+        "registrationNumber": {"normalizedValue": "SYNTH-REG-2022-001", "confidence": -0.5},
+        "candidateName": {"normalizedValue": "Hemanth M.P.", "confidence": 0.95},
+    }
+    rec_neg = provider.verify_document_credential("UG_MARKSHEET", fields_neg_conf, candidate_name="Hemanth M.P.")
+    assert rec_neg.status == "SIMULATION_UNAVAILABLE"
+
+    # 3. None confidence
+    fields_none_conf = {
+        "registrationNumber": {"normalizedValue": "SYNTH-REG-2022-001", "confidence": None},
+        "candidateName": {"normalizedValue": "Hemanth M.P.", "confidence": 0.95},
+    }
+    rec_none = provider.verify_document_credential("UG_MARKSHEET", fields_none_conf, candidate_name="Hemanth M.P.")
+    assert rec_none.status == "SIMULATION_UNAVAILABLE"
 
 
 # ==============================================================================
@@ -881,25 +989,25 @@ def test_authoritative_simulation_candidate_identity_matching():
 
     # 2. Registered identifier + conflicting candidate identity -> SIMULATED_MISMATCH
     fields_conflicting_name = {
-        "registrationNumber": {"normalizedValue": "SYNTH-REG-2022-001"},
-        "candidateName": {"normalizedValue": "Completely Wrong Name"},
+        "registrationNumber": {"normalizedValue": "SYNTH-REG-2022-001", "confidence": 0.95},
+        "candidateName": {"normalizedValue": "Completely Wrong Name", "confidence": 0.95},
     }
     rec_mismatch_name = provider.verify_document_credential("UG_MARKSHEET", fields_conflicting_name, candidate_name="Completely Wrong Name")
     assert rec_mismatch_name.status == "SIMULATED_MISMATCH"
 
     # 3. Registered identifier + conflicting DOB -> SIMULATED_MISMATCH
     fields_conflicting_dob = {
-        "registrationNumber": {"normalizedValue": "SYNTH-REG-2022-001"},
-        "candidateName": {"normalizedValue": "Hemanth M.P."},
-        "dob": {"rawValue": "01/01/1990"},
+        "registrationNumber": {"normalizedValue": "SYNTH-REG-2022-001", "confidence": 0.95},
+        "candidateName": {"normalizedValue": "Hemanth M.P.", "confidence": 0.95},
+        "dob": {"rawValue": "01/01/1990", "confidence": 0.95},
     }
     rec_mismatch_dob = provider.verify_document_credential("UG_MARKSHEET", fields_conflicting_dob, candidate_name="Hemanth M.P.")
     assert rec_mismatch_dob.status == "SIMULATED_MISMATCH"
 
     # 4. Unknown identifier -> SIMULATED_NOT_FOUND
     fields_unknown = {
-        "registrationNumber": {"normalizedValue": "UNKNOWN-NONEXISTENT-ID"},
-        "candidateName": {"normalizedValue": "Hemanth M.P."},
+        "registrationNumber": {"normalizedValue": "UNKNOWN-NONEXISTENT-ID", "confidence": 0.95},
+        "candidateName": {"normalizedValue": "Hemanth M.P.", "confidence": 0.95},
     }
     rec_not_found = provider.verify_document_credential("UG_MARKSHEET", fields_unknown, candidate_name="Hemanth M.P.")
     assert rec_not_found.status == "SIMULATED_NOT_FOUND"
@@ -915,8 +1023,8 @@ def test_authoritative_simulation_candidate_identity_matching():
 
     # 7. Incompatible document type -> SIMULATION_UNAVAILABLE
     fields_incompat = {
-        "registrationNumber": {"normalizedValue": "SYNTH-10TH-12345"},
-        "candidateName": {"normalizedValue": "Hemanth M.P."},
+        "registrationNumber": {"normalizedValue": "SYNTH-10TH-12345", "confidence": 0.95},
+        "candidateName": {"normalizedValue": "Hemanth M.P.", "confidence": 0.95},
     }
     rec_incompat = provider.verify_document_credential("DEGREE_CERTIFICATE", fields_incompat, candidate_name="Hemanth M.P.")
     assert rec_incompat.status == "SIMULATION_UNAVAILABLE"
