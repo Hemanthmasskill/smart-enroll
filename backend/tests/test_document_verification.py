@@ -467,9 +467,9 @@ def test_authoritative_simulation_unknown_identifier_returns_not_found():
 def test_authoritative_simulation_matching_fixture_returns_simulated_match():
     provider = SyntheticAuthoritativeVerificationProvider()
     fields = {
-        "registrationNumber": {"normalizedValue": "SYNTH-REG-2022-001"},
-        "candidateName": {"normalizedValue": "Hemanth M.P."},
-        "dob": {"normalizedValue": "2000-05-15"},
+        "registrationNumber": {"normalizedValue": "SYNTH-REG-2022-001", "confidence": 0.95},
+        "candidateName": {"normalizedValue": "Hemanth M.P.", "confidence": 0.95},
+        "dob": {"normalizedValue": "2000-05-15", "confidence": 0.95},
     }
     record = provider.verify_document_credential("UG_MARKSHEET", fields, candidate_name="Hemanth M.P.")
     assert record.status == "SIMULATED_MATCH"
@@ -489,6 +489,117 @@ def test_authoritative_simulation_fault_returns_unavailable():
     fields = {"registrationNumber": {"normalizedValue": "SYNTH-REG-2022-001"}}
     record = provider.verify_document_credential("UG_MARKSHEET", fields)
     assert record.status == "SIMULATION_UNAVAILABLE"
+
+
+# --- Finding 1: DOB Ambiguity & Conflict Regression Tests ---
+
+def test_authoritative_simulation_malformed_dob_returns_unavailable():
+    """Unparseable or malformed DOB on document must not produce SIMULATED_MATCH."""
+    provider = SyntheticAuthoritativeVerificationProvider()
+    fields = {
+        "registrationNumber": {"normalizedValue": "SYNTH-REG-2022-001", "confidence": 0.95},
+        "candidateName": {"normalizedValue": "Hemanth M.P.", "confidence": 0.95},
+        "dob": {"rawValue": "not-a-valid-date-str", "confidence": 0.95},
+    }
+    record = provider.verify_document_credential("UG_MARKSHEET", fields, candidate_name="Hemanth M.P.")
+    assert record.status == "SIMULATION_UNAVAILABLE"
+    assert "could not be decisively verified" in record.message.lower() or "dob" in record.message.lower()
+
+
+def test_authoritative_simulation_ambiguous_dob_returns_unavailable():
+    """Ambiguous DOB (e.g., day/month transposition producing MANUAL_REVIEW) must not produce SIMULATED_MATCH."""
+    provider = SyntheticAuthoritativeVerificationProvider()
+    fields = {
+        "registrationNumber": {"normalizedValue": "SYNTH-REG-2022-001", "confidence": 0.95},
+        "candidateName": {"normalizedValue": "Hemanth M.P.", "confidence": 0.95},
+        # "05/06/2000" compared to fixture "2000-05-15" produces MANUAL_REVIEW or MISMATCH
+        "dob": {"rawValue": "05/06/2000", "confidence": 0.95},
+    }
+    record = provider.verify_document_credential("UG_MARKSHEET", fields, candidate_name="Hemanth M.P.")
+    assert record.status in ("SIMULATION_UNAVAILABLE", "SIMULATED_MISMATCH")
+    assert record.status != "SIMULATED_MATCH"
+
+
+def test_authoritative_simulation_definite_dob_conflict_returns_mismatch():
+    """Definite DOB mismatch produces SIMULATED_MISMATCH."""
+    provider = SyntheticAuthoritativeVerificationProvider()
+    fields = {
+        "registrationNumber": {"normalizedValue": "SYNTH-REG-2022-001", "confidence": 0.95},
+        "candidateName": {"normalizedValue": "Hemanth M.P.", "confidence": 0.95},
+        "dob": {"normalizedValue": "1999-12-31", "confidence": 0.95},
+    }
+    record = provider.verify_document_credential("UG_MARKSHEET", fields, candidate_name="Hemanth M.P.")
+    assert record.status == "SIMULATED_MISMATCH"
+    assert "DOB conflict" in record.message or "does not match" in record.message
+
+
+def test_authoritative_simulation_missing_required_dob_returns_unavailable():
+    """When fixture has DOB, document missing DOB must return SIMULATION_UNAVAILABLE."""
+    provider = SyntheticAuthoritativeVerificationProvider()
+    fields = {
+        "registrationNumber": {"normalizedValue": "SYNTH-REG-2022-001", "confidence": 0.95},
+        "candidateName": {"normalizedValue": "Hemanth M.P.", "confidence": 0.95},
+    }
+    record = provider.verify_document_credential("UG_MARKSHEET", fields, candidate_name="Hemanth M.P.")
+    assert record.status == "SIMULATION_UNAVAILABLE"
+    assert "missing" in record.message.lower() and "birth" in record.message.lower()
+
+
+# --- Finding 3: 0.80 Confidence Threshold Regression Tests ---
+
+def test_authoritative_simulation_low_confidence_candidate_name_returns_unavailable():
+    """Candidate name confidence below 0.80 must produce SIMULATION_UNAVAILABLE."""
+    provider = SyntheticAuthoritativeVerificationProvider()
+    fields = {
+        "registrationNumber": {"normalizedValue": "SYNTH-REG-2022-001", "confidence": 0.95},
+        "candidateName": {"normalizedValue": "Hemanth M.P.", "confidence": 0.72},
+        "dob": {"normalizedValue": "2000-05-15", "confidence": 0.95},
+    }
+    record = provider.verify_document_credential("UG_MARKSHEET", fields, candidate_name="Hemanth M.P.")
+    assert record.status == "SIMULATION_UNAVAILABLE"
+    assert "0.80" in record.message
+    assert "candidate name" in record.message.lower()
+
+
+def test_authoritative_simulation_missing_candidate_name_confidence_returns_unavailable():
+    """Missing candidate name confidence must not be silently treated as high-confidence."""
+    provider = SyntheticAuthoritativeVerificationProvider()
+    fields = {
+        "registrationNumber": {"normalizedValue": "SYNTH-REG-2022-001", "confidence": 0.95},
+        "candidateName": {"normalizedValue": "Hemanth M.P."},
+        "dob": {"normalizedValue": "2000-05-15", "confidence": 0.95},
+    }
+    record = provider.verify_document_credential("UG_MARKSHEET", fields, candidate_name="Hemanth M.P.")
+    assert record.status == "SIMULATION_UNAVAILABLE"
+    assert "0.80" in record.message
+
+
+def test_authoritative_simulation_low_confidence_lookup_identifier_returns_unavailable():
+    """Lookup identifier confidence below 0.80 must produce SIMULATION_UNAVAILABLE."""
+    provider = SyntheticAuthoritativeVerificationProvider()
+    fields = {
+        "registrationNumber": {"normalizedValue": "SYNTH-REG-2022-001", "confidence": 0.65},
+        "candidateName": {"normalizedValue": "Hemanth M.P.", "confidence": 0.95},
+        "dob": {"normalizedValue": "2000-05-15", "confidence": 0.95},
+    }
+    record = provider.verify_document_credential("UG_MARKSHEET", fields, candidate_name="Hemanth M.P.")
+    assert record.status == "SIMULATION_UNAVAILABLE"
+    assert "0.80" in record.message
+    assert "registrationNumber" in record.message
+
+
+def test_authoritative_simulation_low_confidence_dob_returns_unavailable():
+    """DOB confidence below 0.80 must produce SIMULATION_UNAVAILABLE."""
+    provider = SyntheticAuthoritativeVerificationProvider()
+    fields = {
+        "registrationNumber": {"normalizedValue": "SYNTH-REG-2022-001", "confidence": 0.95},
+        "candidateName": {"normalizedValue": "Hemanth M.P.", "confidence": 0.95},
+        "dob": {"normalizedValue": "2000-05-15", "confidence": 0.75},
+    }
+    record = provider.verify_document_credential("UG_MARKSHEET", fields, candidate_name="Hemanth M.P.")
+    assert record.status == "SIMULATION_UNAVAILABLE"
+    assert "0.80" in record.message
+    assert "date of birth" in record.message.lower()
 
 
 # ==============================================================================
@@ -760,9 +871,9 @@ def test_authoritative_simulation_candidate_identity_matching():
 
     # 1. Registered identifier + matching candidate identity -> SIMULATED_MATCH
     fields_match = {
-        "registrationNumber": {"normalizedValue": "SYNTH-REG-2022-001"},
-        "candidateName": {"normalizedValue": "Hemanth M.P."},
-        "dob": {"normalizedValue": "2000-05-15"},
+        "registrationNumber": {"normalizedValue": "SYNTH-REG-2022-001", "confidence": 0.95},
+        "candidateName": {"normalizedValue": "Hemanth M.P.", "confidence": 0.95},
+        "dob": {"normalizedValue": "2000-05-15", "confidence": 0.95},
     }
     rec_match = provider.verify_document_credential("UG_MARKSHEET", fields_match, candidate_name="Hemanth M.P.")
     assert rec_match.status == "SIMULATED_MATCH"

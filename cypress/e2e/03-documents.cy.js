@@ -856,4 +856,321 @@ describe("Smart Enroll - Documents and Verification", () => {
       cy.get('button[aria-label="Close dialog"]').click();
     });
   });
+
+  it("triggers authoritative verification via Run Synthetic Verification button and renders SIMULATED_MATCH", () => {
+    const realSession = {
+      role: "user",
+      name: "Hemanth M.P.",
+      email: "hemanth@example.com",
+      applicantId: "APL-1001",
+      token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.real-applicant-token",
+    };
+
+    const mockBackendDocs = [
+      {
+        id: "doc-10th",
+        documentId: "doc_10th_synth_run",
+        documentType: "10TH_MARKSHEET",
+        name: "10th Marksheet",
+        required: true,
+        status: "UPLOADED",
+        originalFileName: "10th_marksheet.pdf",
+        fileName: "10th_marksheet.pdf",
+        uploadedAt: "2026-09-05T10:00:00Z",
+      },
+    ];
+
+    const mockProcessingResult = {
+      documentId: "doc_10th_synth_run",
+      applicationId: "SE20260001",
+      documentType: "10TH_MARKSHEET",
+      processingState: "COMPLETED",
+      engine: "pymupdf+tesseract-ocr",
+      pageCount: 1,
+      textExtracted: true,
+      overallConfidence: 0.94,
+      classification: {
+        predictedType: "10TH_MARKSHEET",
+        confidence: 0.95,
+        typeMismatch: false,
+      },
+      fields: {
+        candidateName: { rawValue: "Hemanth M.P.", normalizedValue: "Hemanth M.P.", confidence: 0.95 },
+        registrationNumber: { rawValue: "SYNTH-10TH-12345", normalizedValue: "SYNTH-10TH-12345", confidence: 0.92 },
+        dob: { rawValue: "15/05/2000", normalizedValue: "2000-05-15", confidence: 0.92 },
+        percentage: { rawValue: "86.5%", normalizedValue: 86.5, confidence: 0.92 },
+      },
+    };
+
+    const mockInitialVerification = {
+      documentId: "doc_10th_synth_run",
+      documentType: "10TH_MARKSHEET",
+      lifecycleStatus: "VALIDATED",
+      processingStatus: "COMPLETED",
+      processingConfidence: 0.94,
+      validationStatus: "VALIDATED",
+      validationResult: {
+        documentId: "doc_10th_synth_run",
+        documentType: "10TH_MARKSHEET",
+        validationStatus: "VALIDATED",
+        fieldResults: {},
+        reasons: [],
+      },
+      authoritativeVerification: null,
+    };
+
+    const mockAuthVerifyResponse = {
+      provider: "SyntheticDigiLockerProvider",
+      status: "SIMULATED_MATCH",
+      lookupIdentifier: "SYNTH-10TH-12345",
+      lookupField: "registrationNumber",
+      isSimulated: true,
+      disclaimer: "Simulated record for testing/evaluation. Not connected to live DigiLocker/government APIs.",
+      verifiedAt: "2026-10-19T10:00:00Z",
+      message: "Simulated authoritative credential verified via CBSE simulation.",
+    };
+
+    cy.intercept("GET", "**/api/v1/documents*", {
+      statusCode: 200,
+      body: mockBackendDocs,
+    }).as("getDocsForSynth");
+
+    cy.intercept("POST", "**/api/v1/documents/doc_10th_synth_run/process", {
+      statusCode: 200,
+      body: mockProcessingResult,
+    }).as("processDocSynth");
+
+    cy.intercept("GET", "**/api/v1/documents/doc_10th_synth_run/verification", {
+      statusCode: 200,
+      body: mockInitialVerification,
+    }).as("getInitialVerif");
+
+    cy.intercept("POST", "**/api/v1/documents/doc_10th_synth_run/authoritative-verify", {
+      statusCode: 200,
+      body: mockAuthVerifyResponse,
+    }).as("runAuthVerify");
+
+    cy.visit("/documents", {
+      onBeforeLoad(win) {
+        win.localStorage.setItem("smartenroll_auth", JSON.stringify(realSession));
+      },
+    });
+
+    cy.wait("@getDocsForSynth");
+
+    cy.contains(".document-card", "10th Marksheet").within(() => {
+      cy.contains("button", "Process").click();
+    });
+
+    cy.wait("@processDocSynth");
+    cy.wait("@getInitialVerif");
+
+    cy.contains(".document-card", "10th Marksheet").within(() => {
+      cy.contains("button", "View").click();
+    });
+
+    cy.get('[role="dialog"][aria-label="Document Verification"]').within(() => {
+      cy.contains("Authoritative verification pending").should("be.visible");
+      cy.get('[data-testid="run-authoritative-verify-btn"]').should("be.visible").click();
+    });
+
+    cy.wait("@runAuthVerify").then((interception) => {
+      expect(interception.request.url).to.match(/\/api\/v1\/documents\/doc_10th_synth_run\/authoritative-verify$/);
+      expect(interception.request.headers.authorization).to.equal(`Bearer ${realSession.token}`);
+    });
+
+    cy.get('[role="dialog"][aria-label="Document Verification"]').within(() => {
+      cy.contains("Simulated Match (Synthetic Fixture Only)").should("be.visible");
+      cy.contains("SYNTH-10TH-12345").should("be.visible");
+      cy.contains("Simulated authoritative credential verified via CBSE simulation.").should("be.visible");
+      cy.contains("Simulated fixture matches are synthetic evaluation aids only and do not establish document authenticity.").should("be.visible");
+      cy.contains("Verified via Live DigiLocker/NAD").should("not.exist");
+      cy.get('button[aria-label="Close dialog"]').click();
+    });
+
+    cy.contains("Authoritative simulation completed for \"10th Marksheet\": SIMULATED_MATCH").should("be.visible");
+  });
+
+  it("surfaces error state and unavailable status when Run Synthetic Verification API fails", () => {
+    const realSession = {
+      role: "user",
+      name: "Hemanth M.P.",
+      email: "hemanth@example.com",
+      applicantId: "APL-1001",
+      token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.real-applicant-token",
+    };
+
+    const mockBackendDocs = [
+      {
+        id: "doc-10th",
+        documentId: "doc_10th_synth_fail",
+        documentType: "10TH_MARKSHEET",
+        name: "10th Marksheet",
+        required: true,
+        status: "UPLOADED",
+        originalFileName: "10th_marksheet.pdf",
+        fileName: "10th_marksheet.pdf",
+        uploadedAt: "2026-09-05T10:00:00Z",
+      },
+    ];
+
+    const mockProcessingResult = {
+      documentId: "doc_10th_synth_fail",
+      applicationId: "SE20260001",
+      documentType: "10TH_MARKSHEET",
+      processingState: "COMPLETED",
+      engine: "pymupdf+tesseract-ocr",
+      pageCount: 1,
+      textExtracted: true,
+      overallConfidence: 0.90,
+      classification: {
+        predictedType: "10TH_MARKSHEET",
+        confidence: 0.95,
+        typeMismatch: false,
+      },
+      fields: {
+        candidateName: { rawValue: "Hemanth M.P.", normalizedValue: "Hemanth M.P.", confidence: 0.95 },
+        registrationNumber: { rawValue: "SYNTH-10TH-12345", normalizedValue: "SYNTH-10TH-12345", confidence: 0.90 },
+      },
+    };
+
+    cy.intercept("GET", "**/api/v1/documents*", {
+      statusCode: 200,
+      body: mockBackendDocs,
+    }).as("getDocsForSynthFail");
+
+    cy.intercept("POST", "**/api/v1/documents/doc_10th_synth_fail/process", {
+      statusCode: 200,
+      body: mockProcessingResult,
+    }).as("processDocSynthFail");
+
+    cy.intercept("GET", "**/api/v1/documents/doc_10th_synth_fail/verification", {
+      statusCode: 200,
+      body: {
+        documentId: "doc_10th_synth_fail",
+        documentType: "10TH_MARKSHEET",
+        lifecycleStatus: "VALIDATED",
+        validationStatus: "VALIDATED",
+        authoritativeVerification: null,
+      },
+    }).as("getInitialVerifFail");
+
+    cy.intercept("POST", "**/api/v1/documents/doc_10th_synth_fail/authoritative-verify", {
+      statusCode: 503,
+      body: { detail: "Synthetic provider network unavailable." },
+    }).as("runAuthVerifyFail");
+
+    cy.visit("/documents", {
+      onBeforeLoad(win) {
+        win.localStorage.setItem("smartenroll_auth", JSON.stringify(realSession));
+      },
+    });
+
+    cy.wait("@getDocsForSynthFail");
+
+    cy.contains(".document-card", "10th Marksheet").within(() => {
+      cy.contains("button", "Process").click();
+    });
+
+    cy.wait("@processDocSynthFail");
+    cy.wait("@getInitialVerifFail");
+
+    cy.contains(".document-card", "10th Marksheet").within(() => {
+      cy.contains("button", "View").click();
+    });
+
+    cy.get('[role="dialog"][aria-label="Document Verification"]').within(() => {
+      cy.get('[data-testid="run-authoritative-verify-btn"]').click();
+    });
+
+    cy.wait("@runAuthVerifyFail");
+
+    cy.get('[role="dialog"][aria-label="Document Verification"]').within(() => {
+      cy.contains("Authoritative verification unavailable").should("be.visible");
+      cy.contains("Synthetic provider network unavailable.").should("be.visible");
+      cy.contains("Verified via Live DigiLocker/NAD").should("not.exist");
+      cy.get('button[aria-label="Close dialog"]').click();
+    });
+  });
+
+  it("prevents legacy VERIFIED status from displaying live DigiLocker/NAD claim in simulation increment", () => {
+    const realSession = {
+      role: "user",
+      name: "Hemanth M.P.",
+      email: "hemanth@example.com",
+      applicantId: "APL-1001",
+      token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.real-applicant-token",
+    };
+
+    const mockBackendDocs = [
+      {
+        id: "doc-10th",
+        documentId: "doc_10th_legacy_verif",
+        documentType: "10TH_MARKSHEET",
+        name: "10th Marksheet",
+        required: true,
+        status: "UPLOADED",
+        originalFileName: "10th_marksheet.pdf",
+        fileName: "10th_marksheet.pdf",
+        uploadedAt: "2026-09-05T10:00:00Z",
+      },
+    ];
+
+    const mockVerificationResult = {
+      documentId: "doc_10th_legacy_verif",
+      documentType: "10TH_MARKSHEET",
+      lifecycleStatus: "VALIDATED",
+      validationStatus: "VALIDATED",
+      authoritativeVerification: {
+        status: "VERIFIED", // Legacy status without live provider metadata
+        isLive: false,
+      },
+    };
+
+    cy.intercept("GET", "**/api/v1/documents*", {
+      statusCode: 200,
+      body: mockBackendDocs,
+    }).as("getDocsLegacy");
+
+    cy.intercept("POST", "**/api/v1/documents/doc_10th_legacy_verif/process", {
+      statusCode: 200,
+      body: {
+        documentId: "doc_10th_legacy_verif",
+        processingState: "COMPLETED",
+        overallConfidence: 0.90,
+      },
+    }).as("processDocLegacy");
+
+    cy.intercept("GET", "**/api/v1/documents/doc_10th_legacy_verif/verification", {
+      statusCode: 200,
+      body: mockVerificationResult,
+    }).as("getVerifLegacy");
+
+    cy.visit("/documents", {
+      onBeforeLoad(win) {
+        win.localStorage.setItem("smartenroll_auth", JSON.stringify(realSession));
+      },
+    });
+
+    cy.wait("@getDocsLegacy");
+
+    cy.contains(".document-card", "10th Marksheet").within(() => {
+      cy.contains("button", "Process").click();
+    });
+
+    cy.wait("@processDocLegacy");
+    cy.wait("@getVerifLegacy");
+
+    cy.contains(".document-card", "10th Marksheet").within(() => {
+      cy.contains("button", "View").click();
+    });
+
+    cy.get('[role="dialog"][aria-label="Document Verification"]').within(() => {
+      // Must NOT display "Verified via Live DigiLocker/NAD"
+      cy.contains("Verified via Live DigiLocker/NAD").should("not.exist");
+      // Must display conservative unconfirmed / unavailable badge
+      cy.contains("Authoritative verification unconfirmed").should("be.visible");
+      cy.get('button[aria-label="Close dialog"]').click();
+    });
+  });
 });

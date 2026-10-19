@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useAuth } from "../../context/AuthContext";
-import { getDocuments, uploadDocument, removeDocument, processDocument, getVerificationStatus } from "../../services/api";
+import { getDocuments, uploadDocument, removeDocument, processDocument, getVerificationStatus, authoritativeVerifyDocument } from "../../services/api";
 import PageHeader from "../../components/PageHeader";
 import DocumentCard from "../../components/DocumentCard";
 import DocumentVerificationPanel from "../../components/DocumentVerificationPanel";
@@ -19,6 +19,8 @@ export default function Documents() {
   const [viewingDoc, setViewingDoc] = useState(null);
   const [removingDoc, setRemovingDoc] = useState(null);
   const [processingDocId, setProcessingDocId] = useState(null);
+  const [verifyingAuthDocId, setVerifyingAuthDocId] = useState(null);
+  const [authError, setAuthError] = useState("");
 
   useEffect(() => {
     let mounted = true;
@@ -245,6 +247,61 @@ export default function Documents() {
     }
   };
 
+  const handleAuthoritativeVerify = async (doc) => {
+    if (!doc || verifyingAuthDocId === doc.id) return;
+    setVerifyingAuthDocId(doc.id);
+    setAuthError("");
+    try {
+      const res = await authoritativeVerifyDocument(
+        session?.applicantId,
+        doc.id,
+        session?.token,
+        doc.documentId
+      );
+
+      const updatedAuth = {
+        status: res.status || "SIMULATION_UNAVAILABLE",
+        source: res.provider || "SyntheticDigiLockerProvider",
+        recordId: res.lookupIdentifier || null,
+        message: res.message || "",
+        disclaimer:
+          res.disclaimer ||
+          "Simulated record for testing/evaluation. Not connected to live DigiLocker/government APIs.",
+        isSimulated: Boolean(res.isSimulated),
+      };
+
+      const updatedDoc = {
+        ...doc,
+        details: {
+          ...(doc.details || {}),
+          authoritative: updatedAuth,
+        },
+      };
+
+      refreshDoc(updatedDoc);
+      setViewingDoc(updatedDoc);
+      setFeedback(`Authoritative simulation completed for "${doc.name}": ${updatedAuth.status}`);
+    } catch (err) {
+      const msg = err.message || "Authoritative verification failed.";
+      setAuthError(msg);
+      const failedAuth = {
+        status: "UNAVAILABLE",
+        message: msg,
+      };
+      const updatedDoc = {
+        ...doc,
+        details: {
+          ...(doc.details || {}),
+          authoritative: failedAuth,
+        },
+      };
+      refreshDoc(updatedDoc);
+      setViewingDoc(updatedDoc);
+    } finally {
+      setVerifyingAuthDocId(null);
+    }
+  };
+
   const submittedCount = documents.filter((d) => d.status !== "NOT_UPLOADED").length;
 
   if (isLoading) return <LoadingState message="Loading your documents…" />;
@@ -274,7 +331,10 @@ export default function Documents() {
             key={doc.id}
             doc={doc}
             onUpload={(file, variant) => handleUpload(doc.id, file, variant)}
-            onView={() => setViewingDoc(doc)}
+            onView={() => {
+              setAuthError("");
+              setViewingDoc(doc);
+            }}
             onRemove={() => setRemovingDoc(doc)}
             onProcess={() => handleProcess(doc)}
             isProcessing={processingDocId === doc.id}
@@ -283,8 +343,24 @@ export default function Documents() {
       </div>
 
       {viewingDoc && (
-        <Modal title="Document Verification" onClose={() => setViewingDoc(null)}>
-          <DocumentVerificationPanel documentName={viewingDoc.name} details={viewingDoc.details} />
+        <Modal
+          title="Document Verification"
+          onClose={() => {
+            setViewingDoc(null);
+            setAuthError("");
+          }}
+        >
+          <DocumentVerificationPanel
+            documentName={viewingDoc.name}
+            details={viewingDoc.details}
+            onRunAuthoritativeVerify={() => handleAuthoritativeVerify(viewingDoc)}
+            isAuthoritativeVerifying={verifyingAuthDocId === viewingDoc.id}
+            authoritativeError={authError}
+            isEligibleForAuthoritative={
+              viewingDoc.status !== "NOT_UPLOADED" &&
+              (viewingDoc.processingStatus === "COMPLETED" || Boolean(viewingDoc.details?.extraction))
+            }
+          />
         </Modal>
       )}
 
