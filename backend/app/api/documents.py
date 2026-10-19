@@ -13,11 +13,14 @@ from pymongo.database import Database
 from app.api.deps import RequireRole, get_current_user
 from app.core.database import get_db
 from app.schemas.document import DocumentDeleteResponse, DocumentResponse
+from app.schemas.document_processing import DocumentProcessingResult
 from app.services.document import (
     delete_document,
     get_document_file,
     get_document_metadata,
+    get_document_processing_result,
     list_documents,
+    process_document,
     upload_document,
 )
 
@@ -137,6 +140,49 @@ def delete_document_endpoint(
     Only the owning applicant may delete their document.
     """
     return delete_document(
+        db=db,
+        current_user=current_user,
+        document_id=document_id,
+    )
+
+
+@router.post(
+    "/{document_id}/process",
+    response_model=DocumentProcessingResult,
+    tags=["Documents"],
+)
+def process_document_endpoint(
+    document_id: str,
+    current_user: dict = Depends(RequireRole(["applicant"])),
+    db: Database = Depends(get_db),
+):
+    """
+    Run bounded OCR, classification, and field extraction for the uploaded document.
+    Enforces ownership (only owning applicant permitted to initiate processing).
+    Stores processing result in document metadata without marking document as VERIFIED.
+    """
+    return process_document(
+        db=db,
+        current_user=current_user,
+        document_id=document_id,
+    )
+
+
+@router.get(
+    "/{document_id}/processing-result",
+    response_model=DocumentProcessingResult,
+    tags=["Documents"],
+)
+def get_document_processing_result_endpoint(
+    document_id: str,
+    current_user: dict = Depends(get_current_user),
+    db: Database = Depends(get_db),
+):
+    """
+    Retrieve persisted OCR extraction, classification, and field results.
+    Enforces ownership (applicant owns document, or admin allowed).
+    """
+    return get_document_processing_result(
         db=db,
         current_user=current_user,
         document_id=document_id,

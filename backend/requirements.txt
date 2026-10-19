@@ -26,3 +26,6 @@ argon2-cffi
 PyJWT
 pydantic[email]
 python-multipart
+pymupdf==1.28.2
+pillow==12.3.0
+pytesseract==0.3.13

@@ -101,6 +101,8 @@ class DocumentResponse(BaseModel):
     contentType: str | None = None
     fileSize: int | None = None
     status: str
+    processingStatus: str | None = None
+    processingConfidence: float | None = None
     required: bool = True
     uploadedAt: str | None = None
     updatedAt: str | None = None

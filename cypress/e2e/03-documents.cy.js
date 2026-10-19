@@ -277,4 +277,305 @@ describe("Smart Enroll - Documents and Verification", () => {
       cy.contains("transfer_certificate.pdf").should("be.visible");
     });
   });
+
+  it("triggers document processing in mock session and shows OCR status", () => {
+    cy.visitAsApplicant("/documents");
+
+    cy.contains(".document-card", "10th Marksheet").within(() => {
+      cy.contains("button", "Process").click();
+      cy.contains(".document-card-ocr-badge", "OCR: 90%", { timeout: 4000 }).should("be.visible");
+      cy.contains("button", "Reprocess").should("be.visible");
+      cy.contains("button", "View").click();
+    });
+
+    cy.get('[role="dialog"][aria-label="Document Verification"]').within(() => {
+      cy.contains("OCR Extraction").should("be.visible");
+      cy.contains("Candidate Name").should("be.visible");
+      cy.contains("Hemanth M.P.").should("be.visible");
+      cy.contains("Roll / Registration No").should("be.visible");
+      cy.contains("2022MCA041").should("be.visible");
+      cy.contains("OCR extraction confirms only what the document states").should("be.visible");
+      cy.get('button[aria-label="Close dialog"]').click();
+    });
+
+    cy.contains("OCR processing complete for \"10th Marksheet\"").should("be.visible");
+  });
+
+  it("exercises intercepted real-token document processing API and renders extracted fields (mocked HTTP layer)", () => {
+    const realSession = {
+      role: "user",
+      name: "Hemanth M.P.",
+      email: "hemanth@example.com",
+      applicantId: "APL-1001",
+      token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.real-applicant-token",
+    };
+
+    const mockBackendDocs = [
+      {
+        id: "doc-10th",
+        documentId: "doc_10th_real",
+        documentType: "10TH_MARKSHEET",
+        name: "10th Marksheet",
+        required: true,
+        status: "UPLOADED",
+        originalFileName: "10th_marksheet.pdf",
+        fileName: "10th_marksheet.pdf",
+        uploadedAt: "2026-09-05T10:00:00Z",
+      },
+    ];
+
+    const mockProcessingResult = {
+      documentId: "doc_10th_real",
+      applicationId: "SE20260001",
+      documentType: "10TH_MARKSHEET",
+      processingState: "COMPLETED",
+      engine: "pymupdf+tesseract-ocr",
+      pageCount: 1,
+      textExtracted: true,
+      overallConfidence: 0.92,
+      classification: {
+        predictedType: "10TH_MARKSHEET",
+        confidence: 0.95,
+        typeMismatch: false,
+      },
+      fields: {
+        candidateName: { rawValue: "Priya Sharma", normalizedValue: "Priya Sharma", confidence: 0.95 },
+        dob: { rawValue: "15/08/2004", normalizedValue: "2004-08-15", confidence: 0.92 },
+        registrationNumber: { rawValue: "1234567", normalizedValue: "1234567", confidence: 0.90 },
+        percentage: { rawValue: "90.0%", normalizedValue: 90.0, confidence: 0.92 },
+      },
+    };
+
+    cy.intercept("GET", "**/api/v1/documents*", {
+      statusCode: 200,
+      body: mockBackendDocs,
+    }).as("getDocsForProcessing");
+
+    cy.intercept("POST", "**/api/v1/documents/doc_10th_real/process", {
+      statusCode: 200,
+      body: mockProcessingResult,
+    }).as("processDoc");
+
+    cy.visit("/documents", {
+      onBeforeLoad(win) {
+        win.localStorage.setItem("smartenroll_auth", JSON.stringify(realSession));
+      },
+    });
+
+    cy.wait("@getDocsForProcessing");
+
+    cy.contains(".document-card", "10th Marksheet").within(() => {
+      cy.contains("button", "Process").click();
+    });
+
+    cy.wait("@processDoc").then((interception) => {
+      expect(interception.request.url).to.match(/\/api\/v1\/documents\/doc_10th_real\/process$/);
+      expect(interception.request.headers.authorization).to.equal(`Bearer ${realSession.token}`);
+    });
+
+    cy.contains(".document-card", "10th Marksheet").within(() => {
+      cy.contains(".document-card-ocr-badge", "OCR: 92%").should("be.visible");
+      cy.contains("button", "Reprocess").should("be.visible");
+      cy.contains("button", "View").click();
+    });
+
+    cy.get('[role="dialog"][aria-label="Document Verification"]').within(() => {
+      cy.contains("OCR Extraction").should("be.visible");
+      cy.contains("Candidate Name").should("be.visible");
+      cy.contains("Priya Sharma").should("be.visible");
+      cy.contains("Date of Birth").should("be.visible");
+      cy.contains("2004-08-15").should("be.visible");
+      cy.contains("Percentage").should("be.visible");
+      cy.contains("90%").should("be.visible");
+
+      // Verify Finding B: OCR completion does not invent positive validation claim
+      cy.contains("Content Validation").should("be.visible");
+      cy.contains("Pending — validation not performed").should("be.visible");
+      cy.contains("Format matches requirements").should("not.exist");
+      cy.contains("Verified via DigiLocker/NAD").should("not.exist");
+      cy.contains("Authoritative verification pending").should("be.visible");
+      cy.contains("OCR extraction confirms only what the document states, not that it is genuine.").should("be.visible");
+
+      cy.get('button[aria-label="Close dialog"]').click();
+    });
+
+    cy.contains("OCR processing complete for \"10th Marksheet\" (92% confidence)").should("be.visible");
+  });
+
+  it("handles HTTP 200 with processingState FAILED, displays failure state, and preserves retry behavior", () => {
+    const realSession = {
+      role: "user",
+      name: "Hemanth M.P.",
+      email: "hemanth@example.com",
+      applicantId: "APL-1001",
+      token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.real-applicant-token",
+    };
+
+    const mockBackendDocs = [
+      {
+        id: "doc-10th",
+        documentId: "doc_10th_failed_state",
+        documentType: "10TH_MARKSHEET",
+        name: "10th Marksheet",
+        required: true,
+        status: "UPLOADED",
+        originalFileName: "10th_marksheet.pdf",
+        fileName: "10th_marksheet.pdf",
+        uploadedAt: "2026-09-05T10:00:00Z",
+      },
+    ];
+
+    const failedProcessingResult = {
+      documentId: "doc_10th_failed_state",
+      applicationId: "SE20260001",
+      documentType: "10TH_MARKSHEET",
+      processingState: "FAILED",
+      engine: "pymupdf+tesseract-ocr",
+      pageCount: 1,
+      textExtracted: false,
+      overallConfidence: 0.0,
+      errorMessage: "Tesseract OCR engine is not installed or discoverable on server.",
+      warnings: [],
+      classification: {
+        predictedType: null,
+        confidence: 0.0,
+        typeMismatch: false,
+      },
+      fields: {},
+    };
+
+    cy.intercept("GET", "**/api/v1/documents*", {
+      statusCode: 200,
+      body: mockBackendDocs,
+    }).as("getDocsForFailedState");
+
+    cy.intercept("POST", "**/api/v1/documents/doc_10th_failed_state/process", {
+      statusCode: 200,
+      body: failedProcessingResult,
+    }).as("processDocFailedState");
+
+    cy.visit("/documents", {
+      onBeforeLoad(win) {
+        win.localStorage.setItem("smartenroll_auth", JSON.stringify(realSession));
+      },
+    });
+
+    cy.wait("@getDocsForFailedState");
+
+    cy.contains(".document-card", "10th Marksheet").within(() => {
+      cy.contains("button", "Process").click();
+    });
+
+    cy.wait("@processDocFailedState");
+
+    // Must NOT claim successful completion
+    cy.contains("OCR processing complete").should("not.exist");
+
+    // Surfaces returned errorMessage
+    cy.contains(
+      'Processing failed for "10th Marksheet": Tesseract OCR engine is not installed or discoverable on server.'
+    ).should("be.visible");
+
+    // Renders OCR Failed badge and preserves retry button
+    cy.contains(".document-card", "10th Marksheet").within(() => {
+      cy.contains(".document-card-ocr-badge.failed", "OCR Failed").should("be.visible");
+      cy.contains("button", "Process").should("be.visible").and("not.be.disabled");
+    });
+  });
+
+  it("surfaces error when document processing API fails (mocked HTTP layer)", () => {
+    const realSession = {
+      role: "user",
+      name: "Hemanth M.P.",
+      email: "hemanth@example.com",
+      applicantId: "APL-1001",
+      token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.real-applicant-token",
+    };
+
+    const mockBackendDocs = [
+      {
+        id: "doc-10th",
+        documentId: "doc_10th_fail",
+        documentType: "10TH_MARKSHEET",
+        name: "10th Marksheet",
+        required: true,
+        status: "UPLOADED",
+        originalFileName: "10th_marksheet.pdf",
+        fileName: "10th_marksheet.pdf",
+        uploadedAt: "2026-09-05T10:00:00Z",
+      },
+    ];
+
+    cy.intercept("GET", "**/api/v1/documents*", {
+      statusCode: 200,
+      body: mockBackendDocs,
+    }).as("getDocsForFail");
+
+    cy.intercept("POST", "**/api/v1/documents/doc_10th_fail/process", {
+      statusCode: 500,
+      body: { detail: "OCR execution timed out after 15 seconds." },
+    }).as("processDocFail");
+
+    cy.visit("/documents", {
+      onBeforeLoad(win) {
+        win.localStorage.setItem("smartenroll_auth", JSON.stringify(realSession));
+      },
+    });
+
+    cy.wait("@getDocsForFail");
+
+    cy.contains(".document-card", "10th Marksheet").within(() => {
+      cy.contains("button", "Process").click();
+    });
+
+    cy.wait("@processDocFail");
+
+    cy.contains("Processing failed for \"10th Marksheet\": OCR execution timed out after 15 seconds.").should("be.visible");
+    cy.contains(".document-card", "10th Marksheet").within(() => {
+      cy.contains(".document-card-ocr-badge.failed", "OCR Failed").should("be.visible");
+    });
+  });
+
+  it("surfaces error when backend documentId is missing on process click", () => {
+    const realSession = {
+      role: "user",
+      name: "Hemanth M.P.",
+      email: "hemanth@example.com",
+      applicantId: "APL-1001",
+      token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.real-applicant-token",
+    };
+
+    const mockBackendDocs = [
+      {
+        id: "doc-10th",
+        documentId: null, // Missing backend id
+        documentType: "10TH_MARKSHEET",
+        name: "10th Marksheet",
+        required: true,
+        status: "UPLOADED",
+        originalFileName: "10th_marksheet.pdf",
+        fileName: "10th_marksheet.pdf",
+        uploadedAt: "2026-09-05T10:00:00Z",
+      },
+    ];
+
+    cy.intercept("GET", "**/api/v1/documents*", {
+      statusCode: 200,
+      body: mockBackendDocs,
+    }).as("getDocsForMissing");
+
+    cy.visit("/documents", {
+      onBeforeLoad(win) {
+        win.localStorage.setItem("smartenroll_auth", JSON.stringify(realSession));
+      },
+    });
+
+    cy.wait("@getDocsForMissing");
+
+    cy.contains(".document-card", "10th Marksheet").within(() => {
+      cy.contains("button", "Process").click();
+    });
+
+    cy.contains("Processing failed for \"10th Marksheet\": Cannot process document: missing backend document identifier.").should("be.visible");
+  });
 });

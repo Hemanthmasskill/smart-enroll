@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+import logging
 from pathlib import Path
 import re
 import uuid
@@ -6,6 +7,8 @@ from fastapi import HTTPException, UploadFile, status
 from fastapi.responses import FileResponse
 from pymongo.database import Database
 from pymongo.errors import DuplicateKeyError
+
+logger = logging.getLogger(__name__)
 
 from app.core.config import settings
 from app.schemas.document import (
@@ -18,6 +21,8 @@ from app.schemas.document import (
     normalize_degree_variant,
     normalize_document_type,
 )
+from app.schemas.document_processing import DocumentProcessingResult
+from app.services.ocr import OCREngine, run_document_processing_pipeline
 
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MiB limit
 READ_CHUNK_SIZE = 64 * 1024  # 64 KiB bounded reading chunk
@@ -205,6 +210,8 @@ def to_document_response(doc: dict | None, application_id: str, doc_type: str) -
         contentType=doc.get("contentType"),
         fileSize=doc.get("fileSize"),
         status=doc.get("status", "UPLOADED"),
+        processingStatus=doc.get("processingStatus"),
+        processingConfidence=doc.get("processingConfidence"),
         required=True,
         uploadedAt=doc.get("uploadedAt"),
         updatedAt=doc.get("updatedAt"),
@@ -538,3 +545,210 @@ def delete_document(
         "detail": "Document deleted successfully.",
         "documentId": document_id,
     }
+
+
+def process_document(
+    db: Database,
+    current_user: dict,
+    document_id: str,
+    engine: OCREngine | None = None,
+) -> DocumentProcessingResult:
+    """
+    Run bounded OCR, classification, and field extraction for an uploaded document.
+    Enforces ownership (applicant owns document, or admin allowed).
+    Concurrency: rejects if document is already in PROCESSING state.
+    Updates MongoDB document record with processingResult and processingStatus without changing document status to VERIFIED.
+    Preserves original uploaded physical file intact.
+    """
+    doc = db["documents"].find_one({"documentId": document_id})
+    if not doc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Document not found.",
+        )
+
+    # 1. Enforce applicant role and document ownership
+    if current_user.get("role") != "applicant":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only applicants are permitted to process documents.",
+        )
+
+    user_id = str(current_user["_id"])
+    if doc.get("userId") != user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to process this document.",
+        )
+
+    # 2. Fast in-memory check for early, user-friendly conflict response
+    if doc.get("processingStatus") == "PROCESSING":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Document processing is currently in progress. Please retry after it completes.",
+        )
+
+    storage_dir = get_storage_dir()
+    stored_filename = doc.get("storedFileName")
+    if not stored_filename:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Document file is missing or has not been uploaded yet.",
+        )
+
+    file_path = storage_dir / stored_filename
+    if not is_path_safe(storage_dir, file_path) or not file_path.exists():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Stored physical document not found for processing.",
+        )
+
+    # Read binary bytes for processing (original file is strictly read-only and preserved)
+    try:
+        with open(file_path, "rb") as f:
+            file_bytes = f.read()
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to read document from storage.",
+        )
+
+    # 3. Atomic conditional claim in MongoDB before starting OCR pipeline
+    now = datetime.now(timezone.utc).isoformat()
+    try:
+        claim_result = db["documents"].update_one(
+            {
+                "_id": doc["_id"],
+                "processingStatus": {"$ne": "PROCESSING"},
+            },
+            {
+                "$set": {
+                    "processingStatus": "PROCESSING",
+                    "updatedAt": now,
+                }
+            },
+        )
+    except Exception as e:
+        logger.error(
+            "Database error while claiming document %s for processing: %s",
+            document_id,
+            str(e),
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Unable to initiate document processing due to a server error. Please try again later.",
+        )
+
+    if claim_result.matched_count == 0:
+        # Check if the document was deleted concurrently
+        current_doc = db["documents"].find_one({"_id": doc["_id"]})
+        if not current_doc:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Document not found.",
+            )
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Document processing is currently in progress. Please retry after it completes.",
+        )
+
+    content_type = doc.get("contentType", "application/pdf")
+    doc_type = doc.get("documentType", "10TH_MARKSHEET")
+    app_id = doc.get("applicationId")
+
+    try:
+        result = run_document_processing_pipeline(
+            file_bytes=file_bytes,
+            content_type=content_type,
+            document_id=document_id,
+            document_type=doc_type,
+            application_id=app_id,
+            engine=engine,
+        )
+    except Exception as e:
+        logger.error(
+            "Fatal error during document processing pipeline for document %s: %s",
+            document_id,
+            str(e),
+            exc_info=True,
+        )
+        now_err = datetime.now(timezone.utc).isoformat()
+        try:
+            db["documents"].update_one(
+                {"_id": doc["_id"]},
+                {
+                    "$set": {
+                        "processingStatus": "FAILED",
+                        "updatedAt": now_err,
+                    }
+                },
+            )
+        except Exception as db_err:
+            logger.error(
+                "Failed to update document %s status to FAILED: %s",
+                document_id,
+                str(db_err),
+            )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An error occurred while processing the document. Please try again later.",
+        )
+
+    # Persist structured processing result
+    # Crucial rule: original document's 'status' (e.g. UPLOADED) MUST NOT be changed to VERIFIED!
+    now_done = datetime.now(timezone.utc).isoformat()
+    result_dict = result.model_dump()
+    db["documents"].update_one(
+        {"_id": doc["_id"]},
+        {
+            "$set": {
+                "processingResult": result_dict,
+                "processingStatus": result.processingState,
+                "processingConfidence": result.overallConfidence,
+                "updatedAt": now_done,
+            }
+        },
+    )
+
+    return result
+
+
+def get_document_processing_result(
+    db: Database,
+    current_user: dict,
+    document_id: str,
+) -> DocumentProcessingResult:
+    """
+    Retrieve persisted processing result for an authorized document.
+    Enforces ownership (applicant owns document, or admin allowed).
+    """
+    doc = db["documents"].find_one({"documentId": document_id})
+    if not doc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Document not found.",
+        )
+
+    user_role = current_user.get("role")
+    user_id = str(current_user["_id"])
+    if user_role == "applicant":
+        if doc.get("userId") != user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Not authorized to access processing results for this document.",
+            )
+    elif user_role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Operation not permitted for this role.",
+        )
+
+    res_data = doc.get("processingResult")
+    if not res_data:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No processing result found for this document.",
+        )
+
+    return DocumentProcessingResult.model_validate(res_data)
