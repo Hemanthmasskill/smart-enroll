@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useAuth } from "../../context/AuthContext";
-import { getDocuments, uploadDocument, removeDocument, processDocument } from "../../services/api";
+import { getDocuments, uploadDocument, removeDocument, processDocument, getVerificationStatus, authoritativeVerifyDocument } from "../../services/api";
 import PageHeader from "../../components/PageHeader";
 import DocumentCard from "../../components/DocumentCard";
 import DocumentVerificationPanel from "../../components/DocumentVerificationPanel";
@@ -19,6 +19,8 @@ export default function Documents() {
   const [viewingDoc, setViewingDoc] = useState(null);
   const [removingDoc, setRemovingDoc] = useState(null);
   const [processingDocId, setProcessingDocId] = useState(null);
+  const [verifyingAuthDocId, setVerifyingAuthDocId] = useState(null);
+  const [authError, setAuthError] = useState("");
 
   useEffect(() => {
     let mounted = true;
@@ -71,12 +73,20 @@ export default function Documents() {
           ...doc,
           processingStatus: "FAILED",
           processingConfidence: 0.0,
-          details: doc.details
-            ? {
-                ...doc.details,
-                extraction: { "Status": "OCR processing failed", "Error": failMsg },
-              }
-            : null,
+          details: {
+            ...(doc.details || {}),
+            extraction: {
+              ...(doc.details?.extraction || {}),
+              "Status": "OCR processing failed",
+              "Error": failMsg,
+            },
+            validation: doc.details?.validation || {
+              "Status": "Pending — validation not performed",
+            },
+            authoritative: doc.details?.authoritative || {
+              status: "PENDING",
+            },
+          },
         };
         refreshDoc(updated);
         setFeedback(`Processing failed for "${doc.name}": ${failMsg}`);
@@ -116,11 +126,87 @@ export default function Documents() {
         extractionDetails["Predicted Type"] = result.classification.predictedType;
       }
 
-      // Real sessions must NOT fabricate a positive validation claim
-      const isRealSession = Boolean(session?.token && session?.token !== "mock-jwt-token");
-      const defaultValidation = isRealSession
-        ? { "Status": "Pending — validation not performed" }
-        : { "Name Match": "Matches application record", "DOB Match": "Matches application record" };
+      let validationDetails = {};
+      let authDetails = { status: "PENDING" };
+
+      if (session?.token && session.token !== "mock-jwt-token") {
+        if (doc.documentId) {
+          try {
+            const verifRes = await getVerificationStatus(
+              session?.applicantId,
+              doc.id,
+              session?.token,
+              doc.documentId
+            );
+            if (verifRes?.validationResult) {
+              const vRes = verifRes.validationResult;
+              const fr = vRes.fieldResults || {};
+              for (const [k, v] of Object.entries(fr)) {
+                validationDetails[k] = `${v.status}: ${v.message || ""}`;
+              }
+              if (vRes.reasons && vRes.reasons.length > 0) {
+                validationDetails["Validation Notes"] = vRes.reasons.join("; ");
+              }
+              if (Object.keys(validationDetails).length === 0) {
+                validationDetails["Validation Outcome"] = vRes.validationStatus;
+              }
+            } else {
+              validationDetails = {
+                "Status": "Pending — validation not performed",
+              };
+            }
+            if (verifRes?.authoritativeVerification) {
+              authDetails = {
+                status: verifRes.authoritativeVerification.status,
+                source: verifRes.authoritativeVerification.provider,
+                recordId: verifRes.authoritativeVerification.lookupIdentifier,
+              };
+            } else {
+              authDetails = { status: "PENDING" };
+            }
+          } catch (verifErr) {
+            const errMsg = String(verifErr?.message || "").toLowerCase();
+            const status = verifErr?.status;
+            const isServerError =
+              (typeof status === "number" && status >= 500) ||
+              errMsg.includes("500") ||
+              errMsg.includes("temporarily unavailable") ||
+              errMsg.includes("service error");
+
+            if (isServerError) {
+              // Surface a safe error/unavailable state when verification API explicitly fails
+              validationDetails = {
+                "Validation Status": "Verification details unavailable (network or service error)",
+              };
+              authDetails = {
+                status: "UNAVAILABLE",
+              };
+            } else {
+              // Real backend verification has not occurred or record not found — preserve pending state
+              validationDetails = {
+                "Status": "Pending — validation not performed",
+              };
+              authDetails = {
+                status: "PENDING",
+              };
+            }
+          }
+        } else {
+          validationDetails = {
+            "Status": "Pending — validation not performed",
+          };
+          authDetails = {
+            status: "PENDING",
+          };
+        }
+      } else {
+        // Intentional mock mode fallback
+        validationDetails = doc.details?.validation || {
+          "Name Match": "Matches application record",
+          "DOB Match": "Matches application record",
+        };
+        authDetails = doc.details?.authoritative || { status: "PENDING" };
+      }
 
       const updated = {
         ...doc,
@@ -129,8 +215,8 @@ export default function Documents() {
         details: {
           ...(doc.details || {}),
           extraction: Object.keys(extractionDetails).length > 0 ? extractionDetails : { "OCR Extraction": "Text parsed successfully." },
-          validation: doc.details?.validation || defaultValidation,
-          authoritative: doc.details?.authoritative || { status: "PENDING" },
+          validation: validationDetails,
+          authoritative: authDetails,
         },
       };
       refreshDoc(updated);
@@ -169,6 +255,62 @@ export default function Documents() {
     }
   };
 
+  const handleAuthoritativeVerify = async (doc) => {
+    if (!doc || verifyingAuthDocId === doc.id) return;
+    if (doc.processingStatus !== "COMPLETED") return;
+    setVerifyingAuthDocId(doc.id);
+    setAuthError("");
+    try {
+      const res = await authoritativeVerifyDocument(
+        session?.applicantId,
+        doc.id,
+        session?.token,
+        doc.documentId
+      );
+
+      const updatedAuth = {
+        status: res.status || "SIMULATION_UNAVAILABLE",
+        source: res.provider || "SyntheticDigiLockerProvider",
+        recordId: res.lookupIdentifier || null,
+        message: res.message || "",
+        disclaimer:
+          res.disclaimer ||
+          "Simulated record for testing/evaluation. Not connected to live DigiLocker/government APIs.",
+        isSimulated: Boolean(res.isSimulated),
+      };
+
+      const updatedDoc = {
+        ...doc,
+        details: {
+          ...(doc.details || {}),
+          authoritative: updatedAuth,
+        },
+      };
+
+      refreshDoc(updatedDoc);
+      setViewingDoc(updatedDoc);
+      setFeedback(`Authoritative simulation completed for "${doc.name}": ${updatedAuth.status}`);
+    } catch (err) {
+      const msg = err.message || "Authoritative verification failed.";
+      setAuthError(msg);
+      const failedAuth = {
+        status: "UNAVAILABLE",
+        message: msg,
+      };
+      const updatedDoc = {
+        ...doc,
+        details: {
+          ...(doc.details || {}),
+          authoritative: failedAuth,
+        },
+      };
+      refreshDoc(updatedDoc);
+      setViewingDoc(updatedDoc);
+    } finally {
+      setVerifyingAuthDocId(null);
+    }
+  };
+
   const submittedCount = documents.filter((d) => d.status !== "NOT_UPLOADED").length;
 
   if (isLoading) return <LoadingState message="Loading your documents…" />;
@@ -198,7 +340,10 @@ export default function Documents() {
             key={doc.id}
             doc={doc}
             onUpload={(file, variant) => handleUpload(doc.id, file, variant)}
-            onView={() => setViewingDoc(doc)}
+            onView={() => {
+              setAuthError("");
+              setViewingDoc(doc);
+            }}
             onRemove={() => setRemovingDoc(doc)}
             onProcess={() => handleProcess(doc)}
             isProcessing={processingDocId === doc.id}
@@ -207,8 +352,24 @@ export default function Documents() {
       </div>
 
       {viewingDoc && (
-        <Modal title="Document Verification" onClose={() => setViewingDoc(null)}>
-          <DocumentVerificationPanel documentName={viewingDoc.name} details={viewingDoc.details} />
+        <Modal
+          title="Document Verification"
+          onClose={() => {
+            setViewingDoc(null);
+            setAuthError("");
+          }}
+        >
+          <DocumentVerificationPanel
+            documentName={viewingDoc.name}
+            details={viewingDoc.details}
+            onRunAuthoritativeVerify={() => handleAuthoritativeVerify(viewingDoc)}
+            isAuthoritativeVerifying={verifyingAuthDocId === viewingDoc.id}
+            authoritativeError={authError}
+            isEligibleForAuthoritative={
+              viewingDoc.status !== "NOT_UPLOADED" &&
+              viewingDoc.processingStatus === "COMPLETED"
+            }
+          />
         </Modal>
       )}
 

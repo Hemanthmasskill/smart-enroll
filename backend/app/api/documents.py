@@ -14,14 +14,22 @@ from app.api.deps import RequireRole, get_current_user
 from app.core.database import get_db
 from app.schemas.document import DocumentDeleteResponse, DocumentResponse
 from app.schemas.document_processing import DocumentProcessingResult
+from app.schemas.verification import (
+    AuthoritativeVerificationRecord,
+    DocumentValidationResult,
+    DocumentVerificationDetailsResponse,
+)
 from app.services.document import (
+    authoritative_verify_document,
     delete_document,
     get_document_file,
     get_document_metadata,
     get_document_processing_result,
+    get_document_verification,
     list_documents,
     process_document,
     upload_document,
+    verify_document,
 )
 
 router = APIRouter()
@@ -183,6 +191,70 @@ def get_document_processing_result_endpoint(
     Enforces ownership (applicant owns document, or admin allowed).
     """
     return get_document_processing_result(
+        db=db,
+        current_user=current_user,
+        document_id=document_id,
+    )
+
+
+@router.post(
+    "/{document_id}/verify",
+    response_model=DocumentValidationResult,
+    tags=["Documents"],
+)
+def verify_document_endpoint(
+    document_id: str,
+    current_user: dict = Depends(RequireRole(["applicant"])),
+    db: Database = Depends(get_db),
+):
+    """
+    Rerun deterministic content validation against canonical application and sibling documents.
+    Enforces ownership (only owning applicant permitted to initiate validation).
+    """
+    return verify_document(
+        db=db,
+        current_user=current_user,
+        document_id=document_id,
+    )
+
+
+@router.get(
+    "/{document_id}/verification",
+    response_model=DocumentVerificationDetailsResponse,
+    tags=["Documents"],
+)
+def get_document_verification_endpoint(
+    document_id: str,
+    current_user: dict = Depends(get_current_user),
+    db: Database = Depends(get_db),
+):
+    """
+    Retrieve structured verification details including field comparisons, cross-checks, and authoritative simulation.
+    Enforces ownership (applicant owns document, or admin allowed).
+    """
+    return get_document_verification(
+        db=db,
+        current_user=current_user,
+        document_id=document_id,
+    )
+
+
+@router.post(
+    "/{document_id}/authoritative-verify",
+    response_model=AuthoritativeVerificationRecord,
+    tags=["Documents"],
+)
+def authoritative_verify_document_endpoint(
+    document_id: str,
+    current_user: dict = Depends(RequireRole(["applicant"])),
+    db: Database = Depends(get_db),
+):
+    """
+    Run simulated authoritative verification against synthetic fixtures.
+    Enforces ownership (only owning applicant permitted).
+    Results are strictly simulated and cannot establish authentic government verification.
+    """
+    return authoritative_verify_document(
         db=db,
         current_user=current_user,
         document_id=document_id,

@@ -27,6 +27,11 @@ export const DOCUMENT_STATES = {
   REJECTED: "Rejected",
   UNVERIFIED: "Unverified",
   UNAVAILABLE: "Unavailable",
+  MANUAL_REVIEW: "Manual Review",
+  SIMULATED_MATCH: "Simulated Match (Synthetic)",
+  SIMULATED_MISMATCH: "Simulated Mismatch",
+  SIMULATED_NOT_FOUND: "Simulated Record Not Found",
+  SIMULATION_UNAVAILABLE: "Simulation Unavailable",
 };
 
 // Result of a single configured eligibility rule check (master prompt
@@ -61,6 +66,11 @@ const TONE_MAP = {
   REJECTED: "danger",
   UNVERIFIED: "warning",
   UNAVAILABLE: "neutral",
+  MANUAL_REVIEW: "warning",
+  SIMULATED_MATCH: "info",
+  SIMULATED_MISMATCH: "danger",
+  SIMULATED_NOT_FOUND: "warning",
+  SIMULATION_UNAVAILABLE: "neutral",
   // eligibility rule-result states
   PASSED: "success",
   PENDING: "warning",

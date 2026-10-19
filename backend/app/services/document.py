@@ -10,6 +10,7 @@ from pymongo.errors import DuplicateKeyError
 
 logger = logging.getLogger(__name__)
 
+from bson import ObjectId
 from app.core.config import settings
 from app.schemas.document import (
     DEGREE_VARIANTS,
@@ -22,7 +23,16 @@ from app.schemas.document import (
     normalize_document_type,
 )
 from app.schemas.document_processing import DocumentProcessingResult
+from app.schemas.verification import (
+    AuthoritativeVerificationRecord,
+    DocumentValidationResult,
+    DocumentVerificationDetailsResponse,
+)
 from app.services.ocr import OCREngine, run_document_processing_pipeline
+from app.services.verification import (
+    SyntheticAuthoritativeVerificationProvider,
+    validate_document_content,
+)
 
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MiB limit
 READ_CHUNK_SIZE = 64 * 1024  # 64 KiB bounded reading chunk
@@ -191,6 +201,7 @@ def to_document_response(doc: dict | None, application_id: str, doc_type: str) -
             contentType=None,
             fileSize=None,
             status="NOT_UPLOADED",
+            validationStatus=None,
             required=True,
             uploadedAt=None,
             updatedAt=None,
@@ -212,6 +223,7 @@ def to_document_response(doc: dict | None, application_id: str, doc_type: str) -
         status=doc.get("status", "UPLOADED"),
         processingStatus=doc.get("processingStatus"),
         processingConfidence=doc.get("processingConfidence"),
+        validationStatus=doc.get("validationStatus", "NOT_RUN"),
         required=True,
         uploadedAt=doc.get("uploadedAt"),
         updatedAt=doc.get("updatedAt"),
@@ -711,6 +723,86 @@ def process_document(
         },
     )
 
+    # Increment 14: Synchronously run deterministic content validation when processing succeeds
+    # If processing failed (e.g. engine error), leave document in UPLOADED state and do not validate.
+    # If validation fails unexpectedly, preserve processingStatus = COMPLETED and original processingResult!
+    if result.processingState == "COMPLETED":
+        try:
+            app_record = db["applications"].find_one({"applicationId": app_id}) if app_id else None
+            user_record = None
+            user_id_str = doc.get("userId")
+            if user_id_str:
+                try:
+                    user_record = db["users"].find_one({"_id": ObjectId(user_id_str)})
+                except Exception:
+                    user_record = db["users"].find_one({"_id": user_id_str})
+
+            sibling_docs = []
+            if app_id:
+                sibling_docs = list(
+                    db["documents"].find({"applicationId": app_id, "documentId": {"$ne": document_id}})
+                )
+
+            updated_doc = dict(doc)
+            updated_doc["processingResult"] = result_dict
+            updated_doc["processingStatus"] = result.processingState
+            updated_doc["processingConfidence"] = result.overallConfidence
+
+            val_result = validate_document_content(
+                db=db,
+                document=updated_doc,
+                application=app_record,
+                user=user_record,
+                sibling_documents=sibling_docs,
+            )
+
+            new_status = (
+                "VALIDATED" if val_result.validationStatus == "VALIDATED"
+                else "MISMATCH" if val_result.validationStatus == "MISMATCH"
+                else "MANUAL_REVIEW"
+            )
+
+            db["documents"].update_one(
+                {"_id": doc["_id"]},
+                {
+                    "$set": {
+                        "validationResult": val_result.model_dump(),
+                        "validationStatus": val_result.validationStatus,
+                        "status": new_status,
+                        "updatedAt": datetime.now(timezone.utc).isoformat(),
+                    }
+                },
+            )
+        except Exception as val_err:
+            logger.error(
+                "Unexpected error during content validation for document %s: %s",
+                document_id,
+                str(val_err),
+                exc_info=True,
+            )
+            now_err = datetime.now(timezone.utc).isoformat()
+            db["documents"].update_one(
+                {"_id": doc["_id"]},
+                {
+                    "$set": {
+                        "validationStatus": "ERROR",
+                        "status": "MANUAL_REVIEW",
+                        "validationResult": {
+                            "documentId": document_id,
+                            "documentType": doc_type,
+                            "validationStatus": "ERROR",
+                            "fieldResults": {},
+                            "crossDocumentResults": [],
+                            "missingMandatoryFields": [],
+                            "reasons": ["Unexpected error during content validation execution."],
+                            "validatedAt": now_err,
+                            "errorSummary": "Internal error occurred during validation execution.",
+                        },
+                        "updatedAt": now_err,
+                    }
+                },
+            )
+
     return result
 
 
@@ -752,3 +844,199 @@ def get_document_processing_result(
         )
 
     return DocumentProcessingResult.model_validate(res_data)
+
+
+def verify_document(
+    db: Database,
+    current_user: dict,
+    document_id: str,
+) -> DocumentValidationResult:
+    """
+    Rerun deterministic content validation against canonical application and sibling documents.
+    Applicant owner only.
+    Requires completed OCR processing.
+    """
+    if current_user.get("role") != "applicant":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only applicants are permitted to verify documents.",
+        )
+
+    doc = db["documents"].find_one({"documentId": document_id})
+    if not doc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Document not found.",
+        )
+
+    user_id = str(current_user["_id"])
+    if doc.get("userId") != user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to verify this document.",
+        )
+
+    if doc.get("processingStatus") != "COMPLETED" or not doc.get("processingResult"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Document must complete OCR processing before content validation can be performed.",
+        )
+
+    app_id = doc.get("applicationId")
+    app_record = db["applications"].find_one({"applicationId": app_id}) if app_id else None
+    user_record = None
+    try:
+        user_record = db["users"].find_one({"_id": ObjectId(user_id)})
+    except Exception:
+        user_record = db["users"].find_one({"_id": user_id})
+
+    sibling_docs = []
+    if app_id:
+        sibling_docs = list(
+            db["documents"].find({"applicationId": app_id, "documentId": {"$ne": document_id}})
+        )
+
+    val_result = validate_document_content(
+        db=db,
+        document=doc,
+        application=app_record,
+        user=user_record,
+        sibling_documents=sibling_docs,
+    )
+
+    new_status = (
+        "VALIDATED" if val_result.validationStatus == "VALIDATED"
+        else "MISMATCH" if val_result.validationStatus == "MISMATCH"
+        else "MANUAL_REVIEW"
+    )
+
+    now_done = datetime.now(timezone.utc).isoformat()
+    db["documents"].update_one(
+        {"_id": doc["_id"]},
+        {
+            "$set": {
+                "validationResult": val_result.model_dump(),
+                "validationStatus": val_result.validationStatus,
+                "status": new_status,
+                "updatedAt": now_done,
+            }
+        },
+    )
+
+    return val_result
+
+
+def get_document_verification(
+    db: Database,
+    current_user: dict,
+    document_id: str,
+) -> DocumentVerificationDetailsResponse:
+    """
+    Retrieve validation result and authoritative verification details for an authorized document.
+    Enforces ownership (applicant owns document, or admin allowed).
+    """
+    doc = db["documents"].find_one({"documentId": document_id})
+    if not doc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Document not found.",
+        )
+
+    user_role = current_user.get("role")
+    user_id = str(current_user["_id"])
+    if user_role == "applicant":
+        if doc.get("userId") != user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Not authorized to access verification details for this document.",
+            )
+    elif user_role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Operation not permitted for this role.",
+        )
+
+    proc_res = doc.get("processingResult") or {}
+    fields = proc_res.get("fields") or {}
+    extraction_summary = {}
+    for k, v in fields.items():
+        if isinstance(v, dict) and v.get("normalizedValue") is not None:
+            extraction_summary[k] = v.get("normalizedValue")
+
+    val_data = doc.get("validationResult")
+    auth_data = doc.get("authoritativeVerification")
+
+    return DocumentVerificationDetailsResponse(
+        documentId=document_id,
+        documentType=doc.get("documentType", "10TH_MARKSHEET"),
+        lifecycleStatus=doc.get("status", "UPLOADED"),
+        processingStatus=doc.get("processingStatus"),
+        processingConfidence=doc.get("processingConfidence"),
+        validationStatus=doc.get("validationStatus", "NOT_RUN"),
+        validationResult=DocumentValidationResult.model_validate(val_data) if val_data else None,
+        authoritativeVerification=AuthoritativeVerificationRecord.model_validate(auth_data) if auth_data else None,
+        extractionSummary=extraction_summary if extraction_summary else None,
+    )
+
+
+def authoritative_verify_document(
+    db: Database,
+    current_user: dict,
+    document_id: str,
+) -> AuthoritativeVerificationRecord:
+    """
+    Run simulated authoritative verification against synthetic fixtures.
+    Applicant owner only.
+    Stores authoritativeVerification separately. Never sets lifecycle status to VERIFIED.
+    """
+    if current_user.get("role") != "applicant":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only applicants are permitted to run authoritative verification.",
+        )
+
+    doc = db["documents"].find_one({"documentId": document_id})
+    if not doc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Document not found.",
+        )
+
+    user_id = str(current_user["_id"])
+    if doc.get("userId") != user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to run authoritative verification on this document.",
+        )
+
+    if doc.get("processingStatus") != "COMPLETED" or not doc.get("processingResult"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Document must complete OCR processing before authoritative verification.",
+        )
+
+    proc_res = doc.get("processingResult") or {}
+    extracted_fields = proc_res.get("fields") or {}
+    doc_type = doc.get("documentType", "10TH_MARKSHEET")
+
+    cand_name = (extracted_fields.get("candidateName") or {}).get("normalizedValue")
+
+    provider = SyntheticAuthoritativeVerificationProvider()
+    auth_record = provider.verify_document_credential(
+        document_type=doc_type,
+        extracted_fields=extracted_fields,
+        candidate_name=cand_name,
+    )
+
+    now_done = datetime.now(timezone.utc).isoformat()
+    db["documents"].update_one(
+        {"_id": doc["_id"]},
+        {
+            "$set": {
+                "authoritativeVerification": auth_record.model_dump(),
+                "updatedAt": now_done,
+            }
+        },
+    )
+
+    return auth_record
