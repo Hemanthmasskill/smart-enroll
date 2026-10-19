@@ -65,6 +65,24 @@ export default function Documents() {
         doc.documentId
       );
 
+      if (result.processingState === "FAILED") {
+        const failMsg = result.errorMessage || "Document processing failed.";
+        const updated = {
+          ...doc,
+          processingStatus: "FAILED",
+          processingConfidence: 0.0,
+          details: doc.details
+            ? {
+                ...doc.details,
+                extraction: { "Status": "OCR processing failed", "Error": failMsg },
+              }
+            : null,
+        };
+        refreshDoc(updated);
+        setFeedback(`Processing failed for "${doc.name}": ${failMsg}`);
+        return;
+      }
+
       // Build extraction summary for Layer 1 panel view
       const extractionDetails = {};
       if (result.fields) {
@@ -98,6 +116,12 @@ export default function Documents() {
         extractionDetails["Predicted Type"] = result.classification.predictedType;
       }
 
+      // Real sessions must NOT fabricate a positive validation claim
+      const isRealSession = Boolean(session?.token && session?.token !== "mock-jwt-token");
+      const defaultValidation = isRealSession
+        ? { "Status": "Pending — validation not performed" }
+        : { "Name Match": "Matches application record", "DOB Match": "Matches application record" };
+
       const updated = {
         ...doc,
         processingStatus: result.processingState || "COMPLETED",
@@ -105,7 +129,7 @@ export default function Documents() {
         details: {
           ...(doc.details || {}),
           extraction: Object.keys(extractionDetails).length > 0 ? extractionDetails : { "OCR Extraction": "Text parsed successfully." },
-          validation: doc.details?.validation || { "Structure": "Format matches requirements" },
+          validation: doc.details?.validation || defaultValidation,
           authoritative: doc.details?.authoritative || { status: "PENDING" },
         },
       };

@@ -8,6 +8,8 @@ from app.services.ocr.image_processor import preprocess_image_for_ocr
 MAX_PDF_PAGES = 10
 RENDER_DPI = 150
 TEXT_POOR_THRESHOLD = 50  # Characters
+MAX_PDF_RENDER_DIMENSION = 4096
+MAX_PDF_RENDER_PIXELS = 10_000_000  # 10 Megapixels max raster allocation per page
 
 
 def process_pdf_bytes(
@@ -54,8 +56,28 @@ def process_pdf_bytes(
                 # Page contains usable native digital text
                 page_texts.append(native_text)
             else:
-                # Text-poor or scanned page: render page pixmap and run OCR
+                # Text-poor or scanned page: validate raster limits before rendering
                 zoom = RENDER_DPI / 72.0
+                rect = page.rect
+                expected_width = int(rect.width * zoom)
+                expected_height = int(rect.height * zoom)
+                expected_pixels = expected_width * expected_height
+
+                if expected_width <= 0 or expected_height <= 0:
+                    raise ValueError(
+                        f"PDF page {page_idx + 1} has invalid dimensions ({rect.width}x{rect.height} pt)."
+                    )
+
+                if (
+                    expected_width > MAX_PDF_RENDER_DIMENSION
+                    or expected_height > MAX_PDF_RENDER_DIMENSION
+                    or expected_pixels > MAX_PDF_RENDER_PIXELS
+                ):
+                    raise ValueError(
+                        f"PDF page {page_idx + 1} render dimensions ({expected_width}x{expected_height} = {expected_pixels}px) "
+                        f"exceed safety limits (max dimension {MAX_PDF_RENDER_DIMENSION}px, max area {MAX_PDF_RENDER_PIXELS}px)."
+                    )
+
                 matrix = pymupdf.Matrix(zoom, zoom)
                 pix = page.get_pixmap(matrix=matrix, alpha=False)
 

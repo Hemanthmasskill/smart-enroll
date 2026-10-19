@@ -861,3 +861,113 @@ def test_retrieval_before_processing_returns_404():
     get_res = client.get(f"/api/v1/documents/{doc_id}/processing-result", headers=applicant["headers"])
     assert get_res.status_code == 404
     assert "no processing result" in get_res.json()["detail"].lower()
+
+
+def test_oversized_pdf_page_rejected_before_rasterization(monkeypatch):
+    """
+    Regression test for bounded PDF page rendering:
+    Validates expected raster dimensions against explicit safety limits.
+    Rejects pages exceeding limits with ValueError without allocating an image,
+    and confirms page.get_pixmap is never invoked.
+    """
+    doc = pymupdf.open()
+    # 3000 x 3000 points. At 150 DPI, raster is 6250 x 6250 = 39,062,500 px (> 10 MP) and edge 6250 (> 4096)
+    doc.new_page(width=3000, height=3000)
+    oversized_pdf_bytes = doc.tobytes()
+    doc.close()
+
+    real_get_pixmap = pymupdf.Page.get_pixmap
+    pixmap_called = False
+
+    def spy_get_pixmap(self, *args, **kwargs):
+        nonlocal pixmap_called
+        pixmap_called = True
+        return real_get_pixmap(self, *args, **kwargs)
+
+    monkeypatch.setattr(pymupdf.Page, "get_pixmap", spy_get_pixmap)
+
+    mock_engine = MockOCREngine()
+
+    # Direct call to process_pdf_bytes raises ValueError before rasterization
+    with pytest.raises(ValueError) as exc_info:
+        process_pdf_bytes(oversized_pdf_bytes, ocr_engine=mock_engine)
+
+    assert "safety limits" in str(exc_info.value).lower()
+    assert pixmap_called is False
+
+    # Pipeline handles the error safely, returning processingState FAILED
+    res = run_document_processing_pipeline(
+        file_bytes=oversized_pdf_bytes,
+        content_type="application/pdf",
+        document_id="doc_oversized_test",
+        document_type="10TH_MARKSHEET",
+        engine=mock_engine,
+    )
+    assert res.processingState == "FAILED"
+    assert "safety limits" in (res.errorMessage or "").lower()
+    assert pixmap_called is False
+
+
+def test_pipeline_returns_failed_state_with_http_200_and_allows_retry():
+    """
+    Regression test for OCR failure reporting:
+    Validates that when the OCR engine fails during processing:
+    1. The API returns HTTP 200 with processingState: 'FAILED'.
+    2. errorMessage is populated with the diagnostic failure detail.
+    3. The document processingStatus in the database is persisted as 'FAILED'.
+    4. Subsequent retry requests are accepted and succeed once the underlying issue is resolved.
+    """
+    client = TestClient(app)
+    applicant = register_applicant(client, "fail_retry@example.com", "Fail Retry Applicant")
+
+    # Upload empty scanned-like page that triggers OCR engine fallback
+    scanned_pdf = create_synthetic_pdf([], pages=1)
+    up_res = client.post(
+        "/api/v1/documents/upload",
+        headers=applicant["headers"],
+        files={"file": ("10th.pdf", scanned_pdf, "application/pdf")},
+        data={"documentType": "10TH_MARKSHEET"},
+    )
+    assert up_res.status_code == 201
+    doc_id = up_res.json()["documentId"]
+
+    # Configure engine failure
+    set_ocr_engine(MockOCREngine(is_available=False))
+
+    res = client.post(f"/api/v1/documents/{doc_id}/process", headers=applicant["headers"])
+    assert res.status_code == 200
+    body = res.json()
+    assert body["processingState"] == "FAILED"
+    assert body["overallConfidence"] == 0.0
+    assert "unavailable" in (body["errorMessage"] or "").lower()
+
+    # Verify MongoDB persistence of FAILED status
+    db = get_db()
+    stored_doc = db["documents"].find_one({"documentId": doc_id})
+    assert stored_doc is not None
+    assert stored_doc.get("processingStatus") == "FAILED"
+    assert stored_doc.get("status") == "UPLOADED"  # Never changed to VERIFIED
+
+    # Test retry: restore working engine and reprocess
+    retry_engine = MockOCREngine(
+        mock_text=(
+            "CENTRAL BOARD OF SECONDARY EDUCATION\n"
+            "Secondary School Examination (Class X)\n"
+            "Name: Retry Success\n"
+            "Roll No: 9988776\n"
+            "Date of Birth: 12/05/2004\n"
+            "Marks Obtained: 460\n"
+            "Maximum Marks: 500\n"
+        )
+    )
+    set_ocr_engine(retry_engine)
+
+    retry_res = client.post(f"/api/v1/documents/{doc_id}/process", headers=applicant["headers"])
+    assert retry_res.status_code == 200
+    retry_body = retry_res.json()
+    assert retry_body["processingState"] == "COMPLETED"
+    assert retry_body["overallConfidence"] > 0.70
+    assert retry_body["fields"]["candidateName"]["normalizedValue"] == "Retry Success"
+
+    stored_doc_after = db["documents"].find_one({"documentId": doc_id})
+    assert stored_doc_after.get("processingStatus") == "COMPLETED"
