@@ -89,6 +89,7 @@ def tool_get_application(
     db: Database,
     current_user: dict,
     application_id: str,
+    **kwargs: Any,
 ) -> ToolExecutionResult:
     """Retrieve application record enforcing applicant ownership or admin access."""
     try:
@@ -116,6 +117,7 @@ def tool_get_program_requirements(
     db: Database,
     current_user: dict,
     programme_id: str,
+    **kwargs: Any,
 ) -> ToolExecutionResult:
     """Retrieve configured, deterministic admission requirements for a programme."""
     pid = programme_id.strip().lower()
@@ -148,6 +150,7 @@ def tool_check_document_completeness(
     db: Database,
     current_user: dict,
     application_id: str,
+    **kwargs: Any,
 ) -> ToolExecutionResult:
     """
     Inspect the 6 logical document slots for an application and identify missing documents.
@@ -203,10 +206,12 @@ def tool_process_document(
     db: Database,
     current_user: dict,
     document_id: str,
+    run_id: str | None = None,
+    **kwargs: Any,
 ) -> ToolExecutionResult:
-    """Run OCR extraction and document classification. Enforces applicant ownership."""
+    """Run OCR extraction and document classification. Enforces applicant ownership and fencing."""
     try:
-        result = process_document(db, current_user, document_id)
+        result = process_document(db, current_user, document_id, run_id=run_id)
         data = result.model_dump() if hasattr(result, "model_dump") else result
         return ToolExecutionResult(
             tool=ToolName.PROCESS_DOCUMENT.value,
@@ -229,6 +234,7 @@ def tool_extract_document_data(
     db: Database,
     current_user: dict,
     document_id: str,
+    **kwargs: Any,
 ) -> ToolExecutionResult:
     """Retrieve persisted structured OCR field extraction and confidence."""
     try:
@@ -255,10 +261,12 @@ def tool_verify_document(
     db: Database,
     current_user: dict,
     document_id: str,
+    run_id: str | None = None,
+    **kwargs: Any,
 ) -> ToolExecutionResult:
     """Execute Layer 2 deterministic content validation against application record."""
     try:
-        result = verify_document(db, current_user, document_id)
+        result = verify_document(db, current_user, document_id, run_id=run_id)
         data = result.model_dump() if hasattr(result, "model_dump") else result
         return ToolExecutionResult(
             tool=ToolName.VERIFY_DOCUMENT.value,
@@ -282,6 +290,7 @@ def tool_compare_applicant_details(
     current_user: dict,
     document_id: str,
     application_id: str | None = None,
+    **kwargs: Any,
 ) -> ToolExecutionResult:
     """
     Compare document extracted fields directly against application identity and academic details.
@@ -316,6 +325,7 @@ def tool_check_eligibility(
     db: Database,
     current_user: dict,
     application_id: str,
+    **kwargs: Any,
 ) -> ToolExecutionResult:
     """
     Contract interface for deterministic eligibility evaluation.
@@ -344,6 +354,7 @@ def tool_create_exception(
     exception_type: str,
     description: str,
     severity: str = "MEDIUM",
+    **kwargs: Any,
 ) -> ToolExecutionResult:
     """
     Contract interface for recording an admission workflow exception.
@@ -371,6 +382,7 @@ def tool_request_missing_document(
     current_user: dict,
     application_id: str,
     document_type: str,
+    **kwargs: Any,
 ) -> ToolExecutionResult:
     """
     Contract interface for flagging missing required documents and dispatching upload prompts.
@@ -411,6 +423,8 @@ def tool_update_application_status(
     current_user: dict,
     application_id: str,
     new_status: str,
+    run_id: str | None = None,
+    **kwargs: Any,
 ) -> ToolExecutionResult:
     """
     Update application workflow status with strict lifecycle transition graph validation.
@@ -521,16 +535,29 @@ def tool_update_application_status(
                 message="Cannot transition to 'PROCESSING_COMPLETE': required workflow-completion evidence is missing.",
             )
 
-    # 6. Apply state transition atomically
+    # 6. Apply state transition atomically with active run fencing
     now = datetime.now(timezone.utc).isoformat()
+    filter_doc: dict[str, Any] = {"applicationId": app_id}
+    if run_id:
+        filter_doc["activeRunId"] = run_id
+        filter_doc["supersededRunIds"] = {"$ne": run_id}
+
     updated = db["applications"].find_one_and_update(
-        {"applicationId": app_id},
+        filter_doc,
         {"$set": {"status": status_clean, "updatedAt": now}},
         return_document=True,
         projection={"_id": 0},
     )
 
     if not updated:
+        if run_id:
+            current_app = db["applications"].find_one({"applicationId": app_id})
+            if current_app and (current_app.get("activeRunId") != run_id or run_id in current_app.get("supersededRunIds", [])):
+                return ToolExecutionResult(
+                    tool=ToolName.UPDATE_APPLICATION_STATUS.value,
+                    status=ToolStatus.FAILED.value,
+                    message=f"Execution ownership lost for run '{run_id}'. Application status update rejected.",
+                )
         return ToolExecutionResult(
             tool=ToolName.UPDATE_APPLICATION_STATUS.value,
             status=ToolStatus.FAILED.value,
@@ -559,6 +586,7 @@ def tool_send_notification(
     title: str,
     description: str,
     applicant_id: str | None = None,
+    **kwargs: Any,
 ) -> ToolExecutionResult:
     """
     Contract interface for dispatching notifications to applicants.
@@ -591,6 +619,7 @@ def tool_record_audit_event(
     result: str,
     status: str = "COMPLETED",
     applicant_name: str | None = None,
+    **kwargs: Any,
 ) -> ToolExecutionResult:
     """
     Persist structured, observable audit trail record to MongoDB's agent_activity collection.
@@ -712,6 +741,7 @@ def execute_tool(
     parameters: dict[str, Any],
     current_user: dict,
     db: Database,
+    run_id: str | None = None,
 ) -> ToolExecutionResult:
     """
     Execute a registered tool within security and boundary constraints.
@@ -727,8 +757,12 @@ def execute_tool(
             message=f"Tool '{clean_name}' is not registered. Available tools: {', '.join(sorted(TOOL_REGISTRY.keys()))}",
         )
 
+    call_params = dict(parameters)
+    if run_id and "run_id" not in call_params:
+        call_params["run_id"] = run_id
+
     try:
-        return handler(db=db, current_user=current_user, **parameters)
+        return handler(db=db, current_user=current_user, **call_params)
     except TypeError as e:
         logger.error(f"Parameter mismatch for tool '{clean_name}': {e}")
         return ToolExecutionResult(

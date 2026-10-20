@@ -67,28 +67,65 @@
 ## 5. Active Increment and Task Status
 - **Active Increment:** **Increment 15 â€” Agentic Orchestration** (IN PROGRESS â€” Unmerged)
 - **Active Branch:** `increment-15-agentic-orchestration`
-- **Completed Task:** **Task 15.1 â€” Agentic Orchestration Foundation & Security Corrections** (Implemented & Verified)
-  - Defined agent schemas (`AuditEventRecord`, `ToolExecutionRequest`, `ToolExecutionResult`, `ToolName`, `WorkflowStage`, `ToolStatus`) in `backend/app/schemas/agent.py`.
-  - Created tool registry (`backend/app/agents/tools.py`) providing standard interfaces and execution wrappers for all 13 planned tools.
-  - Wrapped existing deterministic services (Application, Document, OCR, Verification) with RBAC and applicant ownership checks.
-  - Defined integration interfaces for pending services (Increments 16â€“18: Eligibility, Exceptions, Notifications) returning explicit `DEPENDENCY_PENDING` contracts rather than fabricated results.
-  - Labeled `CANONICAL_PROGRAMME_RULES` as provisional scaffolding for Increment 15, noting authoritative policy belongs to Increment 16.
-  - Documented future integration consideration for compound indexing on `agent_activity` (`(applicationId, createdAt)` and `(stage, createdAt)`).
-  - Implemented persistent structured audit logging to MongoDB `agent_activity` collection (conforming to frontend `AgentActivity` format without chain-of-thought exposure).
-  - **Applied Task 15.1 Security Corrections:**
-    - Enforced strict server-side authorization boundaries on `tool_update_application_status`: applicants are strictly rejected from updating status (own or cross-applicant); administrative or internal orchestrator authorization required.
-    - Implemented explicit lifecycle transition graph `ALLOWED_STATUS_TRANSITIONS`: rejects invalid transitions (e.g. `DRAFT`/`SUBMITTED` directly to `PROCESSING_COMPLETE`), leaving database state untouched.
-    - Gated terminal `ELIGIBLE`/`INELIGIBLE` transitions on deterministic eligibility results (returns `DEPENDENCY_PENDING` for Increment 16).
-    - Gated `PROCESSING_COMPLETE` on verified workflow-completion evidence.
-    - Removed public generic tool-execution endpoint `POST /api/v1/agents/tools/execute`, preserving the internal Python `execute_tool` dispatcher and protected audit-activity queries.
-    - Sanitized catch-all exception handling in `execute_tool` to prevent disclosure of internal connection strings, database errors, or stack traces.
-    - Added 10 dedicated regression tests in `backend/tests/test_agent_orchestration.py` (totaling 18 tests).
-  - **Freshly Verified Test Evidence (Post-Corrections):**
-    - Backend Pytest: **168 passed, 1 warning in 48.89s** (0 failures, 100% pass rate).
-    - Frontend Build: `npm run build` completed in 911ms (**0 errors**).
-    - Cypress E2E: **49 passed across 12 specs in 1m 47s** (0 failed, 0 skipped).
-    - Git check: `git diff --check` passed with 0 errors.
-- **Next Task:** **Task 15.2 â€” Autonomous Orchestrator Loop** (Paused pending ChatGPT Technical Review and Approval)
+- **Completed Tasks:**
+  - **Task 15.1 — Agentic Orchestration Foundation & Security Corrections** (Commit: `98ffa5a`)
+    - Defined agent schemas (`AuditEventRecord`, `ToolExecutionRequest`, `ToolExecutionResult`, `ToolName`, `WorkflowStage`, `ToolStatus`) in `backend/app/schemas/agent.py`.
+    - Created tool registry (`backend/app/agents/tools.py`) providing standard interfaces and execution wrappers for all 13 planned tools.
+    - Wrapped existing deterministic services (Application, Document, OCR, Verification) with RBAC and applicant ownership checks.
+    - Defined integration interfaces for pending services (Increments 16–18: Eligibility, Exceptions, Notifications) returning explicit `DEPENDENCY_PENDING` contracts rather than fabricated results.
+    - Enforced strict server-side authorization boundaries on status transitions: applicants strictly prohibited from status changes; internal orchestrator and admin authorization enforced.
+    - Implemented explicit lifecycle transition graph `ALLOWED_STATUS_TRANSITIONS` leaving database state untouched on invalid jumps.
+    - Gated `ELIGIBLE`/`INELIGIBLE` on deterministic eligibility results and `PROCESSING_COMPLETE` on verified completion evidence.
+    - Removed public generic tool-execution endpoint, keeping protected audit-activity queries.
+    - Sanitized catch-all exception handling in `execute_tool` to prevent secret/trace leaks.
+    - Added 10 dedicated regression tests in `backend/tests/test_agent_orchestration.py` (18 tests total in Task 15.1).
+  - **Task 15.2 — Autonomous Orchestrator Loop, Recovery Exclusivity & Targeted Final Corrections** (Implemented & Verified — Uncommitted Working Tree)
+    - Created `backend/app/agents/orchestrator.py` implementing bounded lifecycle: `OBSERVE` $\rightarrow$ `PLAN` $\rightarrow$ `ACT` $\rightarrow$ `VERIFY` $\rightarrow$ `RE-PLAN`.
+    - Implemented `PlanningStrategy` abstract base class and `DeterministicPlanningStrategy` for offline, deterministic orchestration over real application, document, OCR, verification, and audit services without requiring external LLM API keys.
+    - **Resolution of Finding 1 — Closing Document-Claim Interleaving Gap & Fencing Order:**
+      - In `_claim_or_recover_run` (`backend/app/agents/orchestrator.py`), established safe resource fencing order:
+        1. Atomically stamps `supersededRunIds: {"$addToSet": stale_run_id}` across **ALL** documents belonging to the application.
+        2. Revokes `activeRunId` on documents currently owned by `stale_run_id` to `recovery_fence_token`, resetting in-flight (`PROCESSING`) documents back to `UPLOADED` so they remain recoverable and processable by the replacement run.
+        3. Only after resource fencing finishes, marks the stale run `ABORTED` and allows the replacement execution.
+      - Refined `claim_filter` in `backend/app/services/document.py` to allow replacement runs to claim documents with superseded tokens (`f"superseded-{stale_run}"`) while strictly rejecting the superseded worker itself.
+      - Reasoning guarantee: If a stale claim commits before the superseded marker, subsequent ownership revocation catches it. If the marker commits first, the claim filter rejects the stale worker with HTTP 409 Conflict.
+    - **Resolution of Finding 2 — Fenced Fatal OCR Exception Handler:**
+      - In `backend/app/services/document.py`, fenced the exception handler around `run_document_processing_pipeline`.
+      - When `run_id` is present, the error status update requires `activeRunId: run_id` and `supersededRunIds: {"$ne": run_id}`.
+      - If ownership was lost during pipeline execution, the conditional error update matches 0 documents and does NOT overwrite the document status with `FAILED`.
+      - Preserves safe logging, returns HTTP 500 to the caller, and maintains existing behavior for requests without a `run_id`.
+    - **Resolution of Finding 3 — Safe Failure on Execution-Exclusivity Index Initialization Failure:**
+      - In `backend/app/core/database.py`, replaced `try/except Exception: pass` around index initialization with explicit error handling and `DatabaseInitializationError(RuntimeError)`.
+      - When `DuplicateKeyError` occurs on unique partial index creation, runs an aggregation pipeline to find and log all conflicting applications and active/recovering run IDs without silently deleting or arbitrarily aborting executions, and raises `DatabaseInitializationError` to prevent the application from reporting successful database initialization or readiness.
+      - Index migration and safe administrator recovery remain supported.
+    - **Strengthened Regression Tests & True Concurrency Evidence:**
+      - `test_orchestration_concurrent_recovery_attempts_cannot_both_claim`: Synchronized two concurrent threads with `threading.Barrier(2)` right before the CAS recovery call; exactly 1 succeeds and 1 gets `ALREADY_RUNNING`.
+      - `test_heartbeat_races_with_stale_run_cas_prevents_takeover`: Synchronized concurrent threads with barrier and event verifying live heartbeat renewer prevents takeover by stale recovery CAS.
+      - `test_crashed_recovering_run_safely_recovered_by_next_worker`: Two concurrent threads race to recover a crashed `RECOVERING` execution; exactly one wins and establishes the replacement run.
+      - `test_pre_claimed_document_persistence_blocked_after_recovery_revokes_token`: Exercises real service persistence path (`process_document` and `verify_document`), verifying rejection at the persistence boundary.
+      - `test_document_claim_commits_before_superseded_marker_revoked_by_subsequent_fencing`: Verifies claim committing immediately before marker is revoked by subsequent fencing and recovered by replacement run.
+      - `test_fenced_fatal_ocr_exception_handler_cannot_mark_failed_if_ownership_lost`: Verifies real service exception handler cannot mark document `FAILED` when ownership is revoked.
+      - `test_database_initialization_fails_safely_on_duplicate_active_runs`: Verifies safe failure, conflict reporting, and successful recovery on duplicate active runs.
+    - **Decoupled Heartbeat & Progress-Version Consistency:**
+      - `HeartbeatRenewer` increments `leaseVersion` monotonically without touching `progressVersion`. `progressVersion` advances strictly on workflow step progression, preventing self-fencing during long-running tool execution.
+    - **Sanitized Failures & Lifecycle Status Mapping:**
+      - Lifecycle status (`OrchestrationRunStatus`) and workflow outcomes (`OrchestrationOutcome`) remain strictly separated. Terminal workflow outcomes release the partial unique index by transitioning to `COMPLETED`.
+      - Top-level exception handling in `AgentOrchestrator.run()` logs complete stack traces internally while returning and persisting a generic safe failure summary, preventing credential or filesystem leakage.
+    - Implemented authenticated orchestration endpoints in `backend/app/api/agents.py`:
+      - `POST /api/v1/agents/orchestrate/{application_id}` (applicant ownership or admin authorized)
+      - `GET /api/v1/agents/orchestrate/{application_id}/status` (retrieves latest run status)
+      - `GET /api/v1/agents/orchestrate/runs/{run_id}` (retrieves specific run with step audit trail)
+    - Total orchestration regression suite expanded to **56 dedicated tests** in `backend/tests/test_agent_orchestration.py`.
+  - **Supported Guarantees & Documented Limitations:**
+    - *Guarantees:* Single active execution per application enforced across both `RUNNING` and `RECOVERING` states by database partial unique index; atomic CAS ensures exactly one worker acquires recovery ownership; crashed recoverers are safely detected and taken over without abandonment; safe recovery resource revocation order (stamping `supersededRunIds` across all documents before revoking `activeRunId`) closes the document claim interleaving gap; fatal OCR exception handler is strictly fenced so stale workers cannot mark documents `FAILED`; active workers maintain lease via background heartbeats without self-fencing; duplicate triggers yield safe `ALREADY_RUNNING`; database initialization fails loudly and safely if execution-exclusivity indexes cannot be built.
+    - *Limitations of Standalone MongoDB:* Without a replica set or mongos cluster, multi-document ACID transactions (`start_session` / `session.start_transaction`) are not available. Cross-collection consistency between `orchestration_runs`, `applications`, and `documents` is guaranteed via strictly linearized conditional atomic single-document updates and monotonic fencing tokens (`supersededRunIds`), not distributed 2PC.
+  - **Freshly Verified Test Evidence (Task 15.2 Targeted Final Corrections):**
+    - Pytest Orchestration Suite: `backend\.venv\Scripts\pytest backend\tests\test_agent_orchestration.py -v` $\rightarrow$ **56 passed, 1 warning in 18.44s** (100% pass rate).
+    - Pytest Full Backend Suite: `backend\.venv\Scripts\pytest backend\tests -v` $\rightarrow$ **206 passed, 1 warning in 73.76s** (100% pass rate).
+    - Frontend Production Build: `npm run build` $\rightarrow$ Built in 812ms with **0 errors** (104 modules transformed).
+    - Cypress E2E Suite: `npm run cy:run` $\rightarrow$ **49 passed across 12 specs in 1m 56s** (100% pass rate, 0 failed, 0 skipped).
+    - Git Check: `git diff --check` $\rightarrow$ Passed with **0 whitespace or formatting errors**.
+- **Next Task:** **ChatGPT Technical Review of Task 15.2 Targeted Final Corrections**, followed by **Task 15.3 — LLM Provider Integration & Agentic Hardening** (Increment 15 remains open and in progress until all approved capabilities are completed and verified).
 
 ---
 

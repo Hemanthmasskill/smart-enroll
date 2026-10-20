@@ -4,7 +4,7 @@ from pymongo.database import Database
 from app.agents.tools import list_agent_activity
 from app.api.deps import get_current_user
 from app.core.database import get_db
-from app.schemas.agent import AuditEventRecord
+from app.schemas.agent import AuditEventRecord, OrchestrationRunResponse
 
 router = APIRouter()
 
@@ -62,3 +62,67 @@ def get_application_agent_activity_endpoint(
         status=status,
         limit=limit,
     )
+
+
+@router.post(
+    "/orchestrate/{application_id}",
+    response_model=OrchestrationRunResponse,
+    tags=["Agent Orchestration"],
+)
+def orchestrate_application_endpoint(
+    application_id: str,
+    current_user: dict = Depends(get_current_user),
+    db: Database = Depends(get_db),
+):
+    """
+    Trigger autonomous agent orchestration loop for an application.
+    Enforces RBAC: Applicants may only orchestrate their own application;
+    Admins may orchestrate any application.
+    """
+    from app.agents.orchestrator import AgentOrchestrator
+
+    orchestrator = AgentOrchestrator(db=db)
+    return orchestrator.run(application_id=application_id, triggered_by_user=current_user)
+
+
+@router.get(
+    "/orchestrate/{application_id}/status",
+    response_model=OrchestrationRunResponse,
+    tags=["Agent Orchestration"],
+)
+def get_orchestration_status_endpoint(
+    application_id: str,
+    current_user: dict = Depends(get_current_user),
+    db: Database = Depends(get_db),
+):
+    """
+    Retrieve latest orchestration run status for an application.
+    Enforces applicant ownership and administrator authorization.
+    """
+    from app.agents.orchestrator import AgentOrchestrator
+
+    orchestrator = AgentOrchestrator(db=db)
+    return orchestrator.get_latest_run_for_application(
+        application_id=application_id,
+        current_user=current_user,
+    )
+
+
+@router.get(
+    "/orchestrate/runs/{run_id}",
+    response_model=OrchestrationRunResponse,
+    tags=["Agent Orchestration"],
+)
+def get_orchestration_run_endpoint(
+    run_id: str,
+    current_user: dict = Depends(get_current_user),
+    db: Database = Depends(get_db),
+):
+    """
+    Retrieve details of a specific orchestration run by runId.
+    Enforces applicant ownership and administrator authorization.
+    """
+    from app.agents.orchestrator import AgentOrchestrator
+
+    orchestrator = AgentOrchestrator(db=db)
+    return orchestrator.get_run(run_id=run_id, current_user=current_user)

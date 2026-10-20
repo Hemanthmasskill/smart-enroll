@@ -1,3 +1,11 @@
+from app.agents.orchestrator import (
+    AgentOrchestrator,
+    ApplicationObservation,
+    DeterministicPlanningStrategy,
+    PlannedAction,
+    PlanningStrategy,
+    map_outcome_to_lifecycle_status,
+)
 from app.agents.tools import (
     TOOL_REGISTRY,
     CANONICAL_PROGRAMME_RULES,
@@ -20,6 +28,12 @@ from app.agents.tools import (
 )
 
 __all__ = [
+    "AgentOrchestrator",
+    "ApplicationObservation",
+    "DeterministicPlanningStrategy",
+    "PlannedAction",
+    "PlanningStrategy",
+    "map_outcome_to_lifecycle_status",
     "TOOL_REGISTRY",
     "CANONICAL_PROGRAMME_RULES",
     "REQUIRED_DOCUMENT_TYPES",

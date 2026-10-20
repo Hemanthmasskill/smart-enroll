@@ -102,3 +102,55 @@ class AgentActivityQuery(BaseModel):
     limit: int = 100
 
     model_config = ConfigDict(extra="ignore")
+
+
+class OrchestrationOutcome(str, Enum):
+    COMPLETED = "COMPLETED"
+    WAITING_FOR_APPLICANT = "WAITING_FOR_APPLICANT"
+    MANUAL_REVIEW_REQUIRED = "MANUAL_REVIEW_REQUIRED"
+    DEPENDENCY_PENDING = "DEPENDENCY_PENDING"
+    FAILED = "FAILED"
+    ALREADY_RUNNING = "ALREADY_RUNNING"
+
+
+class OrchestrationRunStatus(str, Enum):
+    RUNNING = "RUNNING"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+    ABORTED = "ABORTED"
+    RECOVERING = "RECOVERING"
+
+
+class OrchestrationStepRecord(BaseModel):
+    stepIndex: int
+    stage: str
+    tool: str | None = None
+    action: str
+    resultSummary: str
+    status: str
+    executedAt: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+
+    model_config = ConfigDict(extra="ignore")
+
+
+class OrchestrationRunResponse(BaseModel):
+    runId: str = Field(..., description="Unique run identifier, e.g. run-uuid")
+    applicationId: str
+    status: OrchestrationRunStatus = Field(
+        default=OrchestrationRunStatus.COMPLETED,
+        description="Execution lifecycle status (RUNNING, COMPLETED, FAILED, ABORTED)",
+    )
+    outcome: OrchestrationOutcome = Field(
+        ...,
+        description="Business workflow outcome (COMPLETED, WAITING_FOR_APPLICANT, MANUAL_REVIEW_REQUIRED, DEPENDENCY_PENDING, FAILED, ALREADY_RUNNING)",
+    )
+    currentApplicationStatus: str
+    stepsCompleted: int
+    summary: str
+    failureReason: str | None = None
+    pendingDependency: str | None = None
+    startedAt: str
+    completedAt: str | None = None
+    steps: list[OrchestrationStepRecord] = Field(default_factory=list)
+
+    model_config = ConfigDict(extra="ignore")
