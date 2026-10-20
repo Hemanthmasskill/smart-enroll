@@ -3,7 +3,8 @@ from contextlib import asynccontextmanager
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import applications, auth, documents
+from app.api import agents, applications, auth, documents
+from app.api.deps import RequireRole
 from app.core.config import settings
 from app.core.database import close_mongo_connection, connect_to_mongo, get_db
 
@@ -46,6 +47,35 @@ app.include_router(
     prefix=f"{settings.API_V1_STR}/documents",
     tags=["Documents"],
 )
+
+app.include_router(
+    agents.router,
+    prefix=f"{settings.API_V1_STR}/agents",
+    tags=["Agent Orchestration"],
+)
+
+# Admin alias for direct frontend compatibility: GET /api/v1/admin/agent-activity
+@app.get(
+    f"{settings.API_V1_STR}/admin/agent-activity",
+    response_model=list[agents.AuditEventRecord],
+    tags=["Agent Orchestration"],
+)
+def admin_agent_activity_alias(
+    applicationId: str | None = None,
+    stage: str | None = None,
+    status: str | None = None,
+    limit: int = 100,
+    current_user: dict = Depends(RequireRole(["admin"])),
+    db=Depends(get_db),
+):
+    return agents.list_agent_activity(
+        db=db,
+        current_user=current_user,
+        application_id=applicationId,
+        stage=stage,
+        status=status,
+        limit=limit,
+    )
 
 
 @app.get("/health", tags=["Health"])
