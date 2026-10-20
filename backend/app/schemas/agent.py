@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -129,6 +129,7 @@ class OrchestrationStepRecord(BaseModel):
     resultSummary: str
     status: str
     executedAt: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    planner: str | None = None
 
     model_config = ConfigDict(extra="ignore")
 
@@ -152,5 +153,22 @@ class OrchestrationRunResponse(BaseModel):
     startedAt: str
     completedAt: str | None = None
     steps: list[OrchestrationStepRecord] = Field(default_factory=list)
+    planner: str | None = None
 
     model_config = ConfigDict(extra="ignore")
+
+
+class LLMPlanProposal(BaseModel):
+    """
+    Structured model proposal for the single next workflow action.
+    Strictly validated before creating a PlannedAction.
+    """
+    action_type: Literal["TOOL_CALL", "TERMINATE"]
+    tool: ToolName | None = None
+    parameters: dict[str, Any] = Field(default_factory=dict)
+    rationale: str = Field(..., max_length=250, description="Short, sanitized action explanation")
+    stage: WorkflowStage = Field(default=WorkflowStage.ACT)
+    is_terminal: bool = False
+    terminal_outcome: OrchestrationOutcome | None = None
+
+    model_config = ConfigDict(extra="forbid")

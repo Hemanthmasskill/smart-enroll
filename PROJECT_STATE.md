@@ -79,7 +79,7 @@
     - Removed public generic tool-execution endpoint, keeping protected audit-activity queries.
     - Sanitized catch-all exception handling in `execute_tool` to prevent secret/trace leaks.
     - Added 10 dedicated regression tests in `backend/tests/test_agent_orchestration.py` (18 tests total in Task 15.1).
-  - **Task 15.2 — Autonomous Orchestrator Loop, Recovery Exclusivity & Targeted Final Corrections** (Implemented & Verified — Uncommitted Working Tree)
+  - **Task 15.2 — Autonomous Orchestrator Loop, Recovery Exclusivity & Targeted Final Corrections** (Committed: `aaa975b`)
     - Created `backend/app/agents/orchestrator.py` implementing bounded lifecycle: `OBSERVE` $\rightarrow$ `PLAN` $\rightarrow$ `ACT` $\rightarrow$ `VERIFY` $\rightarrow$ `RE-PLAN`.
     - Implemented `PlanningStrategy` abstract base class and `DeterministicPlanningStrategy` for offline, deterministic orchestration over real application, document, OCR, verification, and audit services without requiring external LLM API keys.
     - **Resolution of Finding 1 — Closing Document-Claim Interleaving Gap & Fencing Order:**
@@ -116,16 +116,30 @@
       - `GET /api/v1/agents/orchestrate/{application_id}/status` (retrieves latest run status)
       - `GET /api/v1/agents/orchestrate/runs/{run_id}` (retrieves specific run with step audit trail)
     - Total orchestration regression suite expanded to **56 dedicated tests** in `backend/tests/test_agent_orchestration.py`.
+  - **Task 15.3 — LLM Provider Integration & Agentic Hardening** (Implemented & Verified — Uncommitted Working Tree)
+    - Implemented `LLMProvider` abstract base class and `OpenAICompatibleProvider` in `backend/app/agents/providers.py` using the existing `httpx` dependency without introducing external SDKs, LangChain, or agent frameworks.
+    - Universal OpenAI-compatible API support for OpenAI, Groq, Ollama, vLLM, or LM Studio endpoints with bounded timeout, temperature, and masked credential representation.
+    - Built-in SSRF destination validation (`validate_endpoint_url`) strictly preventing calls to localhost, link-local, loopback, or private network addresses unless explicitly enabled by configuration (`LLM_ALLOW_LOCAL_ENDPOINTS=True`).
+    - Configured local loopback detection (`is_local_endpoint`) and updated `AgentOrchestrator.__init__` to allow local Ollama endpoint initialization without an API key while strictly enforcing valid API credentials for remote endpoints.
+    - Enhanced provider client to omit the `Authorization` header entirely when `api_key` is not configured, ensuring clean compatibility with local Ollama endpoints.
+    - Implemented `LLMPlanningStrategy` in `backend/app/agents/llm_planner.py` conforming to the existing `PlanningStrategy` ABC.
+    - Sanitized observation serializer (`sanitize_observation_for_llm`) enforcing strict privacy by excluding all applicant PII (names, emails, phone numbers, raw OCR text, document contents) and providing only minimal workflow status tokens.
+    - Strict output proposal validation against `LLMPlanProposal` schema with `ConfigDict(extra="forbid")`, enforcing permitted tool names, expected parameters, and terminal outcomes.
+    - Established strict security guardrails: LLM cannot declare document authenticity, cannot override Layer 2 validation mismatches, cannot decide academic eligibility, and cannot jump to `PROCESSING_COMPLETE` without verified deterministic results.
+    - Seamless deterministic fallback: on provider failure, timeout, HTTP 429 rate limit, HTTP 500 error, network disconnection, malformed JSON, or guardrail rejection, gracefully falls back to `DeterministicPlanningStrategy` and records a sanitized `FALLBACK` audit record in `agent_activity`.
+    - Added 26 dedicated unit and integration tests in `backend/tests/test_agent_llm_planner.py` using `httpx.MockTransport` without requiring live internet access or external credentials.
+    - Total backend test suite expanded from 206 to **232 passing tests** (100% pass rate).
   - **Supported Guarantees & Documented Limitations:**
-    - *Guarantees:* Single active execution per application enforced across both `RUNNING` and `RECOVERING` states by database partial unique index; atomic CAS ensures exactly one worker acquires recovery ownership; crashed recoverers are safely detected and taken over without abandonment; safe recovery resource revocation order (stamping `supersededRunIds` across all documents before revoking `activeRunId`) closes the document claim interleaving gap; fatal OCR exception handler is strictly fenced so stale workers cannot mark documents `FAILED`; active workers maintain lease via background heartbeats without self-fencing; duplicate triggers yield safe `ALREADY_RUNNING`; database initialization fails loudly and safely if execution-exclusivity indexes cannot be built.
+    - *Guarantees:* Single active execution per application enforced across both `RUNNING` and `RECOVERING` states by database partial unique index; atomic CAS ensures exactly one worker acquires recovery ownership; crashed recoverers are safely detected and taken over without abandonment; safe recovery resource revocation order closes the document claim interleaving gap; fatal OCR exception handler is strictly fenced so stale workers cannot mark documents `FAILED`; active workers maintain lease via background heartbeats without self-fencing; model-backed planning strictly operates as an untrusted proposal generator with automatic deterministic fallback; zero PII transmitted to external models; database initialization fails loudly and safely if execution-exclusivity indexes cannot be built; local loopback endpoints (such as Ollama) can run keyless when local endpoints are explicitly permitted, while remote providers strictly require valid authentication credentials; arbitrary domain suffixes (`.local`, `.internal`, `.arpa`) do not receive keyless privileges.
     - *Limitations of Standalone MongoDB:* Without a replica set or mongos cluster, multi-document ACID transactions (`start_session` / `session.start_transaction`) are not available. Cross-collection consistency between `orchestration_runs`, `applications`, and `documents` is guaranteed via strictly linearized conditional atomic single-document updates and monotonic fencing tokens (`supersededRunIds`), not distributed 2PC.
-  - **Freshly Verified Test Evidence (Task 15.2 Targeted Final Corrections):**
-    - Pytest Orchestration Suite: `backend\.venv\Scripts\pytest backend\tests\test_agent_orchestration.py -v` $\rightarrow$ **56 passed, 1 warning in 18.44s** (100% pass rate).
-    - Pytest Full Backend Suite: `backend\.venv\Scripts\pytest backend\tests -v` $\rightarrow$ **206 passed, 1 warning in 73.76s** (100% pass rate).
-    - Frontend Production Build: `npm run build` $\rightarrow$ Built in 812ms with **0 errors** (104 modules transformed).
-    - Cypress E2E Suite: `npm run cy:run` $\rightarrow$ **49 passed across 12 specs in 1m 56s** (100% pass rate, 0 failed, 0 skipped).
+  - **Freshly Verified Test Evidence (Task 15.3 Review Hardening):**
+    - Pytest LLM Planner Suite: `backend\.venv\Scripts\pytest backend\tests\test_agent_llm_planner.py -v` $\rightarrow$ **26 passed in 1.26s** (100% pass rate).
+    - Pytest Orchestration Suite: `backend\.venv\Scripts\pytest backend\tests\test_agent_orchestration.py -v` $\rightarrow$ **56 passed, 1 warning in 11.52s** (100% pass rate).
+    - Pytest Full Backend Suite: `backend\.venv\Scripts\pytest backend\tests -v` $\rightarrow$ **232 passed, 1 warning in 65.58s** (100% pass rate).
+    - Frontend Production Build: `npm run build` $\rightarrow$ Built in 800ms with **0 errors** (104 modules transformed).
+    - Cypress E2E Suite: `npm run cy:run` $\rightarrow$ **49 passed across 12 specs in 1m 43s** (100% pass rate, 0 failed, 0 skipped).
     - Git Check: `git diff --check` $\rightarrow$ Passed with **0 whitespace or formatting errors**.
-- **Next Task:** **ChatGPT Technical Review of Task 15.2 Targeted Final Corrections**, followed by **Task 15.3 — LLM Provider Integration & Agentic Hardening** (Increment 15 remains open and in progress until all approved capabilities are completed and verified).
+- **Next Task:** **Technical Review of Task 15.3 & Increment 15 Pre-Merge Audit** (Increment 15 remains open and in progress until all approved capabilities are completed, reviewed, and merged).
 
 ---
 

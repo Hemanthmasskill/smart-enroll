@@ -6,6 +6,21 @@ from app.agents.orchestrator import (
     PlanningStrategy,
     map_outcome_to_lifecycle_status,
 )
+from app.agents.providers import (
+    LLMProvider,
+    OpenAICompatibleProvider,
+    LLMProviderError,
+    LLMProviderTimeoutError,
+    LLMProviderHTTPError,
+    LLMProviderConnectionError,
+    LLMSSRFValidationError,
+    is_local_endpoint,
+)
+from app.agents.llm_planner import (
+    LLMPlanningStrategy,
+    sanitize_observation_for_llm,
+)
+from app.schemas.agent import LLMPlanProposal
 from app.agents.tools import (
     TOOL_REGISTRY,
     CANONICAL_PROGRAMME_RULES,
@@ -34,6 +49,17 @@ __all__ = [
     "PlannedAction",
     "PlanningStrategy",
     "map_outcome_to_lifecycle_status",
+    "LLMProvider",
+    "OpenAICompatibleProvider",
+    "LLMProviderError",
+    "LLMProviderTimeoutError",
+    "LLMProviderHTTPError",
+    "LLMProviderConnectionError",
+    "LLMSSRFValidationError",
+    "is_local_endpoint",
+    "LLMPlanningStrategy",
+    "LLMPlanProposal",
+    "sanitize_observation_for_llm",
     "TOOL_REGISTRY",
     "CANONICAL_PROGRAMME_RULES",
     "REQUIRED_DOCUMENT_TYPES",

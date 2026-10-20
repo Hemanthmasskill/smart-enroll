@@ -164,6 +164,7 @@ class DeterministicPlanningStrategy(PlanningStrategy):
     and dependency boundaries (Increment 16 Eligibility Engine) without
     fabricating results or bypassing deterministic validation.
     """
+    planner_name: str = "DETERMINISTIC"
 
     def plan_next_action(
         self,
@@ -441,7 +442,40 @@ class AgentOrchestrator:
         stale_timeout_seconds: int = 300,
     ):
         self.db = db
-        self.strategy = planning_strategy or DeterministicPlanningStrategy()
+        if planning_strategy is not None:
+            self.strategy = planning_strategy
+        else:
+            from app.core.config import settings
+
+            if settings.LLM_PROVIDER in ("openai_compatible", "openai"):
+                from app.agents.providers import OpenAICompatibleProvider, is_local_endpoint
+                from app.agents.llm_planner import LLMPlanningStrategy
+
+                is_local = is_local_endpoint(settings.LLM_API_BASE)
+                has_valid_credentials = bool(settings.LLM_API_KEY and settings.LLM_API_KEY.strip())
+                can_initialize = (is_local and settings.LLM_ALLOW_LOCAL_ENDPOINTS) or (
+                    not is_local and has_valid_credentials
+                )
+
+                if can_initialize:
+                    provider = OpenAICompatibleProvider(
+                        api_key=settings.LLM_API_KEY,
+                        model=settings.LLM_MODEL,
+                        api_base=settings.LLM_API_BASE,
+                        timeout_seconds=settings.LLM_TIMEOUT_SECONDS,
+                        temperature=settings.LLM_TEMPERATURE,
+                        allow_local_endpoints=settings.LLM_ALLOW_LOCAL_ENDPOINTS,
+                    )
+                    self.strategy = LLMPlanningStrategy(
+                        provider=provider,
+                        fallback_strategy=DeterministicPlanningStrategy(),
+                        fallback_enabled=settings.LLM_FALLBACK_TO_DETERMINISTIC,
+                        db=db,
+                    )
+                else:
+                    self.strategy = DeterministicPlanningStrategy()
+            else:
+                self.strategy = DeterministicPlanningStrategy()
         self.max_iterations = max_iterations
         self.stale_timeout_seconds = stale_timeout_seconds
 
@@ -995,6 +1029,7 @@ class AgentOrchestrator:
                     resultSummary=tool_result.message or tool_result.status,
                     status=tool_result.status,
                     executedAt=datetime.now(timezone.utc).isoformat(),
+                    planner=getattr(self.strategy, "planner_name", "DETERMINISTIC"),
                 )
                 steps.append(step_record)
 
@@ -1084,6 +1119,7 @@ class AgentOrchestrator:
             startedAt=now_iso,
             completedAt=completed_iso,
             steps=steps,
+            planner=getattr(self.strategy, "planner_name", "DETERMINISTIC"),
         )
 
     def get_run(self, run_id: str, current_user: dict) -> OrchestrationRunResponse:
