@@ -448,7 +448,12 @@ class AgentOrchestrator:
             from app.core.config import settings
 
             if settings.LLM_PROVIDER in ("openai_compatible", "openai"):
-                from app.agents.providers import OpenAICompatibleProvider, is_local_endpoint
+                from app.agents.providers import (
+                    LLMProviderError,
+                    LLMSSRFValidationError,
+                    OpenAICompatibleProvider,
+                    is_local_endpoint,
+                )
                 from app.agents.llm_planner import LLMPlanningStrategy
 
                 is_local = is_local_endpoint(settings.LLM_API_BASE)
@@ -458,20 +463,27 @@ class AgentOrchestrator:
                 )
 
                 if can_initialize:
-                    provider = OpenAICompatibleProvider(
-                        api_key=settings.LLM_API_KEY,
-                        model=settings.LLM_MODEL,
-                        api_base=settings.LLM_API_BASE,
-                        timeout_seconds=settings.LLM_TIMEOUT_SECONDS,
-                        temperature=settings.LLM_TEMPERATURE,
-                        allow_local_endpoints=settings.LLM_ALLOW_LOCAL_ENDPOINTS,
-                    )
-                    self.strategy = LLMPlanningStrategy(
-                        provider=provider,
-                        fallback_strategy=DeterministicPlanningStrategy(),
-                        fallback_enabled=settings.LLM_FALLBACK_TO_DETERMINISTIC,
-                        db=db,
-                    )
+                    try:
+                        provider = OpenAICompatibleProvider(
+                            api_key=settings.LLM_API_KEY,
+                            model=settings.LLM_MODEL,
+                            api_base=settings.LLM_API_BASE,
+                            timeout_seconds=settings.LLM_TIMEOUT_SECONDS,
+                            temperature=settings.LLM_TEMPERATURE,
+                            allow_local_endpoints=settings.LLM_ALLOW_LOCAL_ENDPOINTS,
+                        )
+                        self.strategy = LLMPlanningStrategy(
+                            provider=provider,
+                            fallback_strategy=DeterministicPlanningStrategy(),
+                            fallback_enabled=settings.LLM_FALLBACK_TO_DETERMINISTIC,
+                            db=db,
+                        )
+                    except (LLMSSRFValidationError, LLMProviderError) as exc:
+                        logger.warning(
+                            "Cannot initialize LLM provider due to validation error: %s. Falling back to deterministic planner.",
+                            exc,
+                        )
+                        self.strategy = DeterministicPlanningStrategy()
                 else:
                     self.strategy = DeterministicPlanningStrategy()
             else:
@@ -953,8 +965,25 @@ class AgentOrchestrator:
                         break
 
                 if not planned_action:
-                    final_outcome = early_outcome or OrchestrationOutcome.COMPLETED
-                    summary = plan_summary or "No further actions required."
+                    if early_outcome:
+                        final_outcome = early_outcome
+                        summary = plan_summary or f"Workflow halted with outcome: {early_outcome.value}"
+                    else:
+                        if observation.current_status == "PROCESSING_COMPLETE":
+                            final_outcome = OrchestrationOutcome.COMPLETED
+                            summary = plan_summary or "Application processing is complete."
+                        elif observation.current_status in ("DRAFT", "WAITING_FOR_DOCUMENTS"):
+                            final_outcome = OrchestrationOutcome.WAITING_FOR_APPLICANT
+                            summary = plan_summary or f"Awaiting applicant action in status '{observation.current_status}'."
+                        elif observation.current_status == "EXCEPTION":
+                            final_outcome = OrchestrationOutcome.MANUAL_REVIEW_REQUIRED
+                            summary = plan_summary or "Application is in EXCEPTION status requiring manual review."
+                        elif observation.current_status == "ELIGIBILITY_CHECK":
+                            final_outcome = OrchestrationOutcome.DEPENDENCY_PENDING
+                            summary = plan_summary or "Application is awaiting Increment 16 eligibility engine."
+                        else:
+                            final_outcome = OrchestrationOutcome.FAILED
+                            summary = plan_summary or f"Workflow halted unexpectedly in unfinished state '{observation.current_status}' without planned action."
                     break
 
                 # ACT - Enforce fencing check immediately before executing any state-changing tool call

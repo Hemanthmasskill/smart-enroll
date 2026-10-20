@@ -75,13 +75,19 @@ def validate_endpoint_url(url: str, allow_local_endpoints: bool = False) -> str:
     Enforces:
     - Scheme must be http or https.
     - If allow_local_endpoints is False:
-      - Hostnames like localhost, *.local, *.internal, *.arpa are rejected.
-      - Resolved IP addresses cannot be private, loopback, link-local, or reserved.
+      - Local loopback endpoints (localhost, 127.0.0.0/8, ::1) are strictly rejected.
+    - If allow_local_endpoints is True:
+      - ONLY unambiguous local loopback endpoints (e.g., localhost, 127.0.0.1, ::1) are permitted.
+    - For all non-loopback destinations, regardless of allow_local_endpoints:
+      - Hostnames like *.local, *.internal, *.arpa are strictly rejected.
+      - Direct or DNS-resolved IP addresses cannot be private, link-local, unspecified (0.0.0.0, ::),
+        reserved, or loopback.
     """
     if not url or not isinstance(url, str):
         raise LLMSSRFValidationError("Provider URL must be a non-empty string.")
 
-    parsed = urllib.parse.urlparse(url.strip())
+    clean_url = url.strip()
+    parsed = urllib.parse.urlparse(clean_url)
     if parsed.scheme not in ("http", "https"):
         raise LLMSSRFValidationError(
             f"Invalid URL scheme '{parsed.scheme}'. Only 'http' and 'https' are permitted."
@@ -91,13 +97,19 @@ def validate_endpoint_url(url: str, allow_local_endpoints: bool = False) -> str:
     if not hostname:
         raise LLMSSRFValidationError("Invalid URL: missing hostname.")
 
-    if allow_local_endpoints:
-        return url.strip()
+    is_loopback = is_local_endpoint(clean_url)
+    if is_loopback:
+        if allow_local_endpoints:
+            return clean_url
+        raise LLMSSRFValidationError(
+            f"SSRF violation: Endpoint host '{hostname}' is a local loopback address, which is forbidden unless allow_local_endpoints is enabled."
+        )
 
+    # For all non-loopback destinations, enforce strict SSRF validation regardless of allow_local_endpoints
     lower_host = hostname.lower()
     if lower_host in ("localhost", "127.0.0.1", "::1") or lower_host.endswith((".local", ".internal", ".arpa")):
         raise LLMSSRFValidationError(
-            f"SSRF violation: Endpoint host '{hostname}' is a local or private address."
+            f"SSRF violation: Endpoint host '{hostname}' is a restricted local or private domain."
         )
 
     # Check if host is direct IP address
@@ -105,9 +117,9 @@ def validate_endpoint_url(url: str, allow_local_endpoints: bool = False) -> str:
         ip = ipaddress.ip_address(lower_host)
         if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_unspecified:
             raise LLMSSRFValidationError(
-                f"SSRF violation: Direct IP '{lower_host}' is in a private or restricted network range."
+                f"SSRF violation: Direct IP '{lower_host}' is in a private, loopback, or restricted network range."
             )
-        return url.strip()
+        return clean_url
     except ValueError:
         pass
 
@@ -124,7 +136,7 @@ def validate_endpoint_url(url: str, allow_local_endpoints: bool = False) -> str:
     except socket.gaierror as e:
         logger.debug("DNS resolution failed during SSRF validation for %s: %s", hostname, e)
 
-    return url.strip()
+    return clean_url
 
 
 def is_local_endpoint(url: str) -> bool:

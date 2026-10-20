@@ -695,3 +695,385 @@ def test_orchestrator_end_to_end_llm_fallback_on_provider_timeout(clean_db):
     assert fallback_event is not None
     assert "timeout" in fallback_event.get("result", "").lower()
     provider.close()
+
+
+# =====================================================================
+# 11. PR #4 Review Corrections Regression Tests
+# =====================================================================
+
+# ---------------------------------------------------------------------
+# Finding 2: SSRF Destination Validation Regression Tests
+# ---------------------------------------------------------------------
+
+def test_ssrf_validation_permits_loopback_only_when_explicitly_enabled():
+    """Verify loopback is allowed ONLY when allow_local_endpoints is True."""
+    for loopback_url in (
+        "http://localhost:11434/v1",
+        "http://127.0.0.1:11434/v1",
+        "http://127.0.0.2:8000/v1",
+        "http://[::1]:11434/v1",
+    ):
+        # Must fail when allow_local_endpoints is False
+        with pytest.raises(LLMSSRFValidationError) as exc_info:
+            validate_endpoint_url(loopback_url, allow_local_endpoints=False)
+        assert "forbidden unless allow_local_endpoints is enabled" in str(exc_info.value)
+
+        # Must succeed when allow_local_endpoints is True
+        result = validate_endpoint_url(loopback_url, allow_local_endpoints=True)
+        assert result == loopback_url
+
+
+def test_ssrf_validation_rejects_private_and_link_local_even_when_local_endpoints_enabled():
+    """
+    Enabling allow_local_endpoints MUST NOT bypass SSRF checks for
+    link-local, RFC 1918 private, unspecified, or restricted domains.
+    """
+    restricted_targets = [
+        "http://169.254.169.254/latest/meta-data",       # AWS/cloud metadata link-local
+        "http://169.254.1.1:8000/v1",                    # Link-local IPv4
+        "http://10.0.0.1:8000/v1",                       # RFC 1918 Class A
+        "http://10.254.0.1:11434/v1",                    # RFC 1918 Class A
+        "http://172.16.0.1:8000/v1",                     # RFC 1918 Class B
+        "http://192.168.1.1:8000/v1",                    # RFC 1918 Class C
+        "http://192.168.0.254:11434/v1",                 # RFC 1918 Class C
+        "http://0.0.0.0:11434/v1",                       # Unspecified IPv4
+        "http://[::]:11434/v1",                          # Unspecified IPv6
+        "http://ollama.local:11434/v1",                  # .local mDNS
+        "http://metadata.google.internal/v1",            # .internal cloud metadata
+        "http://gateway.arpa/v1",                        # .arpa reverse DNS
+    ]
+
+    for target in restricted_targets:
+        with pytest.raises(LLMSSRFValidationError):
+            validate_endpoint_url(target, allow_local_endpoints=True)
+
+
+def test_orchestrator_rejects_credential_leak_to_restricted_destination_when_local_enabled(clean_db):
+    """
+    Verify that configuring credentials with allow_local_endpoints=True cannot
+    send credentials to private/metadata endpoints because validation rejects them.
+    """
+    with patch("app.core.config.settings.LLM_PROVIDER", "openai_compatible"), \
+         patch("app.core.config.settings.LLM_API_KEY", "sk-secret-do-not-leak"), \
+         patch("app.core.config.settings.LLM_API_BASE", "http://169.254.169.254/latest/meta-data"), \
+         patch("app.core.config.settings.LLM_ALLOW_LOCAL_ENDPOINTS", True):
+        orchestrator = AgentOrchestrator(db=clean_db)
+        # Must safely fall back to deterministic strategy without transmitting credentials
+        assert isinstance(orchestrator.strategy, DeterministicPlanningStrategy)
+        assert orchestrator.strategy.planner_name == "DETERMINISTIC"
+
+
+# ---------------------------------------------------------------------
+# Finding 1: Terminal Outcome Validation Against Deterministic Workflow State
+# ---------------------------------------------------------------------
+
+def test_llm_planner_rejects_completed_terminal_outcome_for_draft_and_falls_back(clean_db):
+    """
+    A model must NOT be able to report COMPLETED while the application is still in DRAFT.
+    Must be rejected with fallback to DeterministicPlanningStrategy.
+    """
+    obs = make_test_observation(
+        application_id="app-guard-draft",
+        current_status="DRAFT",
+        is_document_complete=False,
+    )
+
+    invalid_proposal = {
+        "action_type": "TERMINATE",
+        "tool": None,
+        "parameters": {},
+        "rationale": "Model prematurely asserts application is completed.",
+        "stage": "ACT",
+        "is_terminal": True,
+        "terminal_outcome": "COMPLETED",
+    }
+    transport = make_mock_transport_for_json(make_openai_response(invalid_proposal))
+    provider = OpenAICompatibleProvider(api_key="sk-test", api_base="https://api.openai.com/v1", transport=transport)
+    strategy = LLMPlanningStrategy(provider=provider, db=clean_db, fallback_enabled=True)
+
+    action, outcome, rationale = strategy.plan_next_action(observation=obs, iteration=1)
+
+    # Must fall back to deterministic planner's safe WAITING_FOR_APPLICANT
+    assert outcome == OrchestrationOutcome.WAITING_FOR_APPLICANT
+    assert action is None
+
+    # Verify audit trail records the rejection and fallback
+    audit = clean_db["agent_activity"].find_one({"applicationId": "app-guard-draft", "status": "FALLBACK"})
+    assert audit is not None
+    assert "cannot report 'completed'" in audit["result"].lower()
+    provider.close()
+
+
+def test_llm_planner_rejects_completed_for_submitted_and_processing_without_eligibility(clean_db):
+    """
+    A model must NOT be able to report COMPLETED while the application is in
+    SUBMITTED or PROCESSING or without deterministic eligibility evidence.
+    """
+    for status in ("SUBMITTED", "PROCESSING", "WAITING_FOR_DOCUMENTS", "VERIFICATION_IN_PROGRESS"):
+        obs = make_test_observation(
+            application_id=f"app-guard-{status.lower()}",
+            current_status=status,
+            is_document_complete=True,
+            eligibility_result=None,
+        )
+
+        invalid_proposal = {
+            "action_type": "TERMINATE",
+            "tool": None,
+            "parameters": {},
+            "rationale": "Model attempts completion without workflow completion evidence.",
+            "stage": "ACT",
+            "is_terminal": True,
+            "terminal_outcome": "COMPLETED",
+        }
+        transport = make_mock_transport_for_json(make_openai_response(invalid_proposal))
+        provider = OpenAICompatibleProvider(api_key="sk-test", api_base="https://api.openai.com/v1", transport=transport)
+        strategy = LLMPlanningStrategy(provider=provider, db=clean_db, fallback_enabled=True)
+
+        action, outcome, rationale = strategy.plan_next_action(observation=obs, iteration=1)
+
+        # Rejection occurs and delegates to deterministic fallback
+        audit = clean_db["agent_activity"].find_one({"applicationId": f"app-guard-{status.lower()}", "status": "FALLBACK"})
+        assert audit is not None
+        assert "cannot report 'completed'" in audit["result"].lower()
+        provider.close()
+
+
+def test_llm_planner_rejects_inconsistent_waiting_for_applicant_when_workflow_complete(clean_db):
+    """
+    A model must NOT be able to report WAITING_FOR_APPLICANT when the application
+    is already in PROCESSING_COMPLETE or all documents are complete.
+    """
+    obs = make_test_observation(
+        application_id="app-guard-inconsistent-waiting",
+        current_status="PROCESSING_COMPLETE",
+        is_document_complete=True,
+        eligibility_result={"status": "ELIGIBLE"},
+    )
+
+    invalid_proposal = {
+        "action_type": "TERMINATE",
+        "tool": None,
+        "parameters": {},
+        "rationale": "Model claims applicant action needed on a finished application.",
+        "stage": "ACT",
+        "is_terminal": True,
+        "terminal_outcome": "WAITING_FOR_APPLICANT",
+    }
+    transport = make_mock_transport_for_json(make_openai_response(invalid_proposal))
+    provider = OpenAICompatibleProvider(api_key="sk-test", api_base="https://api.openai.com/v1", transport=transport)
+    strategy = LLMPlanningStrategy(provider=provider, db=clean_db, fallback_enabled=True)
+
+    action, outcome, rationale = strategy.plan_next_action(observation=obs, iteration=1)
+
+    # Rejected and logged to audit
+    audit = clean_db["agent_activity"].find_one({"applicationId": "app-guard-inconsistent-waiting", "status": "FALLBACK"})
+    assert audit is not None
+    assert "waiting_for_applicant" in audit["result"].lower()
+    provider.close()
+
+
+def test_llm_planner_rejects_manual_review_when_no_exception_or_failure_exists(clean_db):
+    """
+    A model must NOT be able to report MANUAL_REVIEW_REQUIRED when there is no
+    exception, no failed document, and no validation mismatch.
+    """
+    obs = make_test_observation(
+        application_id="app-guard-clean-processing",
+        current_status="PROCESSING",
+        is_document_complete=True,
+        failed_docs=[],
+        mismatched_docs=[],
+    )
+
+    invalid_proposal = {
+        "action_type": "TERMINATE",
+        "tool": None,
+        "parameters": {},
+        "rationale": "Model spuriously requests manual review.",
+        "stage": "ACT",
+        "is_terminal": True,
+        "terminal_outcome": "MANUAL_REVIEW_REQUIRED",
+    }
+    transport = make_mock_transport_for_json(make_openai_response(invalid_proposal))
+    provider = OpenAICompatibleProvider(api_key="sk-test", api_base="https://api.openai.com/v1", transport=transport)
+    strategy = LLMPlanningStrategy(provider=provider, db=clean_db, fallback_enabled=True)
+
+    action, outcome, rationale = strategy.plan_next_action(observation=obs, iteration=1)
+
+    # Rejection triggered
+    audit = clean_db["agent_activity"].find_one({"applicationId": "app-guard-clean-processing", "status": "FALLBACK"})
+    assert audit is not None
+    assert "manual_review_required" in audit["result"].lower()
+    provider.close()
+
+
+def test_llm_planner_accepts_valid_completed_terminal_outcome_when_processing_complete(clean_db):
+    """
+    A model proposal reporting COMPLETED IS accepted when the application
+    is actually in PROCESSING_COMPLETE with deterministic eligibility evidence.
+    """
+    obs = make_test_observation(
+        application_id="app-guard-legit-complete",
+        current_status="PROCESSING_COMPLETE",
+        is_document_complete=True,
+        eligibility_result={"status": "ELIGIBLE", "score": 88.0},
+    )
+
+    valid_proposal = {
+        "action_type": "TERMINATE",
+        "tool": None,
+        "parameters": {},
+        "rationale": "Processing is complete and eligibility has been confirmed.",
+        "stage": "ACT",
+        "is_terminal": True,
+        "terminal_outcome": "COMPLETED",
+    }
+    transport = make_mock_transport_for_json(make_openai_response(valid_proposal))
+    provider = OpenAICompatibleProvider(api_key="sk-test", api_base="https://api.openai.com/v1", transport=transport)
+    strategy = LLMPlanningStrategy(provider=provider, db=clean_db, fallback_enabled=True)
+
+    action, outcome, rationale = strategy.plan_next_action(observation=obs, iteration=1)
+
+    assert action is None
+    assert outcome == OrchestrationOutcome.COMPLETED
+    assert "eligibility has been confirmed" in rationale
+    provider.close()
+
+
+def test_llm_planner_accepts_legitimate_manual_review_on_failed_documents(clean_db):
+    """
+    Legitimate manual review proposal IS accepted when failed documents exist.
+    """
+    obs = make_test_observation(
+        application_id="app-guard-failed-docs",
+        current_status="PROCESSING",
+        is_document_complete=True,
+        failed_docs=[{"documentId": "doc-failed-1", "reason": "OCR unreadable"}],
+    )
+
+    valid_proposal = {
+        "action_type": "TOOL_CALL",
+        "tool": "update_application_status",
+        "parameters": {"application_id": "app-guard-failed-docs", "new_status": "EXCEPTION"},
+        "rationale": "Document processing failed. Flagging for manual review.",
+        "stage": "ACT",
+        "is_terminal": True,
+        "terminal_outcome": "MANUAL_REVIEW_REQUIRED",
+    }
+    transport = make_mock_transport_for_json(make_openai_response(valid_proposal))
+    provider = OpenAICompatibleProvider(api_key="sk-test", api_base="https://api.openai.com/v1", transport=transport)
+    strategy = LLMPlanningStrategy(provider=provider, db=clean_db, fallback_enabled=True)
+
+    action, outcome, rationale = strategy.plan_next_action(observation=obs, iteration=1)
+
+    assert action is not None
+    assert action.tool == ToolName.UPDATE_APPLICATION_STATUS
+    assert outcome == OrchestrationOutcome.MANUAL_REVIEW_REQUIRED
+    assert action.parameters["new_status"] == "EXCEPTION"
+    provider.close()
+
+
+# ---------------------------------------------------------------------
+# Consistency Checks: Internal Tools and Parameter Binding
+# ---------------------------------------------------------------------
+
+def test_llm_planner_rejects_internal_record_audit_event_tool_proposal(clean_db):
+    """
+    The model must NOT be able to propose internal system tools like record_audit_event.
+    """
+    obs = make_test_observation(
+        application_id="app-audit-tool-check",
+        current_status="PROCESSING",
+    )
+
+    invalid_proposal = {
+        "action_type": "TOOL_CALL",
+        "tool": "record_audit_event",
+        "parameters": {"action": "Fake audit", "result": "Bypass"},
+        "rationale": "Attempting to call internal audit tool.",
+        "stage": "ACT",
+        "is_terminal": False,
+        "terminal_outcome": None,
+    }
+    transport = make_mock_transport_for_json(make_openai_response(invalid_proposal))
+    provider = OpenAICompatibleProvider(api_key="sk-test", api_base="https://api.openai.com/v1", transport=transport)
+    strategy = LLMPlanningStrategy(provider=provider, db=clean_db, fallback_enabled=True)
+
+    action, outcome, rationale = strategy.plan_next_action(observation=obs, iteration=1)
+
+    # Must reject and record fallback
+    audit = clean_db["agent_activity"].find_one({"applicationId": "app-audit-tool-check", "status": "FALLBACK"})
+    assert audit is not None
+    assert "internal system tool" in audit["result"].lower()
+    provider.close()
+
+
+def test_llm_planner_auto_binds_application_id_and_validates_create_exception(clean_db):
+    """
+    Verify auto-binding of application_id and validation of required parameters
+    for create_exception.
+    """
+    obs = make_test_observation(
+        application_id="app-create-exc-check",
+        current_status="EXCEPTION",
+    )
+
+    proposal = {
+        "action_type": "TOOL_CALL",
+        "tool": "create_exception",
+        "parameters": {
+            "exception_type": "DOCUMENT_ILLEGIBLE",
+            "description": "Applicant uploaded blurry scan.",
+        },
+        "rationale": "Creating admission exception record.",
+        "stage": "ACT",
+        "is_terminal": True,
+        "terminal_outcome": "MANUAL_REVIEW_REQUIRED",
+    }
+    transport = make_mock_transport_for_json(make_openai_response(proposal))
+    provider = OpenAICompatibleProvider(api_key="sk-test", api_base="https://api.openai.com/v1", transport=transport)
+    strategy = LLMPlanningStrategy(provider=provider, db=clean_db, fallback_enabled=True)
+
+    action, outcome, rationale = strategy.plan_next_action(observation=obs, iteration=1)
+
+    assert action is not None
+    assert action.tool == ToolName.CREATE_EXCEPTION
+    # Auto-bound application_id and default severity
+    assert action.parameters["application_id"] == "app-create-exc-check"
+    assert action.parameters["severity"] == "MEDIUM"
+    assert action.parameters["exception_type"] == "DOCUMENT_ILLEGIBLE"
+    assert outcome == OrchestrationOutcome.MANUAL_REVIEW_REQUIRED
+    provider.close()
+
+
+def test_llm_planner_rejects_cross_application_id_injection(clean_db):
+    """
+    Model proposing a tool parameter with a different application_id than
+    the observed application must be rejected as cross-application violation.
+    """
+    obs = make_test_observation(
+        application_id="app-legitimate-victim",
+        current_status="PROCESSING",
+    )
+
+    injection_proposal = {
+        "action_type": "TOOL_CALL",
+        "tool": "get_application",
+        "parameters": {"application_id": "app-attacker-target"},
+        "rationale": "Model attempts to inspect unrelated application.",
+        "stage": "ACT",
+        "is_terminal": False,
+        "terminal_outcome": None,
+    }
+    transport = make_mock_transport_for_json(make_openai_response(injection_proposal))
+    provider = OpenAICompatibleProvider(api_key="sk-test", api_base="https://api.openai.com/v1", transport=transport)
+    strategy = LLMPlanningStrategy(provider=provider, db=clean_db, fallback_enabled=True)
+
+    action, outcome, rationale = strategy.plan_next_action(observation=obs, iteration=1)
+
+    # Must reject and record fallback
+    audit = clean_db["agent_activity"].find_one({"applicationId": "app-legitimate-victim", "status": "FALLBACK"})
+    assert audit is not None
+    assert "cross-application access violation" in audit["result"].lower()
+    provider.close()

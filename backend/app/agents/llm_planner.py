@@ -101,11 +101,11 @@ Available Registered Tools:
 6. verify_document: {"document_id": "string"}
 7. compare_applicant_details: {"document_id": "string", "application_id": "string"}
 8. check_eligibility: {"application_id": "string"}
-9. create_exception: {"exception_type": "string", "description": "string", "severity": "MEDIUM"}
+9. create_exception: {"application_id": "string", "exception_type": "string", "description": "string", "severity": "MEDIUM"}
 10. request_missing_document: {"application_id": "string", "document_type": "string"}
 11. update_application_status: {"application_id": "string", "new_status": "string"}
-12. send_notification: {"title": "string", "description": "string"}
-13. record_audit_event: {"action": "string", "result": "string"}
+12. send_notification: {"user_id": "string", "title": "string", "description": "string"}
+(Note: Internal system tools such as 'record_audit_event' are managed by the orchestrator and must not be proposed.)
 
 Strict Admission Workflow Pipeline:
 1. If status is 'DRAFT': Wait for applicant (TERMINATE with terminal_outcome='WAITING_FOR_APPLICANT').
@@ -235,6 +235,130 @@ class LLMPlanningStrategy(PlanningStrategy):
                 f"Model-backed planning failed without fallback: {reason_summary}",
             )
 
+    def _validate_terminal_outcome(
+        self,
+        terminal_outcome: OrchestrationOutcome | None,
+        action_type: str,
+        tool_clean: str | None,
+        parameters: dict[str, Any],
+        observation: ApplicationObservation,
+    ) -> None:
+        """
+        Validate model-proposed terminal outcomes against deterministic workflow state and evidence.
+        Enforces:
+        - A model cannot report COMPLETED while the application is in DRAFT, SUBMITTED, PROCESSING,
+          or another unfinished state, or without deterministic eligibility evidence.
+        - WAITING_FOR_APPLICANT is valid only when awaiting submission (DRAFT) or missing documents.
+        - MANUAL_REVIEW_REQUIRED is valid only when exceptions, failures, or mismatches exist.
+        - DEPENDENCY_PENDING is valid only when calling external integration tools or in ELIGIBILITY_CHECK.
+        - ALREADY_RUNNING is forbidden.
+        """
+        if not terminal_outcome:
+            if action_type == "TERMINATE":
+                raise ValueError("TERMINATE action proposal must specify a valid terminal_outcome.")
+            return
+
+        outcome_val = terminal_outcome.value if hasattr(terminal_outcome, "value") else str(terminal_outcome)
+
+        if outcome_val == OrchestrationOutcome.ALREADY_RUNNING.value:
+            raise ValueError(
+                "Forbidden terminal outcome: 'ALREADY_RUNNING' is an internal concurrency state and cannot be proposed."
+            )
+
+        if outcome_val == OrchestrationOutcome.COMPLETED.value:
+            # Model cannot report COMPLETED for unfinished application statuses
+            unfinished_statuses = (
+                "DRAFT",
+                "SUBMITTED",
+                "PROCESSING",
+                "WAITING_FOR_DOCUMENTS",
+                "VERIFICATION_IN_PROGRESS",
+                "ELIGIBILITY_CHECK",
+                "EXCEPTION",
+            )
+            if observation.current_status in unfinished_statuses:
+                raise ValueError(
+                    f"Invalid terminal outcome: Model cannot report 'COMPLETED' while application is in '{observation.current_status}' status."
+                )
+
+            # A completion outcome must never bypass deterministic eligibility evaluation or required evidence
+            if not observation.eligibility_result:
+                raise ValueError(
+                    "Invalid terminal outcome: Model cannot report 'COMPLETED' without deterministic eligibility result evidence."
+                )
+
+            # If proposed via TOOL_CALL, tool must transition to PROCESSING_COMPLETE
+            if action_type == "TOOL_CALL":
+                if tool_clean != ToolName.UPDATE_APPLICATION_STATUS.value or parameters.get("new_status") != "PROCESSING_COMPLETE":
+                    raise ValueError(
+                        "Invalid terminal outcome: Terminal 'COMPLETED' tool call must update application status to 'PROCESSING_COMPLETE'."
+                    )
+            elif action_type == "TERMINATE":
+                if observation.current_status != "PROCESSING_COMPLETE":
+                    raise ValueError(
+                        f"Invalid terminal outcome: Model cannot TERMINATE with 'COMPLETED' while application status is '{observation.current_status}'."
+                    )
+
+        elif outcome_val == OrchestrationOutcome.WAITING_FOR_APPLICANT.value:
+            # Valid when application is in DRAFT, or missing documents
+            if observation.current_status == "DRAFT":
+                return
+            if observation.current_status == "WAITING_FOR_DOCUMENTS":
+                return
+            if (
+                observation.current_status in ("SUBMITTED", "PROCESSING")
+                and not observation.is_document_complete
+                and action_type == "TOOL_CALL"
+                and tool_clean == ToolName.UPDATE_APPLICATION_STATUS.value
+                and parameters.get("new_status") == "WAITING_FOR_DOCUMENTS"
+            ):
+                return
+            raise ValueError(
+                f"Invalid terminal outcome: Cannot report 'WAITING_FOR_APPLICANT' for application in '{observation.current_status}' status with document completeness={observation.is_document_complete}."
+            )
+
+        elif outcome_val == OrchestrationOutcome.MANUAL_REVIEW_REQUIRED.value:
+            # Valid only when application is in EXCEPTION, or has failed/mismatched/manual-review documents, or creating exception
+            has_exception_condition = (
+                observation.current_status == "EXCEPTION"
+                or bool(observation.failed_documents)
+                or bool(observation.mismatched_documents)
+                or bool(observation.manual_review_documents)
+                or (
+                    action_type == "TOOL_CALL"
+                    and tool_clean == ToolName.UPDATE_APPLICATION_STATUS.value
+                    and parameters.get("new_status") == "EXCEPTION"
+                )
+                or (
+                    action_type == "TOOL_CALL"
+                    and tool_clean == ToolName.CREATE_EXCEPTION.value
+                )
+            )
+            if not has_exception_condition:
+                raise ValueError(
+                    f"Invalid terminal outcome: Cannot report 'MANUAL_REVIEW_REQUIRED' without document failure, validation mismatch, or EXCEPTION condition (status='{observation.current_status}')."
+                )
+
+        elif outcome_val == OrchestrationOutcome.DEPENDENCY_PENDING.value:
+            # Valid when in ELIGIBILITY_CHECK or invoking external dependency tool
+            dependency_tools = (
+                ToolName.CHECK_ELIGIBILITY.value,
+                ToolName.SEND_NOTIFICATION.value,
+                ToolName.CREATE_EXCEPTION.value,
+                ToolName.REQUEST_MISSING_DOCUMENT.value,
+            )
+            if observation.current_status == "ELIGIBILITY_CHECK" or (
+                action_type == "TOOL_CALL" and tool_clean in dependency_tools
+            ):
+                return
+            raise ValueError(
+                f"Invalid terminal outcome: Cannot report 'DEPENDENCY_PENDING' for status '{observation.current_status}' without active dependency tool call."
+            )
+
+        elif outcome_val == OrchestrationOutcome.FAILED.value:
+            if observation.current_status == "PROCESSING_COMPLETE":
+                raise ValueError("Invalid terminal outcome: Cannot report 'FAILED' for an application with completed processing.")
+
     def _validate_and_build_action(
         self,
         proposal: LLMPlanProposal,
@@ -246,6 +370,13 @@ class LLMPlanningStrategy(PlanningStrategy):
         if proposal.action_type == "TERMINATE":
             if not proposal.terminal_outcome:
                 raise ValueError("TERMINATE action proposal must specify a valid terminal_outcome.")
+            self._validate_terminal_outcome(
+                terminal_outcome=proposal.terminal_outcome,
+                action_type="TERMINATE",
+                tool_clean=None,
+                parameters={},
+                observation=observation,
+            )
             return None, proposal.terminal_outcome, proposal.rationale
 
         if proposal.action_type != "TOOL_CALL":
@@ -257,6 +388,36 @@ class LLMPlanningStrategy(PlanningStrategy):
         tool_clean = proposal.tool.value if hasattr(proposal.tool, "value") else str(proposal.tool).lower()
         if tool_clean not in TOOL_REGISTRY:
             raise ValueError(f"Proposed tool '{tool_clean}' is not in the registered tool catalog.")
+
+        # Disallow internal-only system tools
+        if tool_clean == ToolName.RECORD_AUDIT_EVENT.value:
+            raise ValueError(
+                "Forbidden tool call: 'record_audit_event' is an internal system tool and cannot be proposed as a workflow action."
+            )
+
+        # Application ID binding and cross-application validation for application-scoped tools
+        app_scoped_tools = (
+            ToolName.GET_APPLICATION.value,
+            ToolName.CHECK_DOCUMENT_COMPLETENESS.value,
+            ToolName.CHECK_ELIGIBILITY.value,
+            ToolName.UPDATE_APPLICATION_STATUS.value,
+            ToolName.CREATE_EXCEPTION.value,
+            ToolName.REQUEST_MISSING_DOCUMENT.value,
+            ToolName.COMPARE_APPLICANT_DETAILS.value,
+        )
+        if tool_clean in app_scoped_tools:
+            param_app_id = proposal.parameters.get("application_id")
+            if param_app_id and param_app_id != observation.application_id:
+                raise ValueError(
+                    f"Cross-application access violation: Tool parameter application_id '{param_app_id}' does not match observation '{observation.application_id}'."
+                )
+            proposal.parameters["application_id"] = observation.application_id
+
+        # Guardrails on get_program_requirements
+        if tool_clean == ToolName.GET_PROGRAM_REQUIREMENTS.value:
+            param_prog_id = proposal.parameters.get("programme_id")
+            if not param_prog_id or not isinstance(param_prog_id, str):
+                proposal.parameters["programme_id"] = observation.programme_id
 
         # Guardrails on update_application_status
         if tool_clean == ToolName.UPDATE_APPLICATION_STATUS.value:
@@ -287,17 +448,61 @@ class LLMPlanningStrategy(PlanningStrategy):
                     "Forbidden transition: Cannot transition to 'VERIFICATION_IN_PROGRESS' while documents are missing, unprocessed, or mismatched."
                 )
 
-        # Guardrails on process_document
-        if tool_clean == ToolName.PROCESS_DOCUMENT.value:
+        # Guardrails on process_document, extract_document_data, verify_document
+        if tool_clean in (
+            ToolName.PROCESS_DOCUMENT.value,
+            ToolName.EXTRACT_DOCUMENT_DATA.value,
+            ToolName.VERIFY_DOCUMENT.value,
+        ):
             doc_id = proposal.parameters.get("document_id")
             if not doc_id or not isinstance(doc_id, str):
-                raise ValueError("process_document requires a non-empty string 'document_id' parameter.")
+                raise ValueError(f"{tool_clean} requires a non-empty string 'document_id' parameter.")
 
-        # Guardrails on check_eligibility
-        if tool_clean == ToolName.CHECK_ELIGIBILITY.value:
-            app_id = proposal.parameters.get("application_id")
-            if not app_id or app_id != observation.application_id:
-                proposal.parameters["application_id"] = observation.application_id
+        # Guardrails on compare_applicant_details
+        if tool_clean == ToolName.COMPARE_APPLICANT_DETAILS.value:
+            doc_id = proposal.parameters.get("document_id")
+            if not doc_id or not isinstance(doc_id, str):
+                raise ValueError("compare_applicant_details requires a non-empty string 'document_id' parameter.")
+
+        # Guardrails on create_exception
+        if tool_clean == ToolName.CREATE_EXCEPTION.value:
+            exc_type = proposal.parameters.get("exception_type")
+            desc = proposal.parameters.get("description")
+            if not exc_type or not isinstance(exc_type, str):
+                raise ValueError("create_exception requires a non-empty string 'exception_type' parameter.")
+            if not desc or not isinstance(desc, str):
+                raise ValueError("create_exception requires a non-empty string 'description' parameter.")
+            if not proposal.parameters.get("severity"):
+                proposal.parameters["severity"] = "MEDIUM"
+
+        # Guardrails on request_missing_document
+        if tool_clean == ToolName.REQUEST_MISSING_DOCUMENT.value:
+            doc_type = proposal.parameters.get("document_type")
+            if not doc_type or not isinstance(doc_type, str):
+                raise ValueError("request_missing_document requires a non-empty string 'document_type' parameter.")
+
+        # Guardrails on send_notification
+        if tool_clean == ToolName.SEND_NOTIFICATION.value:
+            title = proposal.parameters.get("title")
+            desc = proposal.parameters.get("description")
+            if not title or not isinstance(title, str):
+                raise ValueError("send_notification requires a non-empty string 'title' parameter.")
+            if not desc or not isinstance(desc, str):
+                raise ValueError("send_notification requires a non-empty string 'description' parameter.")
+            if not proposal.parameters.get("user_id"):
+                proposal.parameters["user_id"] = observation.user_id or "applicant_user"
+            if not proposal.parameters.get("applicant_id"):
+                proposal.parameters["applicant_id"] = observation.applicant_id
+
+        # Validate terminal outcome if proposal declares is_terminal
+        if proposal.is_terminal and proposal.terminal_outcome:
+            self._validate_terminal_outcome(
+                terminal_outcome=proposal.terminal_outcome,
+                action_type="TOOL_CALL",
+                tool_clean=tool_clean,
+                parameters=proposal.parameters,
+                observation=observation,
+            )
 
         # Build PlannedAction
         planned_action = PlannedAction(
