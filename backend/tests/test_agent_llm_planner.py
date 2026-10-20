@@ -18,6 +18,7 @@ Covers:
 """
 
 import json
+import socket
 from unittest.mock import MagicMock, patch
 import httpx
 import pytest
@@ -1077,3 +1078,219 @@ def test_llm_planner_rejects_cross_application_id_injection(clean_db):
     assert audit is not None
     assert "cross-application access violation" in audit["result"].lower()
     provider.close()
+
+
+# ---------------------------------------------------------------------
+# Follow-up Review Corrections Regression Tests
+# ---------------------------------------------------------------------
+
+def test_validate_endpoint_url_fails_closed_on_dns_resolution_failure():
+    """
+    validate_endpoint_url MUST fail closed and raise LLMSSRFValidationError
+    when socket.getaddrinfo raises socket.gaierror.
+    """
+    with patch("socket.getaddrinfo", side_effect=socket.gaierror(-2, "Name or service not known")):
+        with pytest.raises(LLMSSRFValidationError) as exc_info:
+            validate_endpoint_url("https://unresolvable.mock-domain.com/v1", allow_local_endpoints=False)
+        assert "DNS resolution failed" in str(exc_info.value)
+
+        # Even if allow_local_endpoints=True, remote unresolvable domains must fail closed
+        with pytest.raises(LLMSSRFValidationError) as exc_info_local:
+            validate_endpoint_url("https://unresolvable.mock-domain.com/v1", allow_local_endpoints=True)
+        assert "DNS resolution failed" in str(exc_info_local.value)
+
+
+def test_validate_endpoint_url_deterministic_public_endpoint_with_mocked_dns():
+    """
+    Verify public endpoints pass deterministically without depending on live DNS.
+    """
+    mock_addrinfo = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))]
+    with patch("socket.getaddrinfo", return_value=mock_addrinfo):
+        valid = validate_endpoint_url("https://api.openai.com/v1", allow_local_endpoints=False)
+        assert valid == "https://api.openai.com/v1"
+
+
+def test_loopback_endpoints_do_not_require_dns_resolution():
+    """
+    Loopback endpoints when explicitly enabled must NOT invoke socket.getaddrinfo.
+    """
+    with patch("socket.getaddrinfo", side_effect=socket.gaierror("Should not be called for loopback")):
+        allowed = validate_endpoint_url("http://localhost:11434/v1", allow_local_endpoints=True)
+        assert allowed == "http://localhost:11434/v1"
+
+        allowed_ip = validate_endpoint_url("http://127.0.0.1:11434/v1", allow_local_endpoints=True)
+        assert allowed_ip == "http://127.0.0.1:11434/v1"
+
+
+def test_llm_planner_rejects_model_proposed_failed_outcomes_and_falls_back(clean_db):
+    """
+    Model-proposed FAILED terminal outcome must be rejected across DRAFT,
+    SUBMITTED, PROCESSING, and WAITING_FOR_DOCUMENTS, triggering deterministic fallback.
+    """
+    for test_status in ("DRAFT", "SUBMITTED", "PROCESSING", "WAITING_FOR_DOCUMENTS"):
+        app_id = f"app-reject-failed-{test_status.lower()}"
+        obs = make_test_observation(
+            application_id=app_id,
+            current_status=test_status,
+            is_document_complete=(test_status == "PROCESSING"),
+        )
+
+        invalid_proposal = {
+            "action_type": "TERMINATE",
+            "tool": None,
+            "parameters": {},
+            "rationale": "Model unilaterally claims the run has failed.",
+            "stage": "ACT",
+            "is_terminal": True,
+            "terminal_outcome": "FAILED",
+        }
+        transport = make_mock_transport_for_json(make_openai_response(invalid_proposal))
+        provider = OpenAICompatibleProvider(api_key="sk-test", api_base="https://api.openai.com/v1", transport=transport)
+        strategy = LLMPlanningStrategy(provider=provider, db=clean_db, fallback_enabled=True)
+
+        action, outcome, rationale = strategy.plan_next_action(observation=obs, iteration=1)
+
+        # Must reject and fallback safely
+        audit = clean_db["agent_activity"].find_one({"applicationId": app_id, "status": "FALLBACK"})
+        assert audit is not None
+        assert "model-proposed 'failed' is not permitted" in audit["result"].lower()
+        provider.close()
+
+
+def test_llm_planner_rejects_circular_manual_review_on_clean_application(clean_db):
+    """
+    A model cannot move a clean application to EXCEPTION solely to justify
+    a MANUAL_REVIEW_REQUIRED terminal outcome. Both the status update to EXCEPTION
+    and the terminal outcome must be rejected without independent failure evidence.
+    """
+    obs = make_test_observation(
+        application_id="app-clean-no-exc",
+        current_status="PROCESSING",
+        is_document_complete=True,
+        failed_docs=[],
+        mismatched_docs=[],
+        unprocessed_docs=[],
+    )
+
+    # Attempt 1: Tool call changing status to EXCEPTION with MANUAL_REVIEW_REQUIRED
+    circular_proposal = {
+        "action_type": "TOOL_CALL",
+        "tool": "update_application_status",
+        "parameters": {"application_id": "app-clean-no-exc", "new_status": "EXCEPTION"},
+        "rationale": "Attempting to create exception condition without evidence.",
+        "stage": "ACT",
+        "is_terminal": True,
+        "terminal_outcome": "MANUAL_REVIEW_REQUIRED",
+    }
+    transport = make_mock_transport_for_json(make_openai_response(circular_proposal))
+    provider = OpenAICompatibleProvider(api_key="sk-test", api_base="https://api.openai.com/v1", transport=transport)
+    strategy = LLMPlanningStrategy(provider=provider, db=clean_db, fallback_enabled=True)
+
+    action, outcome, rationale = strategy.plan_next_action(observation=obs, iteration=1)
+
+    audit = clean_db["agent_activity"].find_one({"applicationId": "app-clean-no-exc", "status": "FALLBACK"})
+    assert audit is not None
+    assert "cannot transition application to 'exception' without independent evidence" in audit["result"].lower()
+    provider.close()
+
+    # Attempt 2: Bare create_exception proposal without independent evidence
+    clean_db["agent_activity"].delete_many({})
+    create_exc_proposal = {
+        "action_type": "TOOL_CALL",
+        "tool": "create_exception",
+        "parameters": {
+            "application_id": "app-clean-no-exc",
+            "exception_type": "MANUAL_REVIEW",
+            "description": "Unsubstantiated exception",
+        },
+        "rationale": "Proposing exception without independent failure evidence.",
+        "stage": "ACT",
+        "is_terminal": True,
+        "terminal_outcome": "MANUAL_REVIEW_REQUIRED",
+    }
+    transport2 = make_mock_transport_for_json(make_openai_response(create_exc_proposal))
+    provider2 = OpenAICompatibleProvider(api_key="sk-test", api_base="https://api.openai.com/v1", transport=transport2)
+    strategy2 = LLMPlanningStrategy(provider=provider2, db=clean_db, fallback_enabled=True)
+
+    action2, outcome2, rationale2 = strategy2.plan_next_action(observation=obs, iteration=1)
+    audit2 = clean_db["agent_activity"].find_one({"applicationId": "app-clean-no-exc", "status": "FALLBACK"})
+    assert audit2 is not None
+    assert "requires independent workflow evidence" in audit2["result"].lower()
+    provider2.close()
+
+
+def test_waiting_for_applicant_validation_against_document_completeness(clean_db):
+    """
+    WAITING_FOR_APPLICANT:
+    - Accepted for DRAFT unconditionally.
+    - Accepted for WAITING_FOR_DOCUMENTS when documents ARE missing.
+    - REJECTED for WAITING_FOR_DOCUMENTS when documents ARE complete (falls back to resume processing).
+    """
+    # Case 1: DRAFT -> Accepted
+    obs_draft = make_test_observation(
+        application_id="app-wait-draft",
+        current_status="DRAFT",
+        is_document_complete=False,
+    )
+    draft_proposal = {
+        "action_type": "TERMINATE",
+        "tool": None,
+        "parameters": {},
+        "rationale": "Waiting for applicant to submit draft.",
+        "stage": "ACT",
+        "is_terminal": True,
+        "terminal_outcome": "WAITING_FOR_APPLICANT",
+    }
+    transport1 = make_mock_transport_for_json(make_openai_response(draft_proposal))
+    p1 = OpenAICompatibleProvider(api_key="sk-test", api_base="https://api.openai.com/v1", transport=transport1)
+    s1 = LLMPlanningStrategy(provider=p1, db=clean_db, fallback_enabled=True)
+    act1, out1, _ = s1.plan_next_action(observation=obs_draft, iteration=1)
+    assert act1 is None
+    assert out1 == OrchestrationOutcome.WAITING_FOR_APPLICANT
+    p1.close()
+
+    # Case 2: WAITING_FOR_DOCUMENTS with incomplete documents -> Accepted
+    obs_waiting_incomplete = make_test_observation(
+        application_id="app-wait-incomplete",
+        current_status="WAITING_FOR_DOCUMENTS",
+        is_document_complete=False,
+        missing_docs=["DEGREE_CERTIFICATE"],
+    )
+    wait_proposal = {
+        "action_type": "TERMINATE",
+        "tool": None,
+        "parameters": {},
+        "rationale": "Waiting for applicant to upload DEGREE_CERTIFICATE.",
+        "stage": "ACT",
+        "is_terminal": True,
+        "terminal_outcome": "WAITING_FOR_APPLICANT",
+    }
+    transport2 = make_mock_transport_for_json(make_openai_response(wait_proposal))
+    p2 = OpenAICompatibleProvider(api_key="sk-test", api_base="https://api.openai.com/v1", transport=transport2)
+    s2 = LLMPlanningStrategy(provider=p2, db=clean_db, fallback_enabled=True)
+    act2, out2, _ = s2.plan_next_action(observation=obs_waiting_incomplete, iteration=1)
+    assert act2 is None
+    assert out2 == OrchestrationOutcome.WAITING_FOR_APPLICANT
+    p2.close()
+
+    # Case 3: WAITING_FOR_DOCUMENTS with complete documents -> REJECTED and falls back to resume processing
+    obs_waiting_complete = make_test_observation(
+        application_id="app-wait-complete",
+        current_status="WAITING_FOR_DOCUMENTS",
+        is_document_complete=True,
+        missing_docs=[],
+    )
+    transport3 = make_mock_transport_for_json(make_openai_response(wait_proposal))
+    p3 = OpenAICompatibleProvider(api_key="sk-test", api_base="https://api.openai.com/v1", transport=transport3)
+    s3 = LLMPlanningStrategy(provider=p3, db=clean_db, fallback_enabled=True)
+    act3, out3, _ = s3.plan_next_action(observation=obs_waiting_complete, iteration=1)
+
+    # Must be rejected; deterministic fallback resumes processing by updating status to PROCESSING
+    assert act3 is not None
+    assert act3.tool == ToolName.UPDATE_APPLICATION_STATUS
+    assert act3.parameters["new_status"] == "PROCESSING"
+
+    audit3 = clean_db["agent_activity"].find_one({"applicationId": "app-wait-complete", "status": "FALLBACK"})
+    assert audit3 is not None
+    assert "when all required documents are complete" in audit3["result"].lower()
+    p3.close()

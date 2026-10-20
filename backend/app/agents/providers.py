@@ -134,7 +134,9 @@ def validate_endpoint_url(url: str, allow_local_endpoints: bool = False) -> str:
                     f"SSRF violation: Hostname '{hostname}' resolves to restricted IP '{ip_str}'."
                 )
     except socket.gaierror as e:
-        logger.debug("DNS resolution failed during SSRF validation for %s: %s", hostname, e)
+        raise LLMSSRFValidationError(
+            f"SSRF violation: DNS resolution failed for endpoint hostname '{hostname}': {e}"
+        ) from e
 
     return clean_url
 

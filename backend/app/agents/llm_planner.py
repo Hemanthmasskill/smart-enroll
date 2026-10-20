@@ -300,43 +300,47 @@ class LLMPlanningStrategy(PlanningStrategy):
                     )
 
         elif outcome_val == OrchestrationOutcome.WAITING_FOR_APPLICANT.value:
-            # Valid when application is in DRAFT, or missing documents
+            # Valid when application is in DRAFT (awaiting applicant submission)
             if observation.current_status == "DRAFT":
                 return
+            # Valid in WAITING_FOR_DOCUMENTS ONLY when required documents are actually missing
             if observation.current_status == "WAITING_FOR_DOCUMENTS":
-                return
+                if not observation.is_document_complete or bool(observation.missing_document_types):
+                    return
+                raise ValueError(
+                    "Invalid terminal outcome: Cannot report 'WAITING_FOR_APPLICANT' when all required documents "
+                    "are complete for status 'WAITING_FOR_DOCUMENTS'. Processing must resume."
+                )
+            # Valid in SUBMITTED or PROCESSING if missing documents and transitioning to WAITING_FOR_DOCUMENTS
             if (
                 observation.current_status in ("SUBMITTED", "PROCESSING")
-                and not observation.is_document_complete
+                and (not observation.is_document_complete or bool(observation.missing_document_types))
                 and action_type == "TOOL_CALL"
                 and tool_clean == ToolName.UPDATE_APPLICATION_STATUS.value
                 and parameters.get("new_status") == "WAITING_FOR_DOCUMENTS"
             ):
                 return
             raise ValueError(
-                f"Invalid terminal outcome: Cannot report 'WAITING_FOR_APPLICANT' for application in '{observation.current_status}' status with document completeness={observation.is_document_complete}."
+                f"Invalid terminal outcome: Cannot report 'WAITING_FOR_APPLICANT' for application in '{observation.current_status}' "
+                f"status with document completeness={observation.is_document_complete}."
             )
 
         elif outcome_val == OrchestrationOutcome.MANUAL_REVIEW_REQUIRED.value:
-            # Valid only when application is in EXCEPTION, or has failed/mismatched/manual-review documents, or creating exception
-            has_exception_condition = (
+            # Valid only when independent backend workflow evidence exists:
+            # an existing EXCEPTION status, failed documents, validation mismatches,
+            # or manual-review documents. A proposed status change or bare tool call
+            # cannot serve as its own justification.
+            has_independent_evidence = (
                 observation.current_status == "EXCEPTION"
                 or bool(observation.failed_documents)
                 or bool(observation.mismatched_documents)
                 or bool(observation.manual_review_documents)
-                or (
-                    action_type == "TOOL_CALL"
-                    and tool_clean == ToolName.UPDATE_APPLICATION_STATUS.value
-                    and parameters.get("new_status") == "EXCEPTION"
-                )
-                or (
-                    action_type == "TOOL_CALL"
-                    and tool_clean == ToolName.CREATE_EXCEPTION.value
-                )
             )
-            if not has_exception_condition:
+            if not has_independent_evidence:
                 raise ValueError(
-                    f"Invalid terminal outcome: Cannot report 'MANUAL_REVIEW_REQUIRED' without document failure, validation mismatch, or EXCEPTION condition (status='{observation.current_status}')."
+                    f"Invalid terminal outcome: 'MANUAL_REVIEW_REQUIRED' requires independent workflow evidence "
+                    f"(existing EXCEPTION status, failed documents, validation mismatches, or manual-review documents). "
+                    f"Current status '{observation.current_status}' lacks independent failure or exception evidence."
                 )
 
         elif outcome_val == OrchestrationOutcome.DEPENDENCY_PENDING.value:
@@ -356,8 +360,12 @@ class LLMPlanningStrategy(PlanningStrategy):
             )
 
         elif outcome_val == OrchestrationOutcome.FAILED.value:
-            if observation.current_status == "PROCESSING_COMPLETE":
-                raise ValueError("Invalid terminal outcome: Cannot report 'FAILED' for an application with completed processing.")
+            # Model cannot unilaterally declare an application run failed without an
+            # explicitly represented, validated backend failure condition.
+            raise ValueError(
+                f"Invalid terminal outcome: Model-proposed 'FAILED' is not permitted for application in status "
+                f"'{observation.current_status}' without an explicitly represented, validated backend failure condition."
+            )
 
     def _validate_and_build_action(
         self,
@@ -446,6 +454,18 @@ class LLMPlanningStrategy(PlanningStrategy):
             ):
                 raise ValueError(
                     "Forbidden transition: Cannot transition to 'VERIFICATION_IN_PROGRESS' while documents are missing, unprocessed, or mismatched."
+                )
+
+            # Model cannot transition status to EXCEPTION without independent evidence
+            if new_status == "EXCEPTION" and not (
+                observation.current_status == "EXCEPTION"
+                or bool(observation.failed_documents)
+                or bool(observation.mismatched_documents)
+                or bool(observation.manual_review_documents)
+            ):
+                raise ValueError(
+                    "Forbidden transition: Cannot transition application to 'EXCEPTION' without independent evidence of "
+                    "document failure, validation mismatch, or manual-review condition."
                 )
 
         # Guardrails on process_document, extract_document_data, verify_document
