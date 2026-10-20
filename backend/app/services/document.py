@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 import logging
 from pathlib import Path
 import re
+from typing import Any
 import uuid
 from fastapi import HTTPException, UploadFile, status
 from fastapi.responses import FileResponse
@@ -564,6 +565,7 @@ def process_document(
     current_user: dict,
     document_id: str,
     engine: OCREngine | None = None,
+    run_id: str | None = None,
 ) -> DocumentProcessingResult:
     """
     Run bounded OCR, classification, and field extraction for an uploaded document.
@@ -627,18 +629,37 @@ def process_document(
 
     # 3. Atomic conditional claim in MongoDB before starting OCR pipeline
     now = datetime.now(timezone.utc).isoformat()
+    claim_filter: dict[str, Any] = {
+        "_id": doc["_id"],
+        "processingStatus": {"$ne": "PROCESSING"},
+    }
+    claim_set: dict[str, Any] = {
+        "processingStatus": "PROCESSING",
+        "updatedAt": now,
+    }
+    if run_id:
+        app_id = doc.get("applicationId")
+        if app_id:
+            app = db["applications"].find_one({"applicationId": app_id})
+            if not app or app.get("activeRunId") != run_id or run_id in app.get("supersededRunIds", []):
+                current_active = app.get("activeRunId") if app else None
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=f"Execution ownership lost for run '{run_id}'. Application active run is '{current_active}'.",
+                )
+        claim_filter["supersededRunIds"] = {"$ne": run_id}
+        claim_filter["$or"] = [
+            {"activeRunId": {"$exists": False}},
+            {"activeRunId": None},
+            {"activeRunId": run_id},
+            {"activeRunId": {"$regex": "^superseded-", "$ne": f"superseded-{run_id}"}},
+        ]
+        claim_set["activeRunId"] = run_id
+
     try:
         claim_result = db["documents"].update_one(
-            {
-                "_id": doc["_id"],
-                "processingStatus": {"$ne": "PROCESSING"},
-            },
-            {
-                "$set": {
-                    "processingStatus": "PROCESSING",
-                    "updatedAt": now,
-                }
-            },
+            claim_filter,
+            {"$set": claim_set},
         )
     except Exception as e:
         logger.error(
@@ -659,6 +680,19 @@ def process_document(
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Document not found.",
+            )
+        if run_id and (
+            current_doc.get("activeRunId") == f"superseded-{run_id}"
+            or (
+                current_doc.get("activeRunId")
+                and not str(current_doc.get("activeRunId", "")).startswith("superseded-")
+                and current_doc.get("activeRunId") != run_id
+            )
+            or run_id in current_doc.get("supersededRunIds", [])
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Execution ownership lost for run '{run_id}'. Document ownership token is '{current_doc.get('activeRunId')}'.",
             )
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -686,9 +720,14 @@ def process_document(
             exc_info=True,
         )
         now_err = datetime.now(timezone.utc).isoformat()
+        err_filter: dict[str, Any] = {"_id": doc["_id"]}
+        if run_id:
+            err_filter["activeRunId"] = run_id
+            err_filter["supersededRunIds"] = {"$ne": run_id}
+
         try:
-            db["documents"].update_one(
-                {"_id": doc["_id"]},
+            err_update_res = db["documents"].update_one(
+                err_filter,
                 {
                     "$set": {
                         "processingStatus": "FAILED",
@@ -696,6 +735,12 @@ def process_document(
                     }
                 },
             )
+            if run_id and err_update_res.matched_count == 0:
+                logger.warning(
+                    "Execution ownership lost for run %s on document %s during fatal pipeline error handling; document status untouched.",
+                    run_id,
+                    document_id,
+                )
         except Exception as db_err:
             logger.error(
                 "Failed to update document %s status to FAILED: %s",
@@ -711,8 +756,13 @@ def process_document(
     # Crucial rule: original document's 'status' (e.g. UPLOADED) MUST NOT be changed to VERIFIED!
     now_done = datetime.now(timezone.utc).isoformat()
     result_dict = result.model_dump()
-    db["documents"].update_one(
-        {"_id": doc["_id"]},
+    doc_filter: dict[str, Any] = {"_id": doc["_id"]}
+    if run_id:
+        doc_filter["activeRunId"] = run_id
+        doc_filter["supersededRunIds"] = {"$ne": run_id}
+
+    doc_update_res = db["documents"].update_one(
+        doc_filter,
         {
             "$set": {
                 "processingResult": result_dict,
@@ -722,6 +772,11 @@ def process_document(
             }
         },
     )
+    if run_id and doc_update_res.matched_count == 0:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Execution ownership lost for run '{run_id}' during document processing persistence.",
+        )
 
     # Increment 14: Synchronously run deterministic content validation when processing succeeds
     # If processing failed (e.g. engine error), leave document in UPLOADED state and do not validate.
@@ -762,8 +817,13 @@ def process_document(
                 else "MANUAL_REVIEW"
             )
 
-            db["documents"].update_one(
-                {"_id": doc["_id"]},
+            val_filter: dict[str, Any] = {"_id": doc["_id"]}
+            if run_id:
+                val_filter["activeRunId"] = run_id
+                val_filter["supersededRunIds"] = {"$ne": run_id}
+
+            val_res = db["documents"].update_one(
+                val_filter,
                 {
                     "$set": {
                         "validationResult": val_result.model_dump(),
@@ -773,6 +833,13 @@ def process_document(
                     }
                 },
             )
+            if run_id and val_res.matched_count == 0:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=f"Execution ownership lost for run '{run_id}' during validation persistence.",
+                )
+        except HTTPException:
+            raise
         except Exception as val_err:
             logger.error(
                 "Unexpected error during content validation for document %s: %s",
@@ -781,8 +848,12 @@ def process_document(
                 exc_info=True,
             )
             now_err = datetime.now(timezone.utc).isoformat()
+            val_err_filter: dict[str, Any] = {"_id": doc["_id"]}
+            if run_id:
+                val_err_filter["activeRunId"] = run_id
+                val_err_filter["supersededRunIds"] = {"$ne": run_id}
             db["documents"].update_one(
-                {"_id": doc["_id"]},
+                val_err_filter,
                 {
                     "$set": {
                         "validationStatus": "ERROR",
@@ -850,6 +921,7 @@ def verify_document(
     db: Database,
     current_user: dict,
     document_id: str,
+    run_id: str | None = None,
 ) -> DocumentValidationResult:
     """
     Rerun deterministic content validation against canonical application and sibling documents.
@@ -884,6 +956,17 @@ def verify_document(
 
     app_id = doc.get("applicationId")
     app_record = db["applications"].find_one({"applicationId": app_id}) if app_id else None
+    if run_id and (
+        not app_record
+        or app_record.get("activeRunId") != run_id
+        or run_id in app_record.get("supersededRunIds", [])
+    ):
+        current_active = app_record.get("activeRunId") if app_record else None
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Execution ownership lost for run '{run_id}'. Active run is '{current_active}'.",
+        )
+
     user_record = None
     try:
         user_record = db["users"].find_one({"_id": ObjectId(user_id)})
@@ -911,8 +994,13 @@ def verify_document(
     )
 
     now_done = datetime.now(timezone.utc).isoformat()
-    db["documents"].update_one(
-        {"_id": doc["_id"]},
+    val_filter: dict[str, Any] = {"_id": doc["_id"]}
+    if run_id:
+        val_filter["activeRunId"] = run_id
+        val_filter["supersededRunIds"] = {"$ne": run_id}
+
+    val_res = db["documents"].update_one(
+        val_filter,
         {
             "$set": {
                 "validationResult": val_result.model_dump(),
@@ -922,6 +1010,11 @@ def verify_document(
             }
         },
     )
+    if run_id and val_res.matched_count == 0:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Execution ownership lost for run '{run_id}' during verification persistence.",
+        )
 
     return val_result
 
