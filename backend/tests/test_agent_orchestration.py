@@ -62,6 +62,15 @@ def create_sample_pdf_bytes(text_lines: list[str]) -> bytes:
     return pdf_bytes
 
 
+@pytest.fixture(autouse=True)
+def isolate_deterministic_orchestration(monkeypatch):
+    """
+    Ensure deterministic orchestration regression tests remain completely isolated
+    from any local or live LLM provider configuration in developer environment/.env.
+    """
+    monkeypatch.setattr(settings, "LLM_PROVIDER", "disabled")
+
+
 @pytest.fixture
 def api_client():
     return TestClient(app)

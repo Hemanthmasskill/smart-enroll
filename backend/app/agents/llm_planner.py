@@ -92,6 +92,33 @@ SYSTEM_PLANNING_PROMPT = """You are the autonomous admission workflow planner fo
 Your role is to inspect the current application workflow state and propose the single next appropriate action.
 You must return ONLY a single valid JSON object adhering strictly to the planning schema.
 
+CRITICAL WORKFLOW INVARIANTS & STATE-PRIORITY RULES (MUST FOLLOW IN ORDER):
+1. DRAFT Application State:
+   - If currentStatus is 'DRAFT': The application has NOT been submitted by the applicant.
+   - You MUST NOT call any tools (do NOT call request_missing_document, update_application_status, etc.).
+   - You MUST TERMINATE immediately with action_type='TERMINATE', tool=null, is_terminal=true, terminal_outcome='WAITING_FOR_APPLICANT'.
+2. Missing Required Documents:
+   - If missing required documents and currentStatus is 'SUBMITTED' or 'PROCESSING':
+     - You MUST propose update_application_status with new_status='WAITING_FOR_DOCUMENTS', is_terminal=true, terminal_outcome='WAITING_FOR_APPLICANT'.
+     - Do NOT propose request_missing_document (document request workflows are handled after transitioning status).
+   - If missing required documents and currentStatus is already 'WAITING_FOR_DOCUMENTS':
+     - You MUST TERMINATE with action_type='TERMINATE', tool=null, is_terminal=true, terminal_outcome='WAITING_FOR_APPLICANT'.
+     - Do NOT call request_missing_document repeatedly.
+3. Documents Complete in WAITING_FOR_DOCUMENTS:
+   - If all required documents are present and currentStatus is 'WAITING_FOR_DOCUMENTS':
+     - Propose update_application_status with new_status='PROCESSING', is_terminal=false, terminal_outcome=null to resume processing.
+4. Document OCR & Verification Pipeline (when documents are complete and status is 'PROCESSING'):
+   - If any document is unprocessed: call process_document with document_id of the first unprocessed document.
+   - If any document processing failed: call update_application_status with new_status='EXCEPTION', is_terminal=true, terminal_outcome='MANUAL_REVIEW_REQUIRED'.
+   - If any document has validation mismatches or manual review flags: call update_application_status with new_status='EXCEPTION', is_terminal=true, terminal_outcome='MANUAL_REVIEW_REQUIRED'.
+   - If all documents are validated: call update_application_status with new_status='VERIFICATION_IN_PROGRESS'.
+5. Academic Eligibility Check:
+   - If currentStatus is 'VERIFICATION_IN_PROGRESS': call update_application_status with new_status='ELIGIBILITY_CHECK'.
+   - If currentStatus is 'ELIGIBILITY_CHECK': call check_eligibility with application_id.
+6. Completion:
+   - If currentStatus is 'ELIGIBLE' or 'INELIGIBLE' and eligibility result is present:
+     call update_application_status with new_status='PROCESSING_COMPLETE', is_terminal=true, terminal_outcome='COMPLETED'.
+
 Available Registered Tools:
 1. get_application: {"application_id": "string"}
 2. get_program_requirements: {"programme_id": "string"}
@@ -106,28 +133,6 @@ Available Registered Tools:
 11. update_application_status: {"application_id": "string", "new_status": "string"}
 12. send_notification: {"user_id": "string", "title": "string", "description": "string"}
 (Note: Internal system tools such as 'record_audit_event' are managed by the orchestrator and must not be proposed.)
-
-Strict Admission Workflow Pipeline:
-1. If status is 'DRAFT': Wait for applicant (TERMINATE with terminal_outcome='WAITING_FOR_APPLICANT').
-2. If missing required documents:
-   - If status is not 'WAITING_FOR_DOCUMENTS', call update_application_status with new_status='WAITING_FOR_DOCUMENTS', is_terminal=True, terminal_outcome='WAITING_FOR_APPLICANT'.
-   - If already in 'WAITING_FOR_DOCUMENTS', TERMINATE with terminal_outcome='WAITING_FOR_APPLICANT'.
-3. If all required documents are present and status is 'WAITING_FOR_DOCUMENTS':
-   - Call update_application_status with new_status='PROCESSING'.
-4. If documents need OCR processing:
-   - Call process_document for the first unprocessed document.
-5. If any document processing failed:
-   - Call update_application_status with new_status='EXCEPTION', is_terminal=True, terminal_outcome='MANUAL_REVIEW_REQUIRED'.
-6. If any document has validation mismatches or manual review flags:
-   - Call update_application_status with new_status='EXCEPTION', is_terminal=True, terminal_outcome='MANUAL_REVIEW_REQUIRED'.
-7. If all documents are validated and status is 'PROCESSING':
-   - Call update_application_status with new_status='VERIFICATION_IN_PROGRESS'.
-8. If status is 'VERIFICATION_IN_PROGRESS':
-   - Call update_application_status with new_status='ELIGIBILITY_CHECK'.
-9. If status is 'ELIGIBILITY_CHECK':
-   - Call check_eligibility with application_id.
-10. If status is 'ELIGIBLE' or 'INELIGIBLE':
-    - If eligibility result is present, call update_application_status with new_status='PROCESSING_COMPLETE', is_terminal=True, terminal_outcome='COMPLETED'.
 
 Strict Security & Guardrail Policies:
 - You must NEVER make direct database modifications.
@@ -259,6 +264,42 @@ class LLMPlanningStrategy(PlanningStrategy):
             return
 
         outcome_val = terminal_outcome.value if hasattr(terminal_outcome, "value") else str(terminal_outcome)
+
+        if outcome_val == OrchestrationOutcome.FAILED.value:
+            raise ValueError(
+                f"Invalid terminal outcome: Model-proposed 'FAILED' is not permitted for application in status "
+                f"'{observation.current_status}' without an explicitly represented, validated backend failure condition."
+            )
+
+        # Enforce Rule 1: DRAFT state must terminate with WAITING_FOR_APPLICANT
+        if observation.current_status == "DRAFT":
+            if outcome_val != OrchestrationOutcome.WAITING_FOR_APPLICANT.value:
+                raise ValueError(
+                    f"Invalid terminal outcome: Model cannot report '{outcome_val}' for 'DRAFT'. "
+                    f"Must terminate with 'WAITING_FOR_APPLICANT'."
+                )
+            if action_type != "TERMINATE":
+                raise ValueError(
+                    "Domain guardrail violation: Tool execution is prohibited while application is in 'DRAFT' status."
+                )
+            return
+
+        missing_docs = bool(observation.missing_document_types) or not observation.is_document_complete
+
+        # Enforce Rules 2 & 3 for TERMINATE proposals: SUBMITTED or PROCESSING with missing documents cannot terminate directly
+        if observation.current_status in ("SUBMITTED", "PROCESSING") and missing_docs and action_type == "TERMINATE":
+            raise ValueError(
+                f"Domain guardrail violation: Application in '{observation.current_status}' status with missing documents "
+                f"cannot terminate directly; it must transition to 'WAITING_FOR_DOCUMENTS' via update_application_status."
+            )
+
+        # Enforce Rule 4 for TERMINATE proposals: WAITING_FOR_DOCUMENTS with missing documents must terminate with WAITING_FOR_APPLICANT
+        if observation.current_status == "WAITING_FOR_DOCUMENTS" and missing_docs and action_type == "TERMINATE":
+            if outcome_val != OrchestrationOutcome.WAITING_FOR_APPLICANT.value:
+                raise ValueError(
+                    f"Invalid terminal outcome: Application in 'WAITING_FOR_DOCUMENTS' status with missing documents "
+                    f"must terminate with 'WAITING_FOR_APPLICANT', not '{outcome_val}'."
+                )
 
         if outcome_val == OrchestrationOutcome.ALREADY_RUNNING.value:
             raise ValueError(
@@ -403,6 +444,52 @@ class LLMPlanningStrategy(PlanningStrategy):
                 "Forbidden tool call: 'record_audit_event' is an internal system tool and cannot be proposed as a workflow action."
             )
 
+        # Enforce Rule 1: DRAFT state permits no tool executions
+        if observation.current_status == "DRAFT":
+            raise ValueError(
+                "Domain guardrail violation: Tool execution is prohibited while application is in 'DRAFT' status. "
+                "Application has not been submitted and must terminate with 'WAITING_FOR_APPLICANT'."
+            )
+
+        missing_docs = bool(observation.missing_document_types) or not observation.is_document_complete
+
+        # Enforce Rule 2 & 3: SUBMITTED or PROCESSING with missing required documents
+        if observation.current_status in ("SUBMITTED", "PROCESSING") and missing_docs:
+            if tool_clean != ToolName.UPDATE_APPLICATION_STATUS.value:
+                raise ValueError(
+                    f"Domain guardrail violation: Application in '{observation.current_status}' status with missing documents "
+                    f"must transition to 'WAITING_FOR_DOCUMENTS' via update_application_status. Tool '{tool_clean}' is not permitted."
+                )
+            new_status = proposal.parameters.get("new_status")
+            if new_status != "WAITING_FOR_DOCUMENTS":
+                raise ValueError(
+                    f"Domain guardrail violation: Application in '{observation.current_status}' status with missing documents "
+                    f"must update status to 'WAITING_FOR_DOCUMENTS', not '{new_status}'."
+                )
+            proposal.is_terminal = True
+            proposal.terminal_outcome = OrchestrationOutcome.WAITING_FOR_APPLICANT
+
+        # Enforce Rule 4: WAITING_FOR_DOCUMENTS state
+        if observation.current_status == "WAITING_FOR_DOCUMENTS":
+            if missing_docs:
+                raise ValueError(
+                    f"Domain guardrail violation: Application in 'WAITING_FOR_DOCUMENTS' status with missing documents "
+                    f"must terminate with 'WAITING_FOR_APPLICANT'. Tool execution ('{tool_clean}') is prohibited."
+                )
+            else:
+                # Documents complete in WAITING_FOR_DOCUMENTS: must resume PROCESSING
+                if tool_clean == ToolName.REQUEST_MISSING_DOCUMENT.value:
+                    raise ValueError(
+                        "Domain guardrail violation: Cannot request missing documents when all required documents are complete."
+                    )
+                if tool_clean == ToolName.UPDATE_APPLICATION_STATUS.value:
+                    new_status = proposal.parameters.get("new_status")
+                    if new_status and new_status != "PROCESSING":
+                        raise ValueError(
+                            f"Domain guardrail violation: Application in 'WAITING_FOR_DOCUMENTS' with complete documents "
+                            f"must transition to 'PROCESSING', not '{new_status}'."
+                        )
+
         # Application ID binding and cross-application validation for application-scoped tools
         app_scoped_tools = (
             ToolName.GET_APPLICATION.value,
@@ -497,9 +584,15 @@ class LLMPlanningStrategy(PlanningStrategy):
 
         # Guardrails on request_missing_document
         if tool_clean == ToolName.REQUEST_MISSING_DOCUMENT.value:
+            if observation.is_document_complete and not observation.missing_document_types:
+                raise ValueError("Domain guardrail violation: Cannot request missing documents when all required documents are complete.")
             doc_type = proposal.parameters.get("document_type")
             if not doc_type or not isinstance(doc_type, str):
                 raise ValueError("request_missing_document requires a non-empty string 'document_type' parameter.")
+            if observation.missing_document_types and doc_type not in observation.missing_document_types:
+                raise ValueError(
+                    f"Domain guardrail violation: Document type '{doc_type}' is not in missing documents list {observation.missing_document_types}."
+                )
 
         # Guardrails on send_notification
         if tool_clean == ToolName.SEND_NOTIFICATION.value:

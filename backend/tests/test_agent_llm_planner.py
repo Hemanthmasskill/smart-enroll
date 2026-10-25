@@ -43,6 +43,7 @@ from app.agents.providers import (
     is_local_endpoint,
     validate_endpoint_url,
 )
+from app.core.config import settings
 from app.core.database import get_db
 from app.schemas.agent import (
     LLMPlanProposal,
@@ -1294,3 +1295,292 @@ def test_waiting_for_applicant_validation_against_document_completeness(clean_db
     assert audit3 is not None
     assert "when all required documents are complete" in audit3["result"].lower()
     p3.close()
+
+
+# =====================================================================
+# 13. Strengthened Workflow Guardrails & Test Isolation (Increment 15, Task 15.3 Refinement)
+# =====================================================================
+
+def test_guardrail_draft_attempted_tool_call_rejected_and_falls_back(clean_db):
+    """
+    Rule 1: An application in DRAFT cannot execute any tool calls.
+    Attempting request_missing_document is rejected by domain guardrails and falls back to WAITING_FOR_APPLICANT.
+    """
+    obs_draft = make_test_observation(
+        application_id="app-guard-draft-1",
+        current_status="DRAFT",
+        is_document_complete=False,
+        missing_docs=["10TH_MARKSHEET"],
+    )
+    proposal = {
+        "action_type": "TOOL_CALL",
+        "tool": "request_missing_document",
+        "parameters": {"application_id": "app-guard-draft-1", "document_type": "10TH_MARKSHEET"},
+        "rationale": "Attempting to request missing document for unsubmitted draft",
+        "stage": "ACT",
+        "is_terminal": False,
+        "terminal_outcome": None,
+    }
+    transport = make_mock_transport_for_json(make_openai_response(proposal))
+    provider = OpenAICompatibleProvider(api_key="sk-test", api_base="https://api.openai.com/v1", transport=transport)
+    strategy = LLMPlanningStrategy(provider=provider, db=clean_db, fallback_enabled=True)
+
+    action, outcome, rationale = strategy.plan_next_action(observation=obs_draft, iteration=1)
+
+    # Must be rejected and fall back to deterministic planner
+    assert action is None
+    assert outcome == OrchestrationOutcome.WAITING_FOR_APPLICANT
+    assert "Application is in DRAFT status" in rationale
+
+    fallback_audit = clean_db["agent_activity"].find_one({"applicationId": "app-guard-draft-1", "status": "FALLBACK"})
+    assert fallback_audit is not None
+    assert "Tool execution is prohibited while application is in 'DRAFT' status" in fallback_audit["result"]
+    provider.close()
+
+
+def test_guardrail_draft_invalid_terminal_outcome_rejected(clean_db):
+    """
+    Rule 1: An application in DRAFT must terminate with WAITING_FOR_APPLICANT.
+    Attempting TERMINATE with MANUAL_REVIEW_REQUIRED or COMPLETED is rejected.
+    """
+    obs_draft = make_test_observation(
+        application_id="app-guard-draft-2",
+        current_status="DRAFT",
+        is_document_complete=False,
+    )
+    proposal = {
+        "action_type": "TERMINATE",
+        "tool": None,
+        "parameters": {},
+        "rationale": "Premature manual review proposal for draft",
+        "stage": "ACT",
+        "is_terminal": True,
+        "terminal_outcome": "MANUAL_REVIEW_REQUIRED",
+    }
+    transport = make_mock_transport_for_json(make_openai_response(proposal))
+    provider = OpenAICompatibleProvider(api_key="sk-test", api_base="https://api.openai.com/v1", transport=transport)
+    strategy = LLMPlanningStrategy(provider=provider, db=clean_db, fallback_enabled=True)
+
+    action, outcome, rationale = strategy.plan_next_action(observation=obs_draft, iteration=1)
+
+    assert action is None
+    assert outcome == OrchestrationOutcome.WAITING_FOR_APPLICANT
+    fallback_audit = clean_db["agent_activity"].find_one({"applicationId": "app-guard-draft-2", "status": "FALLBACK"})
+    assert fallback_audit is not None
+    assert "Must terminate with 'WAITING_FOR_APPLICANT'" in fallback_audit["result"]
+    provider.close()
+
+
+def test_guardrail_submitted_missing_documents_cannot_call_request_missing_document(clean_db):
+    """
+    Rule 2: SUBMITTED application with missing documents must transition to WAITING_FOR_DOCUMENTS.
+    Attempting request_missing_document is rejected and falls back to deterministic update_application_status.
+    """
+    obs_sub = make_test_observation(
+        application_id="app-guard-sub-1",
+        current_status="SUBMITTED",
+        is_document_complete=False,
+        missing_docs=["10TH_MARKSHEET"],
+    )
+    proposal = {
+        "action_type": "TOOL_CALL",
+        "tool": "request_missing_document",
+        "parameters": {"application_id": "app-guard-sub-1", "document_type": "10TH_MARKSHEET"},
+        "rationale": "Attempting to request document before status transition",
+        "stage": "ACT",
+        "is_terminal": False,
+        "terminal_outcome": None,
+    }
+    transport = make_mock_transport_for_json(make_openai_response(proposal))
+    provider = OpenAICompatibleProvider(api_key="sk-test", api_base="https://api.openai.com/v1", transport=transport)
+    strategy = LLMPlanningStrategy(provider=provider, db=clean_db, fallback_enabled=True)
+
+    action, outcome, rationale = strategy.plan_next_action(observation=obs_sub, iteration=1)
+
+    # Proposal rejected -> fallback updates status to WAITING_FOR_DOCUMENTS
+    assert action is not None
+    assert action.tool == ToolName.UPDATE_APPLICATION_STATUS
+    assert action.parameters["new_status"] == "WAITING_FOR_DOCUMENTS"
+    assert action.is_terminal is True
+    assert action.terminal_outcome == OrchestrationOutcome.WAITING_FOR_APPLICANT
+    assert outcome == OrchestrationOutcome.WAITING_FOR_APPLICANT
+
+    fallback_audit = clean_db["agent_activity"].find_one({"applicationId": "app-guard-sub-1", "status": "FALLBACK"})
+    assert fallback_audit is not None
+    assert "must transition to 'WAITING_FOR_DOCUMENTS'" in fallback_audit["result"]
+    provider.close()
+
+
+def test_guardrail_processing_missing_documents_cannot_call_request_missing_document_or_terminate(clean_db):
+    """
+    Rule 3: PROCESSING application with missing documents must transition to WAITING_FOR_DOCUMENTS.
+    Attempting request_missing_document or direct TERMINATE is rejected and falls back.
+    """
+    obs_proc = make_test_observation(
+        application_id="app-guard-proc-1",
+        current_status="PROCESSING",
+        is_document_complete=False,
+        missing_docs=["DEGREE_CERTIFICATE"],
+    )
+    # 1. Attempting request_missing_document
+    prop_tool = {
+        "action_type": "TOOL_CALL",
+        "tool": "request_missing_document",
+        "parameters": {"application_id": "app-guard-proc-1", "document_type": "DEGREE_CERTIFICATE"},
+        "rationale": "Calling request_missing_document while in PROCESSING",
+        "stage": "ACT",
+        "is_terminal": False,
+        "terminal_outcome": None,
+    }
+    t1 = make_mock_transport_for_json(make_openai_response(prop_tool))
+    p1 = OpenAICompatibleProvider(api_key="sk-test", api_base="https://api.openai.com/v1", transport=t1)
+    s1 = LLMPlanningStrategy(provider=p1, db=clean_db, fallback_enabled=True)
+    act1, out1, _ = s1.plan_next_action(obs_proc, iteration=1)
+    assert act1 is not None
+    assert act1.tool == ToolName.UPDATE_APPLICATION_STATUS
+    assert act1.parameters["new_status"] == "WAITING_FOR_DOCUMENTS"
+    assert out1 == OrchestrationOutcome.WAITING_FOR_APPLICANT
+    p1.close()
+
+    # 2. Attempting direct TERMINATE without transition
+    prop_term = {
+        "action_type": "TERMINATE",
+        "tool": None,
+        "parameters": {},
+        "rationale": "Directly terminating without updating status in database",
+        "stage": "ACT",
+        "is_terminal": True,
+        "terminal_outcome": "WAITING_FOR_APPLICANT",
+    }
+    t2 = make_mock_transport_for_json(make_openai_response(prop_term))
+    p2 = OpenAICompatibleProvider(api_key="sk-test", api_base="https://api.openai.com/v1", transport=t2)
+    s2 = LLMPlanningStrategy(provider=p2, db=clean_db, fallback_enabled=True)
+    act2, out2, _ = s2.plan_next_action(obs_proc, iteration=1)
+    assert act2 is not None
+    assert act2.tool == ToolName.UPDATE_APPLICATION_STATUS
+    assert act2.parameters["new_status"] == "WAITING_FOR_DOCUMENTS"
+    assert out2 == OrchestrationOutcome.WAITING_FOR_APPLICANT
+    p2.close()
+
+
+def test_guardrail_waiting_for_documents_missing_docs_rejects_repeated_tool_calls(clean_db):
+    """
+    Rule 4: WAITING_FOR_DOCUMENTS with missing documents must terminate with WAITING_FOR_APPLICANT.
+    Calling request_missing_document or any other tool repeatedly is rejected.
+    """
+    obs_wait = make_test_observation(
+        application_id="app-guard-wait-1",
+        current_status="WAITING_FOR_DOCUMENTS",
+        is_document_complete=False,
+        missing_docs=["12TH_MARKSHEET"],
+    )
+    # Attempting to repeatedly call tool
+    prop_tool = {
+        "action_type": "TOOL_CALL",
+        "tool": "request_missing_document",
+        "parameters": {"application_id": "app-guard-wait-1", "document_type": "12TH_MARKSHEET"},
+        "rationale": "Repeated missing document request",
+        "stage": "ACT",
+        "is_terminal": False,
+        "terminal_outcome": None,
+    }
+    transport = make_mock_transport_for_json(make_openai_response(prop_tool))
+    provider = OpenAICompatibleProvider(api_key="sk-test", api_base="https://api.openai.com/v1", transport=transport)
+    strategy = LLMPlanningStrategy(provider=provider, db=clean_db, fallback_enabled=True)
+
+    action, outcome, rationale = strategy.plan_next_action(obs_wait, iteration=1)
+    # Must reject tool call and fall back to waiting
+    assert action is None
+    assert outcome == OrchestrationOutcome.WAITING_FOR_APPLICANT
+    provider.close()
+
+
+def test_guardrail_processing_valid_unprocessed_document_accepted(clean_db):
+    """
+    Valid PROCESSING state with complete documents and unprocessed document:
+    Model can propose process_document and it is accepted without fallback.
+    """
+    obs_proc_valid = make_test_observation(
+        application_id="app-guard-proc-valid",
+        current_status="PROCESSING",
+        is_document_complete=True,
+        missing_docs=[],
+        unprocessed_docs=[{"documentId": "doc-unproc-1", "documentType": "10TH_MARKSHEET"}],
+    )
+    proposal = {
+        "action_type": "TOOL_CALL",
+        "tool": "process_document",
+        "parameters": {"document_id": "doc-unproc-1"},
+        "rationale": "Run OCR pipeline on unprocessed document",
+        "stage": "ACT",
+        "is_terminal": False,
+        "terminal_outcome": None,
+    }
+    transport = make_mock_transport_for_json(make_openai_response(proposal))
+    provider = OpenAICompatibleProvider(api_key="sk-test", api_base="https://api.openai.com/v1", transport=transport)
+    strategy = LLMPlanningStrategy(provider=provider, db=clean_db, fallback_enabled=True)
+
+    action, outcome, rationale = strategy.plan_next_action(obs_proc_valid, iteration=1)
+    assert action is not None
+    assert action.tool == ToolName.PROCESS_DOCUMENT
+    assert action.parameters["document_id"] == "doc-unproc-1"
+    assert outcome is None
+
+    # Verify NO fallback audit event was recorded
+    fallback_audit = clean_db["agent_activity"].find_one({"applicationId": "app-guard-proc-valid", "status": "FALLBACK"})
+    assert fallback_audit is None
+    provider.close()
+
+
+def test_deterministic_orchestration_independent_of_env_llm_provider(clean_db, monkeypatch):
+    """
+    Objective B/C: Verify that AgentOrchestrator in deterministic mode or when
+    LLM_PROVIDER is disabled runs completely independent of the developer's .env file.
+    """
+    monkeypatch.setattr(settings, "LLM_PROVIDER", "disabled")
+    app_id = "SE-ISOLATION-001"
+    clean_db["applications"].insert_one({
+        "applicationId": app_id,
+        "userId": "user-iso",
+        "applicantId": "app-iso",
+        "status": "SUBMITTED",
+        "programmeId": "mca",
+    })
+
+    user = {"_id": "user-iso", "role": "applicant", "applicant_id": "app-iso"}
+    orchestrator = AgentOrchestrator(db=clean_db)
+    res = orchestrator.run(app_id, user)
+
+    assert res.outcome == OrchestrationOutcome.WAITING_FOR_APPLICANT
+    assert res.currentApplicationStatus == "WAITING_FOR_DOCUMENTS"
+    assert clean_db["applications"].find_one({"applicationId": app_id})["status"] == "WAITING_FOR_DOCUMENTS"
+
+
+def test_guardrail_out_of_policy_tool_rejected_and_audited(clean_db):
+    """
+    Out-of-policy proposal (e.g. record_audit_event or non-permitted state jump)
+    is rejected, audited with FALLBACK status, and delegates to deterministic strategy.
+    """
+    obs = make_test_observation(
+        application_id="app-guard-policy-1",
+        current_status="PROCESSING",
+        is_document_complete=True,
+    )
+    proposal = {
+        "action_type": "TOOL_CALL",
+        "tool": "record_audit_event",
+        "parameters": {},
+        "rationale": "Model attempting to call internal system tool",
+        "stage": "ACT",
+        "is_terminal": False,
+        "terminal_outcome": None,
+    }
+    transport = make_mock_transport_for_json(make_openai_response(proposal))
+    provider = OpenAICompatibleProvider(api_key="sk-test", api_base="https://api.openai.com/v1", transport=transport)
+    strategy = LLMPlanningStrategy(provider=provider, db=clean_db, fallback_enabled=True)
+
+    action, outcome, rationale = strategy.plan_next_action(obs, iteration=1)
+    fallback_audit = clean_db["agent_activity"].find_one({"applicationId": "app-guard-policy-1", "status": "FALLBACK"})
+    assert fallback_audit is not None
+    assert "record_audit_event" in fallback_audit["result"]
+    provider.close()
