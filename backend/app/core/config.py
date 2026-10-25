@@ -14,6 +14,16 @@ class Settings(BaseSettings):
     TESSERACT_CMD: str | None = None
     OCR_LANGUAGES: str = "eng+tam+hin"
 
+    # LLM Settings (Increment 15, Task 15.3)
+    LLM_PROVIDER: str = "disabled"
+    LLM_API_KEY: str | None = None
+    LLM_MODEL: str = "gpt-4o-mini"
+    LLM_API_BASE: str = "https://api.openai.com/v1"
+    LLM_TIMEOUT_SECONDS: float = 15.0
+    LLM_TEMPERATURE: float = 0.0
+    LLM_FALLBACK_TO_DETERMINISTIC: bool = True
+    LLM_ALLOW_LOCAL_ENDPOINTS: bool = False
+
     @property
     def storage_path(self) -> Path:
         p = Path(self.STORAGE_DIR)
