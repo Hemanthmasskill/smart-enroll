@@ -2358,3 +2358,81 @@ def test_database_initialization_fails_safely_on_duplicate_active_runs(clean_db)
                 partial_idx_found = True
                 break
     assert partial_idx_found, "Unique partial index on status in ('RUNNING', 'RECOVERING') was not created!"
+
+
+def test_list_orchestration_runs_endpoint(api_client, admin_auth, applicant_auth, clean_db):
+    """
+    Verify GET /api/v1/agents/runs returns recent orchestration runs,
+    enforcing RBAC:
+    - Admin can view runs across all applications.
+    - Applicants can only view runs for their own application.
+    - Unsupported or unexpected roles receive HTTP 403 Forbidden.
+    """
+    from app.core.security import create_access_token
+
+    app_id_1 = applicant_auth["application"]["applicationId"]
+    app_id_2 = "app-other-applicant-99"
+
+    clean_db["orchestration_runs"].delete_many({})
+
+    # Insert run for applicant 1
+    clean_db["orchestration_runs"].insert_one({
+        "runId": "run-app-1",
+        "applicationId": app_id_1,
+        "status": OrchestrationRunStatus.COMPLETED.value,
+        "outcome": OrchestrationOutcome.WAITING_FOR_APPLICANT.value,
+        "currentApplicationStatus": "WAITING_FOR_DOCUMENTS",
+        "stepsCompleted": 2,
+        "summary": "Completed inspection for app 1",
+        "startedAt": datetime.now(timezone.utc).isoformat(),
+        "completedAt": datetime.now(timezone.utc).isoformat(),
+        "steps": [],
+        "planner": "DETERMINISTIC",
+    })
+
+    # Insert run for applicant 2
+    clean_db["orchestration_runs"].insert_one({
+        "runId": "run-app-2",
+        "applicationId": app_id_2,
+        "status": OrchestrationRunStatus.COMPLETED.value,
+        "outcome": OrchestrationOutcome.WAITING_FOR_APPLICANT.value,
+        "currentApplicationStatus": "WAITING_FOR_DOCUMENTS",
+        "stepsCompleted": 1,
+        "summary": "Completed inspection for app 2",
+        "startedAt": datetime.now(timezone.utc).isoformat(),
+        "completedAt": datetime.now(timezone.utc).isoformat(),
+        "steps": [],
+        "planner": "DETERMINISTIC",
+    })
+
+    # 1. Admin request sees runs across all applications
+    admin_res = api_client.get("/api/v1/agents/runs", headers=admin_auth["headers"])
+    assert admin_res.status_code == 200
+    runs = admin_res.json()
+    run_ids = [r["runId"] for r in runs]
+    assert "run-app-1" in run_ids
+    assert "run-app-2" in run_ids
+
+    # 2. Applicant request sees only own application run
+    applicant_res = api_client.get("/api/v1/agents/runs", headers=applicant_auth["headers"])
+    assert applicant_res.status_code == 200
+    app_runs = applicant_res.json()
+    assert len(app_runs) == 1
+    assert app_runs[0]["runId"] == "run-app-1"
+    assert app_runs[0]["applicationId"] == app_id_1
+
+    # 3. Unsupported role receives HTTP 403 Forbidden
+    reviewer_user = {
+        "full_name": "External Reviewer",
+        "email": "reviewer@smartenroll.edu",
+        "role": "reviewer",
+    }
+    inserted = clean_db["users"].insert_one(reviewer_user)
+    reviewer_token = create_access_token(subject=str(inserted.inserted_id), role="reviewer")
+
+    reviewer_res = api_client.get(
+        "/api/v1/agents/runs",
+        headers={"Authorization": f"Bearer {reviewer_token}"},
+    )
+    assert reviewer_res.status_code == 403
+    assert "Forbidden" in reviewer_res.json().get("detail", "")

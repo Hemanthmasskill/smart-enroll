@@ -1584,3 +1584,253 @@ def test_guardrail_out_of_policy_tool_rejected_and_audited(clean_db):
     assert fallback_audit is not None
     assert "record_audit_event" in fallback_audit["result"]
     provider.close()
+
+
+def test_orchestration_run_telemetry_captures_clean_llm_vs_fallback(clean_db):
+    """
+    Verify OrchestrationRunResponse accurately sets fallbackOccurred=False on accepted proposals
+    and fallbackOccurred=True when fallback is triggered.
+    """
+    app_id = "app-telemetry-test-1"
+    clean_db["applications"].delete_many({"applicationId": app_id})
+    clean_db["orchestration_runs"].delete_many({"applicationId": app_id})
+    clean_db["documents"].delete_many({"applicationId": app_id})
+    clean_db["agent_activity"].delete_many({"applicationId": app_id})
+
+    clean_db["applications"].insert_one({
+        "applicationId": app_id,
+        "applicantId": "applicant-telem-1",
+        "userId": "user_telem_1",
+        "status": "DRAFT",
+        "programmeId": "mca",
+    })
+
+    # Case 1: Accepted LLM proposal (no fallback)
+    proposal_data = {
+        "action_type": "TERMINATE",
+        "tool": None,
+        "parameters": {},
+        "rationale": "DRAFT application awaits applicant submission.",
+        "stage": "ACT",
+        "is_terminal": True,
+        "terminal_outcome": "WAITING_FOR_APPLICANT",
+    }
+    transport = make_mock_transport_for_json(make_openai_response(proposal_data))
+    provider = OpenAICompatibleProvider(api_key="sk-test", api_base="https://api.openai.com/v1", transport=transport)
+    strategy = LLMPlanningStrategy(provider=provider, db=clean_db)
+    orchestrator = AgentOrchestrator(db=clean_db, planning_strategy=strategy)
+    user = {"_id": "user_telem_1", "role": "applicant", "applicant_id": "applicant-telem-1"}
+
+    res1 = orchestrator.run(application_id=app_id, triggered_by_user=user)
+    assert res1.planner == "LLM"
+    assert res1.fallbackOccurred is False
+    assert res1.fallbackCount == 0
+    provider.close()
+
+    # Case 2: Fallback triggered (e.g. timeout)
+    def timeout_handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.TimeoutException("Timeout", request=request)
+
+    transport_timeout = httpx.MockTransport(timeout_handler)
+    provider_timeout = OpenAICompatibleProvider(api_key="sk-test", api_base="https://api.openai.com/v1", transport=transport_timeout)
+    strategy_timeout = LLMPlanningStrategy(provider=provider_timeout, db=clean_db, fallback_enabled=True)
+    orchestrator_timeout = AgentOrchestrator(db=clean_db, planning_strategy=strategy_timeout)
+
+    res2 = orchestrator_timeout.run(application_id=app_id, triggered_by_user=user)
+    assert res2.planner == "LLM"
+    assert res2.fallbackOccurred is True
+    assert res2.fallbackCount >= 1
+    provider_timeout.close()
+
+
+def test_agent_system_status_endpoint():
+    """
+    Verify GET /api/v1/agents/system-status returns public system configuration
+    without exposing secrets or credentials.
+    """
+    from fastapi.testclient import TestClient
+    from app.main import app
+
+    with TestClient(app) as client:
+        response = client.get("/api/v1/agents/system-status")
+        assert response.status_code == 200
+        data = response.json()
+        assert "llmProvider" in data
+        assert "llmEnabled" in data
+        assert "availableToolsCount" in data
+        assert data["availableToolsCount"] == 13
+        assert len(data["registeredTools"]) == 13
+        assert "api_key" not in data
+        assert "secret" not in data
+        assert "SECRET_KEY" not in data
+
+
+def test_fallback_followed_by_successful_llm_planning_iteration(clean_db):
+    """
+    Regression Test 1 & 5:
+    A fallback in an earlier iteration followed by a successful LLM planning iteration.
+    Verifies:
+    - Fallback in iteration 1 does NOT cause iteration 2 to be counted as a fallback.
+    - Step 1 reports planner="FALLBACK", fallbackUsed=True, fallbackReason!=None.
+    - Step 2 reports planner="LLM", fallbackUsed=False, fallbackReason=None.
+    - Run reports planner="LLM", fallbackOccurred=True, fallbackCount=1.
+    """
+    app_id = "app-multistep-fallback-test"
+    clean_db["applications"].delete_many({"applicationId": app_id})
+    clean_db["orchestration_runs"].delete_many({"applicationId": app_id})
+    clean_db["documents"].delete_many({"applicationId": app_id})
+    clean_db["agent_activity"].delete_many({"applicationId": app_id})
+
+    user = {"_id": "user_multistep_1", "role": "applicant", "applicant_id": "applicant-multi-1"}
+
+    # Insert 6 required documents so SUBMITTED can transition to PROCESSING via deterministic fallback
+    req_docs = [
+        "10TH_MARKSHEET", "12TH_MARKSHEET", "UG_MARKSHEET",
+        "DEGREE_CERTIFICATE", "TRANSFER_CERTIFICATE", "GOVERNMENT_ID"
+    ]
+    for d_type in req_docs:
+        clean_db["documents"].insert_one({
+            "documentId": f"doc-{d_type}",
+            "applicationId": app_id,
+            "documentType": d_type,
+            "status": "UPLOADED",
+            "originalFileName": f"{d_type}.pdf",
+        })
+
+    clean_db["applications"].insert_one({
+        "applicationId": app_id,
+        "applicantId": "applicant-multi-1",
+        "userId": "user_multistep_1",
+        "status": "SUBMITTED",
+        "programmeId": "mca",
+    })
+
+    # Call 1: Throws TimeoutException (triggers fallback to update status -> PROCESSING)
+    # Call 2: Returns valid LLM proposal (tool call for check_document_completeness)
+    call_count = 0
+
+    def mock_handler(request: httpx.Request) -> httpx.Response:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            raise httpx.TimeoutException("Connection timed out", request=request)
+        proposal = {
+            "action_type": "TOOL_CALL",
+            "tool": "check_document_completeness",
+            "parameters": {"application_id": app_id},
+            "rationale": "Inspecting document completeness following status update.",
+            "stage": "ACT",
+            "is_terminal": False,
+            "terminal_outcome": None,
+        }
+        return httpx.Response(
+            status_code=200,
+            content=json.dumps(make_openai_response(proposal)).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+        )
+
+    transport = httpx.MockTransport(mock_handler)
+    provider = OpenAICompatibleProvider(api_key="sk-test", api_base="https://api.openai.com/v1", transport=transport)
+    strategy = LLMPlanningStrategy(provider=provider, db=clean_db, fallback_enabled=True)
+    orchestrator = AgentOrchestrator(db=clean_db, planning_strategy=strategy, max_iterations=2)
+
+    res = orchestrator.run(application_id=app_id, triggered_by_user=user)
+
+    assert res.planner == "LLM"
+    assert res.fallbackOccurred is True
+    assert res.fallbackCount == 1
+    assert len(res.steps) == 2
+
+    # Step 1: Fallback from iteration 1
+    assert res.steps[0].stepIndex == 1
+    assert res.steps[0].planner == "FALLBACK"
+    assert res.steps[0].fallbackUsed is True
+    assert res.steps[0].fallbackReason is not None
+    assert "Timeout" in res.steps[0].fallbackReason
+
+    # Step 2: Clean LLM from iteration 2 (not tainted by iteration 1 fallback)
+    assert res.steps[1].stepIndex == 2
+    assert res.steps[1].planner == "LLM"
+    assert res.steps[1].fallbackUsed is False
+    assert res.steps[1].fallbackReason is None
+
+    provider.close()
+
+
+def test_unavailable_provider_when_fallback_applicable(clean_db):
+    """
+    Regression Test 2:
+    An unavailable provider when fallback is applicable (LLMPlanningStrategy with provider=None).
+    Verifies:
+    - Reports planner="LLM", fallbackOccurred=True, fallbackCount >= 1.
+    - Each step executed has planner="FALLBACK", fallbackUsed=True, and valid fallbackReason.
+    """
+    app_id = "app-unavail-provider-test"
+    clean_db["applications"].delete_many({"applicationId": app_id})
+    clean_db["orchestration_runs"].delete_many({"applicationId": app_id})
+    clean_db["documents"].delete_many({"applicationId": app_id})
+
+    user = {"_id": "user_unavail_1", "role": "applicant", "applicant_id": "applicant-unavail-1"}
+
+    clean_db["applications"].insert_one({
+        "applicationId": app_id,
+        "applicantId": "applicant-unavail-1",
+        "userId": "user_unavail_1",
+        "status": "SUBMITTED",
+        "programmeId": "mca",
+    })
+
+    # Provider is None, fallback is enabled
+    strategy = LLMPlanningStrategy(provider=None, db=clean_db, fallback_enabled=True)
+    orchestrator = AgentOrchestrator(db=clean_db, planning_strategy=strategy)
+
+    res = orchestrator.run(application_id=app_id, triggered_by_user=user)
+
+    assert res.planner == "LLM"
+    assert res.fallbackOccurred is True
+    assert res.fallbackCount >= 1
+    assert len(res.steps) >= 1
+    for step in res.steps:
+        assert step.planner == "FALLBACK"
+        assert step.fallbackUsed is True
+        assert step.fallbackReason is not None
+        assert "not configured" in step.fallbackReason.lower() or "unavailable" in step.fallbackReason.lower()
+
+
+def test_intentional_deterministic_only_mode_telemetry(clean_db):
+    """
+    Regression Test 4:
+    Intentional deterministic-only mode (DeterministicPlanningStrategy / LLM_PROVIDER='disabled').
+    Verifies:
+    - Never falsely labeled as fallback.
+    - Run reports planner="DETERMINISTIC", fallbackOccurred=False, fallbackCount=0.
+    - All steps report planner="DETERMINISTIC", fallbackUsed=False, fallbackReason=None.
+    """
+    app_id = "app-determ-mode-test"
+    clean_db["applications"].delete_many({"applicationId": app_id})
+    clean_db["orchestration_runs"].delete_many({"applicationId": app_id})
+    clean_db["documents"].delete_many({"applicationId": app_id})
+
+    user = {"_id": "user_determ_1", "role": "applicant", "applicant_id": "applicant-determ-1"}
+
+    clean_db["applications"].insert_one({
+        "applicationId": app_id,
+        "applicantId": "applicant-determ-1",
+        "userId": "user_determ_1",
+        "status": "SUBMITTED",
+        "programmeId": "mca",
+    })
+
+    strategy = DeterministicPlanningStrategy()
+    orchestrator = AgentOrchestrator(db=clean_db, planning_strategy=strategy)
+
+    res = orchestrator.run(application_id=app_id, triggered_by_user=user)
+
+    assert res.planner == "DETERMINISTIC"
+    assert res.fallbackOccurred is False
+    assert res.fallbackCount == 0
+    assert len(res.steps) >= 1
+    for step in res.steps:
+        assert step.planner == "DETERMINISTIC"
+        assert step.fallbackUsed is False
+        assert step.fallbackReason is None

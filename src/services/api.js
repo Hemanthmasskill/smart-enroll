@@ -829,16 +829,286 @@ export async function updateProgrammeRules(programmeId, updates) {
   return { ...mockEligibilityRules[programmeId] };
 }
 
-/* ----------------------------- Agent Activity ----------------------------- */
-// Future: GET `${BASE_URL}/admin/agent-activity`
-//
-// This is an observable audit trail only — timestamps, tool calls,
-// deterministic results and workflow status. It never includes
-// private reasoning, internal chain-of-thought, or fabricated model
-// thoughts (master prompt section 24/27).
-export async function getAgentActivity() {
+/* ----------------------------- Agent Activity & Orchestration ----------------------------- */
+// GET `${BASE_URL}/admin/agent-activity` or `${BASE_URL}/agents/activity`
+export async function getAgentActivity(filters = {}, token) {
+  if (token && token !== "mock-jwt-token") {
+    const params = new URLSearchParams();
+    if (filters.applicationId && filters.applicationId !== "ALL") params.append("applicationId", filters.applicationId);
+    if (filters.stage && filters.stage !== "ALL") params.append("stage", filters.stage);
+    if (filters.status && filters.status !== "ALL") params.append("status", filters.status);
+    params.append("limit", "100");
+
+    const response = await fetch(`${BASE_URL}/agents/activity?${params.toString()}`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    });
+
+    if (!response.ok) {
+      const errJson = await response.json().catch(() => ({}));
+      throw new Error(errJson.detail || `Failed to fetch live agent activity (${response.status}).`);
+    }
+
+    const data = await response.json();
+    return data.map((r) => ({ ...r, isLive: true }));
+  }
+
   await delay(400);
   return [...mockAgentActivity];
+}
+
+// GET `${BASE_URL}/agents/system-status`
+export async function getAgentSystemStatus() {
+  try {
+    const response = await fetch(`${BASE_URL}/agents/system-status`);
+    if (response.ok) {
+      const data = await response.json();
+      return { ...data, isLive: true };
+    }
+  } catch {
+    // Backend offline or unreachable
+  }
+
+  // Safe fallback static config reflecting repository default
+  return {
+    llmProvider: "disabled",
+    llmEnabled: false,
+    llmModel: "gpt-4o-mini",
+    isLocalEndpoint: false,
+    allowLocalEndpoints: false,
+    fallbackEnabled: true,
+    timeoutSeconds: 15.0,
+    temperature: 0.0,
+    availableToolsCount: 13,
+    registeredTools: [
+      "check_document_completeness",
+      "check_eligibility",
+      "compare_applicant_details",
+      "create_exception",
+      "extract_document_data",
+      "get_application",
+      "get_program_requirements",
+      "process_document",
+      "record_audit_event",
+      "request_missing_document",
+      "send_notification",
+      "update_application_status",
+      "verify_document",
+    ],
+    isLive: false,
+  };
+}
+
+// GET `${BASE_URL}/agents/runs`
+export async function getRecentOrchestrationRuns(token) {
+  if (token && token !== "mock-jwt-token") {
+    try {
+      const response = await fetch(`${BASE_URL}/agents/runs`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+      if (!response.ok) {
+        const errJson = await response.json().catch(() => ({}));
+        return { runs: [], isLive: false, error: errJson.detail || `HTTP ${response.status} fetching runs` };
+      }
+      const data = await response.json();
+      return { runs: data, isLive: true, error: null };
+    } catch (err) {
+      return { runs: [], isLive: false, error: err.message };
+    }
+  }
+
+  await delay(300);
+  // Labelled mock demonstration runs
+  return {
+    runs: [
+      {
+        runId: "demo-run-001",
+        applicationId: "SE20260001",
+        status: "COMPLETED",
+        outcome: "WAITING_FOR_APPLICANT",
+        currentApplicationStatus: "WAITING_FOR_DOCUMENTS",
+        stepsCompleted: 2,
+        summary: "Missing required documents detected; application safely transitioned to WAITING_FOR_DOCUMENTS.",
+        planner: "LLM",
+        fallbackOccurred: false,
+        fallbackCount: 0,
+        startedAt: "2026-10-26T14:30:00Z",
+        completedAt: "2026-10-26T14:30:02Z",
+        isDemoMock: true,
+        steps: [
+          {
+            stepIndex: 1,
+            stage: "ACT",
+            tool: "check_document_completeness",
+            action: "Inspect uploaded documents against programme requirements",
+            resultSummary: "4 of 6 required documents present. Missing: 12TH_MARKSHEET, TRANSFER_CERTIFICATE",
+            status: "COMPLETED",
+            planner: "LLM",
+            fallbackUsed: false,
+            executedAt: "2026-10-26T14:30:01Z",
+          },
+          {
+            stepIndex: 2,
+            stage: "ACT",
+            tool: "update_application_status",
+            action: "Update application status to WAITING_FOR_DOCUMENTS",
+            resultSummary: "Application SE20260001 status updated from SUBMITTED to WAITING_FOR_DOCUMENTS.",
+            status: "COMPLETED",
+            planner: "LLM",
+            fallbackUsed: false,
+            executedAt: "2026-10-26T14:30:02Z",
+          },
+        ],
+      },
+      {
+        runId: "demo-run-002",
+        applicationId: "SE20260002",
+        status: "COMPLETED",
+        outcome: "WAITING_FOR_APPLICANT",
+        currentApplicationStatus: "WAITING_FOR_DOCUMENTS",
+        stepsCompleted: 2,
+        summary: "Model proposed invalid tool call for missing documents; domain guardrail (Rule 2) triggered safe deterministic fallback.",
+        planner: "LLM",
+        fallbackOccurred: true,
+        fallbackCount: 1,
+        startedAt: "2026-10-26T15:10:00Z",
+        completedAt: "2026-10-26T15:10:03Z",
+        isDemoMock: true,
+        steps: [
+          {
+            stepIndex: 1,
+            stage: "ACT",
+            tool: "check_document_completeness",
+            action: "Inspect uploaded documents",
+            resultSummary: "5 of 6 required documents present",
+            status: "COMPLETED",
+            planner: "LLM",
+            fallbackUsed: false,
+            executedAt: "2026-10-26T15:10:01Z",
+          },
+          {
+            stepIndex: 2,
+            stage: "ACT",
+            tool: "update_application_status",
+            action: "Transition to WAITING_FOR_DOCUMENTS via deterministic fallback",
+            resultSummary: "Fallback updated status safely after out-of-policy model proposal was rejected.",
+            status: "COMPLETED",
+            planner: "FALLBACK",
+            fallbackUsed: true,
+            fallbackReason: "Model proposed request_missing_document before status transition; rejected by Rule 2 guardrail.",
+            executedAt: "2026-10-26T15:10:03Z",
+          },
+        ],
+      },
+      {
+        runId: "demo-run-003",
+        applicationId: "SE20260003",
+        status: "COMPLETED",
+        outcome: "DEPENDENCY_PENDING",
+        currentApplicationStatus: "ELIGIBILITY_CHECK",
+        stepsCompleted: 3,
+        summary: "Verification completed; academic eligibility check paused awaiting Increment 16 engine.",
+        planner: "DETERMINISTIC",
+        fallbackOccurred: false,
+        fallbackCount: 0,
+        startedAt: "2026-10-26T16:00:00Z",
+        completedAt: "2026-10-26T16:00:04Z",
+        isDemoMock: true,
+        steps: [
+          {
+            stepIndex: 1,
+            stage: "ACT",
+            tool: "check_document_completeness",
+            action: "Verify all 6 documents present",
+            resultSummary: "6 of 6 required documents present. Complete.",
+            status: "COMPLETED",
+            planner: "DETERMINISTIC",
+            fallbackUsed: false,
+            executedAt: "2026-10-26T16:00:01Z",
+          },
+          {
+            stepIndex: 2,
+            stage: "ACT",
+            tool: "verify_document",
+            action: "Validate degree certificate extractions",
+            resultSummary: "Layer 2 validation completed: VALIDATED",
+            status: "COMPLETED",
+            planner: "DETERMINISTIC",
+            fallbackUsed: false,
+            executedAt: "2026-10-26T16:00:03Z",
+          },
+          {
+            stepIndex: 3,
+            stage: "ACT",
+            tool: "check_eligibility",
+            action: "Evaluate candidate against programme requirements",
+            resultSummary: "Deterministic eligibility evaluation service is pending backend implementation in Increment 16.",
+            status: "DEPENDENCY_PENDING",
+            planner: "DETERMINISTIC",
+            fallbackUsed: false,
+            executedAt: "2026-10-26T16:00:04Z",
+          },
+        ],
+      },
+    ],
+    isLive: false,
+    error: null,
+  };
+}
+
+// POST `${BASE_URL}/agents/orchestrate/{application_id}`
+export async function triggerAgentOrchestration(applicationId, token) {
+  if (!token || token === "mock-jwt-token") {
+    throw new Error(
+      "A real backend JWT token is required to execute autonomous orchestration. " +
+      "Mock credentials cannot authenticate against the FastAPI orchestrator."
+    );
+  }
+
+  const response = await fetch(`${BASE_URL}/agents/orchestrate/${applicationId}`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+
+  if (!response.ok) {
+    const errJson = await response.json().catch(() => ({}));
+    throw new Error(errJson.detail || `Orchestration trigger failed (${response.status}).`);
+  }
+
+  return await response.json();
+}
+
+// Backend Admin Login (for live evaluator connection)
+export async function backendAdminLogin({ email, password }) {
+  let response;
+  try {
+    response = await fetch(`${BASE_URL}/auth/login`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ email, password, role: "admin" }),
+    });
+  } catch (err) {
+    if (err.name === "TypeError" || (err.message && err.message.includes("fetch"))) {
+      throw new Error(
+        `Unable to connect to live backend at ${BASE_URL}. Ensure the FastAPI server is running on port 8000.`
+      );
+    }
+    throw err;
+  }
+
+  if (!response.ok) {
+    const errJson = await response.json().catch(() => ({}));
+    throw new Error(errJson.detail || "Backend administrator authentication failed.");
+  }
+
+  return await response.json();
 }
 
 /* ------------------------------- Analytics ------------------------------- */

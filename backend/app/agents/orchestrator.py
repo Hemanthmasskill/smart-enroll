@@ -126,6 +126,9 @@ class PlannedAction:
         stage: WorkflowStage = WorkflowStage.ACT,
         is_terminal: bool = False,
         terminal_outcome: OrchestrationOutcome | None = None,
+        planner: str = "DETERMINISTIC",
+        fallback_used: bool = False,
+        fallback_reason: str | None = None,
     ):
         self.tool = tool
         self.parameters = parameters
@@ -133,6 +136,9 @@ class PlannedAction:
         self.stage = stage
         self.is_terminal = is_terminal
         self.terminal_outcome = terminal_outcome
+        self.planner = planner
+        self.fallback_used = fallback_used
+        self.fallback_reason = fallback_reason
 
 
 class PlanningStrategy(ABC):
@@ -904,6 +910,8 @@ class AgentOrchestrator:
         summary = ""
         failure_reason = None
         pending_dependency = None
+        fallback_occurred = False
+        fallback_count = 0
 
         try:
             for iteration in range(1, limit + 1):
@@ -957,6 +965,14 @@ class AgentOrchestrator:
                     observation=observation,
                     iteration=iteration,
                 )
+
+                is_iteration_fallback = bool(
+                    getattr(planned_action, "fallback_used", False)
+                    or getattr(self.strategy, "last_iteration_fallback", False)
+                )
+                if is_iteration_fallback:
+                    fallback_occurred = True
+                    fallback_count += 1
 
                 if early_outcome:
                     final_outcome = early_outcome
@@ -1050,6 +1066,7 @@ class AgentOrchestrator:
                     break
 
                 # VERIFY
+                is_step_fallback = bool(getattr(planned_action, "fallback_used", False))
                 step_record = OrchestrationStepRecord(
                     stepIndex=iteration,
                     stage=planned_action.stage.value,
@@ -1058,7 +1075,9 @@ class AgentOrchestrator:
                     resultSummary=tool_result.message or tool_result.status,
                     status=tool_result.status,
                     executedAt=datetime.now(timezone.utc).isoformat(),
-                    planner=getattr(self.strategy, "planner_name", "DETERMINISTIC"),
+                    planner="FALLBACK" if is_step_fallback else getattr(planned_action, "planner", getattr(self.strategy, "planner_name", "DETERMINISTIC")),
+                    fallbackUsed=is_step_fallback,
+                    fallbackReason=getattr(planned_action, "fallback_reason", None),
                 )
                 steps.append(step_record)
 
@@ -1131,6 +1150,8 @@ class AgentOrchestrator:
                             "failureReason": failure_reason,
                             "pendingDependency": pending_dependency,
                             "completedAt": completed_iso,
+                            "fallbackOccurred": fallback_occurred,
+                            "fallbackCount": fallback_count,
                         }
                     },
                 )
@@ -1149,6 +1170,8 @@ class AgentOrchestrator:
             completedAt=completed_iso,
             steps=steps,
             planner=getattr(self.strategy, "planner_name", "DETERMINISTIC"),
+            fallbackOccurred=fallback_occurred,
+            fallbackCount=fallback_count,
         )
 
     def get_run(self, run_id: str, current_user: dict) -> OrchestrationRunResponse:

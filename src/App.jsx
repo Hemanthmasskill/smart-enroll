@@ -123,6 +123,7 @@ export default function App() {
           <Route path="/admin/analytics" element={<ProtectedRoute allowedRole="admin"><AdminLayout><Analytics /></AdminLayout></ProtectedRoute>} />
           <Route path="/admin/programs" element={<ProtectedRoute allowedRole="admin"><AdminLayout><ProgrammeRules /></AdminLayout></ProtectedRoute>} />
           <Route path="/admin/agent-activity" element={<ProtectedRoute allowedRole="admin"><AdminLayout><AgentActivity /></AdminLayout></ProtectedRoute>} />
+          <Route path="/admin/status" element={<ProtectedRoute allowedRole="admin"><AdminLayout><AgentActivity /></AdminLayout></ProtectedRoute>} />
 
           <Route path="*" element={<NotFound />} />
         </Routes>
