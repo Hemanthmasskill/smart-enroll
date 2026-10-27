@@ -247,8 +247,6 @@ class LLMPlanningStrategy(PlanningStrategy):
             return planned_action, outcome, rationale
 
         except Exception as exc:
-            self.last_iteration_fallback = True
-            self._fallback_occurred_this_run = True
             safe_error_type = exc.__class__.__name__
             safe_message = str(exc)
             # Sanitize message to prevent exposing internal stack details or sensitive data
@@ -256,12 +254,13 @@ class LLMPlanningStrategy(PlanningStrategy):
                 safe_message = safe_message[:147] + "..."
 
             reason_summary = f"LLM planning rejected ({safe_error_type}): {safe_message}"
-            self.last_fallback_reason = reason_summary
-            logger.warning("%s. Delegating to deterministic fallback planner.", reason_summary)
-
-            self._record_fallback_audit(observation.application_id, reason_summary)
 
             if self.fallback_enabled:
+                self.last_iteration_fallback = True
+                self._fallback_occurred_this_run = True
+                self.last_fallback_reason = reason_summary
+                logger.warning("%s. Delegating to deterministic fallback planner.", reason_summary)
+                self._record_fallback_audit(observation.application_id, reason_summary)
                 fallback_action, fallback_outcome, fallback_rationale = self.fallback_strategy.plan_next_action(
                     observation, iteration
                 )
@@ -271,6 +270,7 @@ class LLMPlanningStrategy(PlanningStrategy):
                     fallback_action.fallback_reason = reason_summary
                 return fallback_action, fallback_outcome, fallback_rationale
 
+            logger.warning("%s. Fallback is disabled; halting planning.", reason_summary)
             return (
                 None,
                 OrchestrationOutcome.FAILED,

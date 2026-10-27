@@ -48,6 +48,7 @@ from app.core.database import get_db
 from app.schemas.agent import (
     LLMPlanProposal,
     OrchestrationOutcome,
+    OrchestrationRunStatus,
     ToolName,
     WorkflowStage,
 )
@@ -1834,3 +1835,62 @@ def test_intentional_deterministic_only_mode_telemetry(clean_db):
         assert step.planner == "DETERMINISTIC"
         assert step.fallbackUsed is False
         assert step.fallbackReason is None
+
+
+def test_llm_provider_exception_with_fallback_disabled(clean_db):
+    """
+    Regression Test:
+    LLM provider throws an exception when fallback is disabled (fallback_enabled=False).
+    Verifies:
+    - The planning result fails as expected (outcome=FAILED).
+    - fallbackOccurred is False.
+    - fallbackCount is zero.
+    - No step is marked fallbackUsed=True.
+    - No audit event is marked status='FALLBACK'.
+    """
+    app_id = "app-llm-fail-no-fallback"
+    clean_db["applications"].delete_many({"applicationId": app_id})
+    clean_db["orchestration_runs"].delete_many({"applicationId": app_id})
+    clean_db["documents"].delete_many({"applicationId": app_id})
+    clean_db["agent_activity"].delete_many({"applicationId": app_id})
+
+    user = {"_id": "user_no_fallback_1", "role": "applicant", "applicant_id": "applicant-no-fallback-1"}
+
+    clean_db["applications"].insert_one({
+        "applicationId": app_id,
+        "applicantId": "applicant-no-fallback-1",
+        "userId": "user_no_fallback_1",
+        "status": "SUBMITTED",
+        "programmeId": "mca",
+    })
+
+    def mock_handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("Connection refused by upstream LLM server", request=request)
+
+    transport = httpx.MockTransport(mock_handler)
+    provider = OpenAICompatibleProvider(api_key="sk-test", api_base="https://api.openai.com/v1", transport=transport)
+    strategy = LLMPlanningStrategy(provider=provider, db=clean_db, fallback_enabled=False)
+    orchestrator = AgentOrchestrator(db=clean_db, planning_strategy=strategy)
+
+    # 1. Verify direct planning call
+    obs = orchestrator.observe(application_id=app_id)
+    plan_action, plan_outcome, plan_rationale = strategy.plan_next_action(observation=obs, iteration=1)
+    assert plan_action is None
+    assert plan_outcome == OrchestrationOutcome.FAILED
+    assert "Model-backed planning failed without fallback" in plan_rationale
+    assert strategy.last_iteration_fallback is False
+
+    # 2. Verify orchestrator run result
+    res = orchestrator.run(application_id=app_id, triggered_by_user=user)
+
+    assert res.outcome == OrchestrationOutcome.FAILED
+    assert res.status == OrchestrationRunStatus.FAILED
+    assert res.fallbackOccurred is False
+    assert res.fallbackCount == 0
+    assert all(step.fallbackUsed is False for step in res.steps)
+
+    # 3. Verify no FALSE audit claiming fallback was written
+    fallback_audits = list(clean_db["agent_activity"].find({"applicationId": app_id, "status": "FALLBACK"}))
+    assert len(fallback_audits) == 0
+
+    provider.close()
