@@ -166,7 +166,8 @@ export default function Eligibility() {
         <p>
           Eligibility criteria for each programme are versioned system rules configured by the
           institution. Smart Enroll evaluates your verified documents against these pure, deterministic
-          rules — it never uses language models to guess or modify admission decisions.
+          rules — it does not invent, infer, or adjust admission criteria on its own, and never uses
+          language models to guess or modify admission decisions.
         </p>
       </div>
     </div>
