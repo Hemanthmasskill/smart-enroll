@@ -47,19 +47,22 @@ PERCENTAGE_PATTERNS = [
 
 CGPA_PATTERNS = [
     re.compile(
-        r"(?:cgpa|cumulative\s*grade\s*point\s*average|ogpa|final\s*cgpa)\s*[:\-–]?\s*"
-        r"(\d{1,2}(?:\.\d{1,2})?)"
-        r"(?:\s*(?:\/|\s*out\s*of\s*)\s*(\d{1,2}(?:\.\d{1,2})?))?",
+        r"(?:cgpa|cumulative\s*grade\s*point\s*average|ogpa|final\s*cgpa)\s*(?:[:–]|-(?!\d))?\s*"
+        r"(-?\d+(?:\.\d+)?(?![0-9.]))"
+        r"(?:\s*(?:\/|\s*out\s*of\s*)\s*(-?\d+(?:\.\d+)?(?![0-9.])))?",
         re.I,
     ),
     re.compile(
-        r"\b(\d{1,2}(?:\.\d{1,2})?)\s*(?:\/|\s*out\s*of\s*)\s*(\d{1,2}(?:\.\d{1,2})?)\s*(?:cgpa|grade\s*point)\b",
+        r"(?:(?<=\s)|^|\b)(-?\d+(?:\.\d+)?(?![0-9.]))\s*(?:\/|\s*out\s*of\s*)\s*(-?\d+(?:\.\d+)?(?![0-9.]))\s*(?:cgpa|grade\s*point)\b",
         re.I,
     ),
 ]
 
 CGPA_SCALE_PATTERNS = [
-    re.compile(r"(?:cgpa\s*scale|grade\s*point\s*scale|grade\s*scale|scale)\s*[:\-–]?\s*(?:out\s*of\s*)?(\d{1,2}(?:\.\d{1,2})?)", re.I),
+    re.compile(
+        r"(?:cgpa\s*scale|grade\s*point\s*scale|grade\s*scale|scale)\s*(?:[:–]|-(?!\d))?\s*(?:out\s*of\s*)?(-?\d+(?:\.\d+)?(?![0-9.]))",
+        re.I,
+    ),
 ]
 
 CERTIFICATE_NO_PATTERNS = [

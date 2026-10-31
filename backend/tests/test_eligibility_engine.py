@@ -688,6 +688,30 @@ def test_deterministic_cgpa_scale_inference_and_cases():
     assert r8.result == "NEEDS_REVIEW"
     assert "Neither aggregate percentage nor CGPA was found" in r8.reason
 
+    # 9. CGPA: 108.5 (out of range -> NEEDS_REVIEW, never FAILED or ELIGIBLE)
+    docs_108_5 = build_test_documents(percentage=None, cgpa=108.5, cgpa_scale=None)
+    res_108_5 = evaluate_eligibility(rules, app, docs_108_5)
+    assert res_108_5.status == "NEEDS_REVIEW"
+    r_108_5 = next(r for r in res_108_5.rules if r.ruleId == "MIN_PERCENTAGE")
+    assert r_108_5.result == "NEEDS_REVIEW"
+    assert "outside valid 0 to 10 scale" in r_108_5.reason
+
+    # 10. CGPA: 100 (out of range -> NEEDS_REVIEW, never FAILED or ELIGIBLE)
+    docs_100 = build_test_documents(percentage=None, cgpa=100.0, cgpa_scale=None)
+    res_100 = evaluate_eligibility(rules, app, docs_100)
+    assert res_100.status == "NEEDS_REVIEW"
+    r_100 = next(r for r in res_100.rules if r.ruleId == "MIN_PERCENTAGE")
+    assert r_100.result == "NEEDS_REVIEW"
+    assert "outside valid 0 to 10 scale" in r_100.reason
+
+    # 11. CGPA: -1 / 10 (negative value with explicit scale 10 -> NEEDS_REVIEW, never FAILED)
+    docs_neg_scale = build_test_documents(percentage=None, cgpa="-1/10", cgpa_scale=None)
+    res_neg_scale = evaluate_eligibility(rules, app, docs_neg_scale)
+    assert res_neg_scale.status == "NEEDS_REVIEW"
+    r_neg_scale = next(r for r in res_neg_scale.rules if r.ruleId == "MIN_PERCENTAGE")
+    assert r_neg_scale.result == "NEEDS_REVIEW"
+    assert "outside valid 0 to 10 scale" in r_neg_scale.reason
+
 
 def test_clean_for_hashing_and_entrance_required():
     """Verify clean_for_hashing ignores volatile keys and entranceRequired=True yields NEEDS_REVIEW."""

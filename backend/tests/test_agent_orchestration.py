@@ -3058,3 +3058,124 @@ def test_orchestration_reaches_eligible_with_unscaled_cgpa_marksheet(api_client,
     assert min_pct_rule["result"] == "PASSED"
     assert min_pct_rule["observed"]["cgpaScaleInferred"] is True
     assert min_pct_rule["observed"]["cgpaScale"] == "10"
+
+
+def test_orchestration_malformed_cgpa_108_5_routes_to_exception_never_eligible(api_client, applicant_auth, clean_db):
+    """
+    Final CGPA Hardening:
+    Prove that a marksheet containing 'CGPA: 108.5' is NOT partially parsed as '10'
+    and CANNOT result in an eligible application.
+    Must route to EXCEPTION with MANUAL_REVIEW_REQUIRED.
+    """
+    app_id = applicant_auth["application"]["applicationId"]
+    clean_db["applications"].update_one({"applicationId": app_id}, {"$set": {"status": "SUBMITTED"}})
+
+    marksheet_lines = [
+        "Bachelor of Computer Applications Marksheet",
+        "Candidate Name: Hemanth M.P.",
+        "Date of Birth: 15/05/2000",
+        "CGPA: 108.5",  # Out of range, must NOT be truncated to 10
+        "Graduation Year: 2022",
+        "University: Crescent",
+    ]
+    docs_to_upload = [
+        ("10TH_MARKSHEET", ["Secondary School Certificate", "Candidate Name: Hemanth M.P.", "Date of Birth: 15/05/2000", "Marks: 432 / 500", "Percentage: 86.4%", "State Board of Secondary Education"]),
+        ("12TH_MARKSHEET", ["Higher Secondary Certificate", "Candidate Name: Hemanth M.P.", "Date of Birth: 15/05/2000", "Marks: 440 / 500", "Percentage: 88.0%", "Mathematics: 95 / 100", "State Board of Higher Secondary"]),
+        ("UG_MARKSHEET", marksheet_lines),
+        ("DEGREE_CERTIFICATE", ["B.S. Abdur Rahman Crescent Institute of Science and Technology", "Degree of Bachelor of Computer Applications", "Candidate Name: Hemanth M.P.", "Conferred: 2022"]),
+        ("TRANSFER_CERTIFICATE", ["Transfer Certificate", "Student Name: Hemanth M.P.", "Date of Birth: 15/05/2000", "Conduct: Good"]),
+        ("GOVERNMENT_ID", ["Government of India Identity Card", "Name: Hemanth M.P.", "DOB: 15/05/2000", "Gender: Male"]),
+    ]
+    for doc_type, lines in docs_to_upload:
+        pdf_bytes = create_sample_pdf_bytes(lines)
+        extra_data = {"documentType": doc_type, "applicationId": app_id}
+        if doc_type == "DEGREE_CERTIFICATE":
+            extra_data["documentVariant"] = "ORIGINAL_DEGREE_CERTIFICATE"
+        up_res = api_client.post(
+            "/api/v1/documents/upload",
+            headers=applicant_auth["headers"],
+            data=extra_data,
+            files={"file": (f"{doc_type.lower()}.pdf", pdf_bytes, "application/pdf")},
+        )
+        assert up_res.status_code == 201
+
+    orchestrator = AgentOrchestrator(db=clean_db)
+    res = orchestrator.run(app_id, applicant_auth["user"])
+
+    # Must NOT be COMPLETED or ELIGIBLE
+    assert res.outcome == OrchestrationOutcome.MANUAL_REVIEW_REQUIRED
+    assert res.currentApplicationStatus == "EXCEPTION"
+    assert clean_db["applications"].find_one({"applicationId": app_id})["status"] == "EXCEPTION"
+
+    # Verify extracted field captured the full 108.5 (not 10) and document flagged MANUAL_REVIEW
+    ug_doc = clean_db["documents"].find_one({"applicationId": app_id, "documentType": "UG_MARKSHEET"})
+    assert ug_doc is not None
+    cgpa_data = ug_doc["processingResult"]["fields"]["cgpa"]
+    assert cgpa_data["rawValue"] == "108.5"
+    assert cgpa_data["normalizedValue"] == 108.5
+    assert ug_doc["validationStatus"] == "MANUAL_REVIEW"
+    assert any("out of standard 10-point scale" in r for r in ug_doc.get("validationResult", {}).get("reasons", []))
+
+    # Application was never deemed ELIGIBLE
+    eval_rec = clean_db["eligibility_evaluations"].find_one({"applicationId": app_id})
+    assert eval_rec is None or eval_rec.get("status") != "ELIGIBLE"
+
+
+def test_orchestration_negative_cgpa_hyphen_separator_routes_to_exception_never_eligible(api_client, applicant_auth, clean_db):
+    """
+    Final CGPA Hardening:
+    Prove that a marksheet containing 'CGPA -1 / 10' preserves the minus sign
+    (it is NOT consumed as a label separator) and routes to EXCEPTION (never ELIGIBLE and never FAILED).
+    """
+    app_id = applicant_auth["application"]["applicationId"]
+    clean_db["applications"].update_one({"applicationId": app_id}, {"$set": {"status": "SUBMITTED"}})
+
+    marksheet_lines = [
+        "Bachelor of Computer Applications Marksheet",
+        "Candidate Name: Hemanth M.P.",
+        "Date of Birth: 15/05/2000",
+        "CGPA -1 / 10",  # Negative CGPA with hyphen separator; minus sign must be preserved
+        "Graduation Year: 2022",
+        "University: Crescent",
+    ]
+    docs_to_upload = [
+        ("10TH_MARKSHEET", ["Secondary School Certificate", "Candidate Name: Hemanth M.P.", "Date of Birth: 15/05/2000", "Marks: 432 / 500", "Percentage: 86.4%", "State Board of Secondary Education"]),
+        ("12TH_MARKSHEET", ["Higher Secondary Certificate", "Candidate Name: Hemanth M.P.", "Date of Birth: 15/05/2000", "Marks: 440 / 500", "Percentage: 88.0%", "Mathematics: 95 / 100", "State Board of Higher Secondary"]),
+        ("UG_MARKSHEET", marksheet_lines),
+        ("DEGREE_CERTIFICATE", ["B.S. Abdur Rahman Crescent Institute of Science and Technology", "Degree of Bachelor of Computer Applications", "Candidate Name: Hemanth M.P.", "Conferred: 2022"]),
+        ("TRANSFER_CERTIFICATE", ["Transfer Certificate", "Student Name: Hemanth M.P.", "Date of Birth: 15/05/2000", "Conduct: Good"]),
+        ("GOVERNMENT_ID", ["Government of India Identity Card", "Name: Hemanth M.P.", "DOB: 15/05/2000", "Gender: Male"]),
+    ]
+    for doc_type, lines in docs_to_upload:
+        pdf_bytes = create_sample_pdf_bytes(lines)
+        extra_data = {"documentType": doc_type, "applicationId": app_id}
+        if doc_type == "DEGREE_CERTIFICATE":
+            extra_data["documentVariant"] = "ORIGINAL_DEGREE_CERTIFICATE"
+        up_res = api_client.post(
+            "/api/v1/documents/upload",
+            headers=applicant_auth["headers"],
+            data=extra_data,
+            files={"file": (f"{doc_type.lower()}.pdf", pdf_bytes, "application/pdf")},
+        )
+        assert up_res.status_code == 201
+
+    orchestrator = AgentOrchestrator(db=clean_db)
+    res = orchestrator.run(app_id, applicant_auth["user"])
+
+    # Must NOT be COMPLETED or ELIGIBLE
+    assert res.outcome == OrchestrationOutcome.MANUAL_REVIEW_REQUIRED
+    assert res.currentApplicationStatus == "EXCEPTION"
+    assert clean_db["applications"].find_one({"applicationId": app_id})["status"] == "EXCEPTION"
+
+    # Verify extracted field preserved the negative sign (-1) and document flagged MANUAL_REVIEW
+    ug_doc = clean_db["documents"].find_one({"applicationId": app_id, "documentType": "UG_MARKSHEET"})
+    assert ug_doc is not None
+    cgpa_data = ug_doc["processingResult"]["fields"]["cgpa"]
+    assert cgpa_data["rawValue"] == "-1"
+    assert cgpa_data["normalizedValue"] == -1.0
+    assert ug_doc["validationStatus"] == "MANUAL_REVIEW"
+    assert any("out of standard 10-point scale" in r for r in ug_doc.get("validationResult", {}).get("reasons", []))
+
+    # Application was never deemed ELIGIBLE
+    eval_rec = clean_db["eligibility_evaluations"].find_one({"applicationId": app_id})
+    assert eval_rec is None or eval_rec.get("status") != "ELIGIBLE"

@@ -291,6 +291,43 @@ def test_cgpa_scale_extraction_from_text():
     assert fields_none.cgpa is None
     assert fields_none.cgpaScale is None
 
+    # Hardening: Prevent partial numeric matches and preserve negative signs
+    # 1. CGPA: 108.5 must not be partially matched as 10
+    fields_108_5 = extract_fields_from_text("CGPA: 108.5\nCandidate: Test")
+    assert fields_108_5.cgpa is not None
+    assert fields_108_5.cgpa.rawValue == "108.5"
+    assert fields_108_5.cgpa.normalizedValue == 108.5
+    assert fields_108_5.cgpaScale is None  # > 10, scale must not be inferred
+
+    # 2. CGPA: 100 must not be partially matched as 10
+    fields_100 = extract_fields_from_text("CGPA: 100\nCandidate: Test")
+    assert fields_100.cgpa is not None
+    assert fields_100.cgpa.rawValue == "100"
+    assert fields_100.cgpa.normalizedValue == 100.0
+    assert fields_100.cgpaScale is None  # > 10, scale must not be inferred
+
+    # 3. CGPA: 8.555 must not be silently truncated to 8.55
+    fields_8555 = extract_fields_from_text("CGPA: 8.555\nCandidate: Test")
+    assert fields_8555.cgpa is not None
+    assert fields_8555.cgpa.rawValue == "8.555"
+    assert fields_8555.cgpa.normalizedValue == 8.555
+
+    # 4. CGPA: -1 / 10 must be recognized as invalid negative evidence
+    fields_neg_colon = extract_fields_from_text("CGPA: -1 / 10\nCandidate: Test")
+    assert fields_neg_colon.cgpa is not None
+    assert fields_neg_colon.cgpa.rawValue == "-1"
+    assert fields_neg_colon.cgpa.normalizedValue == -1.0
+    assert fields_neg_colon.cgpaScale is not None
+    assert fields_neg_colon.cgpaScale.normalizedValue == 10.0
+
+    # 5. CGPA -1 / 10 must not lose its negative sign to the label separator
+    fields_neg_hyphen = extract_fields_from_text("CGPA -1 / 10\nCandidate: Test")
+    assert fields_neg_hyphen.cgpa is not None
+    assert fields_neg_hyphen.cgpa.rawValue == "-1"
+    assert fields_neg_hyphen.cgpa.normalizedValue == -1.0
+    assert fields_neg_hyphen.cgpaScale is not None
+    assert fields_neg_hyphen.cgpaScale.normalizedValue == 10.0
+
 
 def test_mathematics_extraction_rejects_zero_and_fail_markers():
     """Verify mathematics extraction requires mark > 0 and rejects fail/absent indicators."""
