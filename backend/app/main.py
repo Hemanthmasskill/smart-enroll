@@ -91,7 +91,7 @@ def admin_agent_activity_alias(
     )
 
 
-@app.get("/health", tags=["Health"])
+@app.api_route("/health", methods=["GET", "HEAD"], tags=["Health"])
 async def health_check():
     return {
         "status": "online",
