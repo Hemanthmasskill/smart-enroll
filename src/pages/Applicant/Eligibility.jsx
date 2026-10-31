@@ -18,17 +18,23 @@ const OVERALL_COPY = {
     tone: "danger",
     description: "One or more configured eligibility criteria were not satisfied.",
   },
+  NEEDS_REVIEW: {
+    heading: "Needs Manual Review",
+    tone: "warning",
+    description:
+      "Deterministic evaluation completed. One or more criteria require manual verification by an admissions administrator.",
+  },
   ELIGIBILITY_CHECK: {
     heading: "Eligibility Evaluation Pending",
     tone: "warning",
     description:
-      "Evaluation is still in progress. Some criteria are waiting on document verification.",
+      "Evaluation is in progress. Criteria evaluation will run when document verification completes.",
   },
   DEPENDENCY_PENDING: {
-    heading: "Eligibility engine not yet available (DEPENDENCY_PENDING)",
+    heading: "Eligibility Evaluation Pending",
     tone: "neutral",
     description:
-      "The automated eligibility evaluation engine (Increments 16+) is not yet connected to the backend.",
+      "Automated evaluation is pending completion of upstream workflow stages.",
   },
 };
 
@@ -67,6 +73,7 @@ export default function Eligibility() {
   }
 
   const overall = OVERALL_COPY[eligibility.overall] ?? OVERALL_COPY.ELIGIBILITY_CHECK;
+  const isNeedsReview = eligibility.overall === "NEEDS_REVIEW";
 
   return (
     <div>
@@ -76,9 +83,18 @@ export default function Eligibility() {
       />
 
       <PrototypeNotice>
-        Eligibility is evaluated only against institution-configured deterministic rules. The AI
-        workflow does not create, infer or modify admission criteria.
+        Eligibility is evaluated by the deterministic server-side Eligibility Engine (Increment 16)
+        against canonical, versioned programme rules. The AI workflow does not create, infer, or modify
+        admission criteria. Exceptions (Increment 17) and notifications (Increment 18) remain dependency boundaries.
       </PrototypeNotice>
+
+      {isNeedsReview && (
+        <div className="eligibility-review-banner" role="alert">
+          <strong>Manual Administrative Review Required:</strong> Some eligibility criteria could not be
+          definitively confirmed from automatic OCR extraction (e.g. subject mark verification or degree equivalency).
+          An admissions officer will review your physical documents.
+        </div>
+      )}
 
       <div className="card eligibility-overall">
         <div>
@@ -87,34 +103,70 @@ export default function Eligibility() {
         </div>
         <StatusBadge label={overall.heading} tone={overall.tone} />
       </div>
-      <p className="eligibility-overall-description">{overall.description}</p>
+      <p className="eligibility-overall-description">{eligibility.summary || overall.description}</p>
 
       <div className="card eligibility-card">
         <h3 className="eligibility-card-heading">Admission Criteria &amp; Evaluation</h3>
         <p className="eligibility-caption">
-          Configured programme rules on the left, your application's evaluation against each rule
+          Configured programme rules on the left, deterministic server-side evaluation against verified document evidence
           on the right.
         </p>
 
         <div className="eligibility-rows">
-          {eligibility.evaluation.map((item) => (
-            <div className="eligibility-row" key={item.label}>
-              <div className="eligibility-row-info">
-                <span className="eligibility-row-label">{item.label}</span>
-                <span className="eligibility-row-configured">{item.configured}</span>
+          {eligibility.evaluation && eligibility.evaluation.length > 0 ? (
+            eligibility.evaluation.map((item) => (
+              <div className="eligibility-row" key={item.ruleId || item.label}>
+                <div className="eligibility-row-info">
+                  <span className="eligibility-row-label">{item.label}</span>
+                  <span className="eligibility-row-configured">
+                    <strong>Rule:</strong> {item.configured}
+                  </span>
+                  {item.observed && (
+                    <span className="eligibility-row-observed">
+                      <strong>Observed:</strong> {item.observed}
+                    </span>
+                  )}
+                  {item.reason && (
+                    <span className="eligibility-row-reason">{item.reason}</span>
+                  )}
+                  {item.evidence && item.evidence.length > 0 && (
+                    <div className="eligibility-evidence-list">
+                      {item.evidence.map((ev, idx) => (
+                        <span key={idx} className="eligibility-evidence-tag">
+                          {ev.documentType}: {ev.field} = {String(ev.value)}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                <StatusBadge code={item.result} />
               </div>
-              <StatusBadge code={item.result} />
-            </div>
-          ))}
+            ))
+          ) : (
+            <p className="eligibility-caption">No per-rule evaluation records available yet.</p>
+          )}
         </div>
+
+        {(eligibility.ruleVersion || eligibility.inputHash) && (
+          <div className="eligibility-meta-footer">
+            {eligibility.ruleVersion && <span>Rule Version: v{eligibility.ruleVersion}</span>}
+            {eligibility.evaluatorVersion && <span>Evaluator: v{eligibility.evaluatorVersion}</span>}
+            {eligibility.inputHash && (
+              <span>Input Hash: {eligibility.inputHash.slice(0, 16)}…</span>
+            )}
+            {eligibility.evaluatedAt && (
+              <span>Evaluated: {new Date(eligibility.evaluatedAt).toLocaleString()}</span>
+            )}
+          </div>
+        )}
       </div>
 
       <div className="card eligibility-explanation">
         <h3 className="eligibility-card-heading">How eligibility is evaluated</h3>
         <p>
-          Eligibility criteria for each programme are configured system rules set by the
-          institution. Smart Enroll checks your application and documents against these fixed
-          rules — it does not invent, infer, or adjust admission criteria on its own.
+          Eligibility criteria for each programme are versioned system rules configured by the
+          institution. Smart Enroll evaluates your verified documents against these pure, deterministic
+          rules — it never uses language models to guess or modify admission decisions.
         </p>
       </div>
     </div>

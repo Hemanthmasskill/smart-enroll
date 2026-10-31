@@ -54,7 +54,7 @@ export default function ProgrammeRules() {
       />
 
       <PrototypeNotice>
-        Programme rules service (Increment 16) is not yet connected to the backend. This screen displays prototype data.
+        Programme rules are versioned and stored in the backend (Increment 16) and served via /api/v1/programmes/{'{programmeId}'}/rules.
       </PrototypeNotice>
 
       {feedback && (
