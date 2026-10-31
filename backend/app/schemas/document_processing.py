@@ -40,6 +40,7 @@ class ExtractedFields(BaseModel):
     certificateNumber: ExtractedField | None = None
     issueDate: ExtractedField | None = None
     passingYear: ExtractedField | None = None
+    mathematics: ExtractedField | None = None
 
     model_config = ConfigDict(extra="ignore")
 

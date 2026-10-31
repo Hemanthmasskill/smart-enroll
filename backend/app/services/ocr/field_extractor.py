@@ -343,4 +343,29 @@ def extract_fields_from_text(text: str, document_type: str | None = None) -> Ext
             )
             break
 
+    # 12. Mathematics Evidence (D5)
+    # Extracts 'Mathematics' or 'Maths' with numeric marks on 12TH_MARKSHEET and UG_MARKSHEET
+    if document_type in (None, "12TH_MARKSHEET", "UG_MARKSHEET"):
+        for line in text.splitlines():
+            line_clean = line.strip()
+            if not line_clean:
+                continue
+            # ReDoS-safe linear check: look for mathematics or maths
+            if re.search(r"(?i)\b(?:mathematics|maths)\b", line_clean):
+                mark_match = re.search(r"\b(\d{1,3}(?:\.\d{1,2})?)\b", line_clean)
+                if mark_match:
+                    raw_mark = mark_match.group(1)
+                    try:
+                        numeric_mark = float(raw_mark)
+                        if 0 <= numeric_mark <= 100:
+                            fields.mathematics = ExtractedField(
+                                rawValue=raw_mark,
+                                normalizedValue=True,
+                                confidence=0.88,
+                                evidence=line_clean[:120],
+                            )
+                            break
+                    except ValueError:
+                        pass
+
     return fields

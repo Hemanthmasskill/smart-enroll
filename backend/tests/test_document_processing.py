@@ -971,3 +971,53 @@ def test_pipeline_returns_failed_state_with_http_200_and_allows_retry():
 
     stored_doc_after = db["documents"].find_one({"documentId": doc_id})
     assert stored_doc_after.get("processingStatus") == "COMPLETED"
+
+
+def test_mathematics_evidence_extraction():
+    """Verify deterministic, ReDoS-safe mathematics subject and marks extraction for 12th and UG marksheets."""
+    # 1. 12th Marksheet with Mathematics
+    text_12th = (
+        "BOARD OF HIGHER SECONDARY EDUCATION\n"
+        "Candidate Name: Rahul Sharma\n"
+        "Roll No: 1234567\n"
+        "Physics: 82\n"
+        "Chemistry: 78\n"
+        "Mathematics: 91\n"
+        "English: 85\n"
+    )
+    fields_12th = extract_fields_from_text(text_12th, document_type="12TH_MARKSHEET")
+    assert fields_12th.mathematics is not None
+    assert fields_12th.mathematics.normalizedValue is True
+    assert fields_12th.mathematics.rawValue == "91"
+    assert "Mathematics: 91" in fields_12th.mathematics.evidence
+
+    # 2. UG Marksheet with Maths abbreviation
+    text_ug = (
+        "STATE TECHNICAL UNIVERSITY\n"
+        "Semester Examination\n"
+        "Candidate Name: Priya Patel\n"
+        "Engineering Maths - I: 88.5\n"
+        "Computer Programming: 92\n"
+    )
+    fields_ug = extract_fields_from_text(text_ug, document_type="UG_MARKSHEET")
+    assert fields_ug.mathematics is not None
+    assert fields_ug.mathematics.normalizedValue is True
+    assert fields_ug.mathematics.rawValue == "88.5"
+
+    # 3. Marksheet without mathematics
+    text_no_math = (
+        "HIGHER SECONDARY EXAMINATION\n"
+        "History: 75\n"
+        "Political Science: 80\n"
+        "Economics: 85\n"
+    )
+    fields_no_math = extract_fields_from_text(text_no_math, document_type="12TH_MARKSHEET")
+    assert fields_no_math.mathematics is None
+
+    # 4. ReDoS resistance & input length cap
+    adversarial_math_text = "Mathematics " * 50_000 + " 95"
+    start_time = datetime.now()
+    res_adv = extract_fields_from_text(adversarial_math_text, document_type="12TH_MARKSHEET")
+    duration = (datetime.now() - start_time).total_seconds()
+    assert duration < 2.0
+
