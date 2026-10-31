@@ -266,3 +266,54 @@ def test_upload_scanner_configuration_safety():
 
     with pytest.raises(ValueError, match="Unrecognized UPLOAD_SCANNER 'bogus_engine'"):
         Settings(ENV="production", SECRET_KEY=strong_secret, UPLOAD_SCANNER="bogus_engine")
+
+
+def test_clamav_readiness_checks(monkeypatch):
+    """
+    Verify production scanner readiness:
+    - missing pyclamd fails startup
+    - daemon unreachable / ping failure fails startup
+    - daemon ready succeeds
+    - no-op remains permitted in development and test without attempting daemon connection
+    """
+    from unittest.mock import MagicMock, patch
+    from app.core.config import settings
+    from app.services.scanner import validate_upload_scanner
+
+    # 1. Missing pyclamd in production raises RuntimeError
+    monkeypatch.setattr(settings, "ENV", "production")
+    monkeypatch.setattr(settings, "UPLOAD_SCANNER", "clamav")
+    with patch.dict("sys.modules", {"pyclamd": None}):
+        with pytest.raises(RuntimeError, match="'pyclamd' package is not installed"):
+            validate_upload_scanner()
+
+    # 2. Daemon unreachable / ping returns False in staging raises RuntimeError
+    monkeypatch.setattr(settings, "ENV", "staging")
+    monkeypatch.setattr(settings, "UPLOAD_SCANNER", "clamav")
+    mock_socket_fail = MagicMock()
+    mock_socket_fail.ping.return_value = False
+    with patch("pyclamd.ClamdNetworkSocket", return_value=mock_socket_fail):
+        with pytest.raises(RuntimeError, match="failed ping check"):
+            validate_upload_scanner()
+
+    # 3. Daemon connection error in production raises RuntimeError
+    monkeypatch.setattr(settings, "ENV", "production")
+    with patch("pyclamd.ClamdNetworkSocket", side_effect=ConnectionRefusedError("Connection refused")):
+        with pytest.raises(RuntimeError, match="ClamAV daemon unreachable"):
+            validate_upload_scanner()
+
+    # 4. Daemon ready in production passes startup check
+    mock_socket_ok = MagicMock()
+    mock_socket_ok.ping.return_value = True
+    with patch("pyclamd.ClamdNetworkSocket", return_value=mock_socket_ok):
+        # Must not raise
+        validate_upload_scanner()
+
+    # 5. No-op remains permitted in development and test without attempting daemon ping
+    monkeypatch.setattr(settings, "ENV", "development")
+    monkeypatch.setattr(settings, "UPLOAD_SCANNER", "noop")
+    validate_upload_scanner()
+
+    monkeypatch.setattr(settings, "ENV", "test")
+    monkeypatch.setattr(settings, "UPLOAD_SCANNER", "noop")
+    validate_upload_scanner()

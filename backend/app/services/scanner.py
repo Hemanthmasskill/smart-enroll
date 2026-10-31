@@ -32,9 +32,11 @@ class ClamAVUploadScanner(BaseUploadScanner):
     Production deployments should run clamd and install pyclamd.
     """
 
-    def __init__(self, host: str = "localhost", port: int = 3310):
-        self.host = host
-        self.port = port
+    def __init__(self, host: str | None = None, port: int | None = None):
+        from app.core.config import settings
+
+        self.host = host if host is not None else getattr(settings, "CLAMAV_HOST", "localhost")
+        self.port = port if port is not None else getattr(settings, "CLAMAV_PORT", 3310)
 
     def scan_file(self, file_path: Path) -> tuple[bool, str]:
         if not file_path.exists():
@@ -62,7 +64,13 @@ class ClamAVUploadScanner(BaseUploadScanner):
 
 def validate_upload_scanner() -> None:
     """
-    Validate that UPLOAD_SCANNER is properly configured and fail safe on startup.
+    Validate that UPLOAD_SCANNER is properly configured and verify readiness on startup.
+    In staging and production:
+    - requires UPLOAD_SCANNER == 'clamav' (rejects noop, missing, or unrecognized).
+    - verifies pyclamd is installed and importable (fails startup if missing).
+    - verifies the ClamAV daemon responds to ping on (CLAMAV_HOST, CLAMAV_PORT) (fails startup if unreachable).
+    In development and test:
+    - preserves no-op scanning without attempting network connection to ClamAV daemon.
     """
     from app.core.config import settings
 
@@ -72,8 +80,31 @@ def validate_upload_scanner() -> None:
         raise ValueError(f"UPLOAD_SCANNER is missing. Configured ENV is '{settings.ENV}'.")
     if scanner not in ("noop", "clamav"):
         raise ValueError(f"Unrecognized UPLOAD_SCANNER '{settings.UPLOAD_SCANNER}'. Valid options: noop, clamav.")
-    if env in ("staging", "production") and scanner == "noop":
-        raise ValueError(f"UPLOAD_SCANNER 'noop' is strictly forbidden in {settings.ENV}. A real scanner is required.")
+    if env in ("staging", "production"):
+        if scanner == "noop":
+            raise ValueError(f"UPLOAD_SCANNER 'noop' is strictly forbidden in {settings.ENV}. A real scanner is required.")
+
+        # Live ClamAV readiness check for staging/production
+        if scanner == "clamav":
+            try:
+                import pyclamd  # type: ignore
+            except ImportError as e:
+                raise RuntimeError(
+                    f"ClamAV readiness check failed in {settings.ENV}: 'pyclamd' package is not installed."
+                ) from e
+
+            try:
+                cd = pyclamd.ClamdNetworkSocket(settings.CLAMAV_HOST, settings.CLAMAV_PORT)
+                if not cd.ping():
+                    raise RuntimeError(
+                        f"ClamAV daemon at {settings.CLAMAV_HOST}:{settings.CLAMAV_PORT} failed ping check in {settings.ENV}."
+                    )
+            except Exception as e:
+                if isinstance(e, RuntimeError):
+                    raise
+                raise RuntimeError(
+                    f"ClamAV daemon unreachable at {settings.CLAMAV_HOST}:{settings.CLAMAV_PORT} in {settings.ENV}: {e}"
+                ) from e
 
 
 def get_upload_scanner() -> BaseUploadScanner:

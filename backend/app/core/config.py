@@ -39,6 +39,8 @@ class Settings(BaseSettings):
     # Encryption-at-Rest Notice: STORAGE_DIR must be hosted on an encrypted volume (e.g., LUKS, BitLocker, or AWS EBS KMS).
     RETENTION_DAYS: int = 30
     UPLOAD_SCANNER: str = "noop"
+    CLAMAV_HOST: str = "localhost"
+    CLAMAV_PORT: int = 3310
 
     @field_validator("ENV")
     @classmethod
