@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from pymongo.database import Database
 
 from app.api.deps import RequireRole, get_current_user
@@ -23,14 +23,29 @@ from app.utils.seed_data import MOCK_APPLICATION
 router = APIRouter()
 
 
+from app.core.config import settings
+
+
+def verify_dev_seed_enabled():
+    if not (settings.ENABLE_DEV_SEED and settings.ENV.lower() != "production"):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Dev seed endpoint is disabled",
+        )
+
+
 @router.post("/seed", tags=["Applications"])
-def seed_application(db: Database = Depends(get_db)):
+def seed_application(
+    _: None = Depends(verify_dev_seed_enabled),
+    current_user: dict = Depends(RequireRole(["admin"])),
+    db: Database = Depends(get_db),
+):
     """
     Seed mock application data for development and testing.
-    Idempotent operation.
+    Protected dev-only endpoint: disabled by default, requires admin role, and non-destructive.
     """
-    seed_application_record(db, MOCK_APPLICATION)
-    return {"status": "Database seeded successfully"}
+    seeded_doc = seed_application_record(db, MOCK_APPLICATION)
+    return {"status": "Database seeded successfully", "applicationId": seeded_doc.get("applicationId")}
 
 
 @router.get("/me", response_model=ApplicationResponse, tags=["Applications"])

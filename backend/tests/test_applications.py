@@ -467,13 +467,52 @@ def test_applicant_cannot_use_admin_listing_endpoint():
 # 10. SEED COMPATIBILITY WITH INCREMENT 9
 # ==============================================================================
 
-def test_seed_and_get_application():
-    with TestClient(app) as client:
-        seed_response = client.post("/api/v1/applications/seed")
-        assert seed_response.status_code == 200
-        assert seed_response.json() == {"status": "Database seeded successfully"}
+def test_seed_and_get_application(monkeypatch):
+    """
+    C1 regression tests:
+    - Disabled by default returns 404
+    - When enabled, unauthenticated call returns 401
+    - When enabled, applicant returns 403
+    - When enabled, admin returns 200 and performs non-destructive seed
+    """
+    from app.core.config import settings
 
+    with TestClient(app) as client:
+        # 1. Disabled by default returns 404
+        res_disabled = client.post("/api/v1/applications/seed")
+        assert res_disabled.status_code == 404
+        assert "disabled" in res_disabled.json().get("detail", "").lower()
+
+        # Enable for dev testing
+        monkeypatch.setattr(settings, "ENABLE_DEV_SEED", True)
+        monkeypatch.setattr(settings, "ENV", "development")
+
+        # 2. Unauthenticated call returns 401
+        res_unauth = client.post("/api/v1/applications/seed")
+        assert res_unauth.status_code == 401
+
+        # 3. Applicant returns 403
+        _, applicant_headers = register_applicant(client)
+        res_applicant = client.post("/api/v1/applications/seed", headers=applicant_headers)
+        assert res_applicant.status_code == 403
+
+        # 4. Admin returns 200
         admin_headers = get_admin_headers()
+        seed_response = client.post("/api/v1/applications/seed", headers=admin_headers)
+        assert seed_response.status_code == 200
+        assert seed_response.json()["status"] == "Database seeded successfully"
+
+        # 5. Non-destructive: verify second seed does not delete existing records
+        db = get_db()
+        db["applications"].update_one(
+            {"applicationId": "SE20260001"},
+            {"$set": {"sentinelMarker": "preserved_not_deleted"}},
+        )
+        res_admin_2 = client.post("/api/v1/applications/seed", headers=admin_headers)
+        assert res_admin_2.status_code == 200
+        re_checked = db["applications"].find_one({"applicationId": "SE20260001"})
+        assert re_checked.get("sentinelMarker") == "preserved_not_deleted"
+
         get_response = client.get("/api/v1/applications/APL-1001", headers=admin_headers)
         assert get_response.status_code == 200
         data = get_response.json()

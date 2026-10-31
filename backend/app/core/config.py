@@ -4,6 +4,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     PROJECT_NAME: str = "Smart Enroll Backend"
+    ENV: str = "development"
+    ENABLE_DEV_SEED: bool = False
     API_V1_STR: str = "/api/v1"
     MONGODB_URI: str = "mongodb://localhost:27017"
     DATABASE_NAME: str = "smartenroll"

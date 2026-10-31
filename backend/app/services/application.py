@@ -355,10 +355,17 @@ def get_application(db: Database, applicant_id: str):
 
 
 def seed_application_record(db: Database, application_data: dict):
+    """
+    Non-destructive seed operation: inserts mock application record only if absent.
+    Never deletes existing application data.
+    """
     doc = application_data.copy()
     app_id = doc.get("applicationId")
     if app_id:
-        db["applications"].delete_many({"applicationId": app_id})
+        existing = db["applications"].find_one({"applicationId": app_id})
+        if existing:
+            existing.pop("_id", None)
+            return existing
     db["applications"].insert_one(doc)
     doc.pop("_id", None)
     return doc
