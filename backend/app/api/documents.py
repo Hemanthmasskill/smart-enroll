@@ -14,6 +14,8 @@ from app.api.deps import RequireRole, get_current_user
 from app.core.database import get_db
 from app.schemas.document import DocumentDeleteResponse, DocumentResponse
 from app.schemas.document_processing import DocumentProcessingResult
+from app.core.concurrency import acquire_ocr_worker
+from app.core.rate_limit import enforce_rate_limit
 from app.schemas.verification import (
     AuthoritativeVerificationRecord,
     DocumentValidationResult,
@@ -58,6 +60,8 @@ async def upload_document_endpoint(
     Only authenticated applicants can upload against their own application.
     Enforces format validation (PDF/JPG/PNG <= 10MB) and degree certificate variant rules.
     """
+    user_id = str(current_user.get("_id") or current_user.get("id"))
+    enforce_rate_limit(f"doc_upload:{user_id}", max_requests=10, window_seconds=60, action_description="document uploads")
     return await upload_document(
         db=db,
         current_user=current_user,
@@ -169,11 +173,14 @@ def process_document_endpoint(
     Enforces ownership (only owning applicant permitted to initiate processing).
     Stores processing result in document metadata without marking document as VERIFIED.
     """
-    return process_document(
-        db=db,
-        current_user=current_user,
-        document_id=document_id,
-    )
+    user_id = str(current_user.get("_id") or current_user.get("id"))
+    enforce_rate_limit(f"doc_proc:{user_id}", max_requests=10, window_seconds=60, action_description="document processing requests")
+    with acquire_ocr_worker():
+        return process_document(
+            db=db,
+            current_user=current_user,
+            document_id=document_id,
+        )
 
 
 @router.get(
@@ -211,6 +218,8 @@ def verify_document_endpoint(
     Rerun deterministic content validation against canonical application and sibling documents.
     Enforces ownership (only owning applicant permitted to initiate validation).
     """
+    user_id = str(current_user.get("_id") or current_user.get("id"))
+    enforce_rate_limit(f"doc_verify:{user_id}", max_requests=10, window_seconds=60, action_description="document verification requests")
     return verify_document(
         db=db,
         current_user=current_user,

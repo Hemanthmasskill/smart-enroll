@@ -324,11 +324,23 @@ def submit_application(db: Database, current_user: dict, application_id: str) ->
     return updated
 
 
-def list_applications(db: Database) -> list[dict]:
+def list_applications(
+    db: Database,
+    skip: int = 0,
+    limit: int = 100,
+) -> list[dict]:
     """
-    List all applications for admin view. Returns authoritative application-domain summary.
+    List all applications for admin view with pagination support.
+    Returns authoritative application-domain summary.
     """
-    cursor = db["applications"].find({}, {"_id": 0}).sort("createdAt", -1)
+    clamped_limit = min(100, max(1, limit))
+    cursor = (
+        db["applications"]
+        .find({}, {"_id": 0})
+        .sort("createdAt", -1)
+        .skip(max(0, skip))
+        .limit(clamped_limit)
+    )
     results = []
     for doc in cursor:
         results.append(

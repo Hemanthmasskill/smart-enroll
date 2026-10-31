@@ -27,6 +27,11 @@ class Settings(BaseSettings):
     LLM_ALLOW_LOCAL_ENDPOINTS: bool = False
     ORCHESTRATION_MAX_SECONDS: float = 120.0
 
+    # API Hardening & Rate Limiting (Hardening Phase 4)
+    CORS_ORIGINS: list[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
+    RATE_LIMIT_ENABLED: bool = True
+    MAX_CONCURRENT_OCR_WORKERS: int = 4
+
     @property
     def storage_path(self) -> Path:
         p = Path(self.STORAGE_DIR)

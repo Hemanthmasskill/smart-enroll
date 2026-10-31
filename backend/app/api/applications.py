@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pymongo.database import Database
 
 from app.api.deps import RequireRole, get_current_user
@@ -84,13 +84,15 @@ def create_new_application(
     tags=["Applications"],
 )
 def list_all_applications(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=100),
     current_user: dict = Depends(RequireRole(["admin"])),
     db: Database = Depends(get_db),
 ):
     """
-    Admin-only endpoint: list application summaries.
+    Admin-only endpoint: list application summaries with pagination support.
     """
-    return list_applications(db)
+    return list_applications(db, skip=skip, limit=limit)
 
 
 @router.get(

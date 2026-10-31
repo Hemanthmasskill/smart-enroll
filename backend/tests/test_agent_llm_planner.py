@@ -1648,18 +1648,56 @@ def test_orchestration_run_telemetry_captures_clean_llm_vs_fallback(clean_db):
     provider_timeout.close()
 
 
-def test_agent_system_status_endpoint():
+def test_agent_system_status_endpoint(clean_db):
     """
-    Verify GET /api/v1/agents/system-status returns public system configuration
-    without exposing secrets or credentials.
+    Verify GET /api/v1/agents/system-status is protected by RequireRole(["admin"]) (Finding H6)
+    and returns sanitized system configuration without exposing secrets or credentials.
     """
+    from bson import ObjectId
     from fastapi.testclient import TestClient
+    from app.core.security import create_access_token
     from app.main import app
 
+    admin_id = ObjectId()
+    applicant_id = ObjectId()
+
+    clean_db["users"].insert_one({
+        "_id": admin_id,
+        "email": "admin-sys-status@example.com",
+        "role": "admin",
+        "full_name": "Admin Tester",
+        "tokenVersion": 1,
+    })
+    clean_db["users"].insert_one({
+        "_id": applicant_id,
+        "email": "applicant-sys-status@example.com",
+        "role": "applicant",
+        "full_name": "Applicant Tester",
+        "tokenVersion": 1,
+    })
+
+    admin_token = create_access_token(subject=str(admin_id), role="admin")
+    applicant_token = create_access_token(subject=str(applicant_id), role="applicant")
+
     with TestClient(app) as client:
-        response = client.get("/api/v1/agents/system-status")
-        assert response.status_code == 200
-        data = response.json()
+        # 1. Unauthenticated request must return 401
+        res_unauth = client.get("/api/v1/agents/system-status")
+        assert res_unauth.status_code == 401
+
+        # 2. Non-admin authenticated user must return 403
+        res_applicant = client.get(
+            "/api/v1/agents/system-status",
+            headers={"Authorization": f"Bearer {applicant_token}"},
+        )
+        assert res_applicant.status_code == 403
+
+        # 3. Admin user must return 200 with sanitized configuration
+        res_admin = client.get(
+            "/api/v1/agents/system-status",
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        assert res_admin.status_code == 200
+        data = res_admin.json()
         assert "llmProvider" in data
         assert "llmEnabled" in data
         assert "availableToolsCount" in data

@@ -29,7 +29,13 @@ def get_current_user(
     token = credentials.credentials
 
     try:
-        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=["HS256"])
+        unverified = jwt.decode(token, options={"verify_signature": False})
+        decode_kwargs = {"algorithms": ["HS256"]}
+        if "aud" in unverified:
+            decode_kwargs["audience"] = "smart-enroll-api"
+        if "iss" in unverified:
+            decode_kwargs["issuer"] = "smart-enroll"
+        payload = jwt.decode(token, settings.SECRET_KEY, **decode_kwargs)
     except jwt.ExpiredSignatureError:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -69,6 +75,16 @@ def get_current_user(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="User not found",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    # Token Version Revocation Check
+    expected_version = user.get("tokenVersion", 1)
+    token_version = payload.get("tokenVersion")
+    if token_version is not None and token_version != expected_version:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token has been revoked or invalidated.",
             headers={"WWW-Authenticate": "Bearer"},
         )
 

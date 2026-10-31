@@ -5,7 +5,12 @@ from fastapi import HTTPException, status
 from pymongo.database import Database
 from pymongo.errors import DuplicateKeyError
 
-from app.core.security import get_password_hash, verify_password
+from app.core.security import (
+    DUMMY_HASH,
+    get_password_hash,
+    validate_password_strength,
+    verify_password,
+)
 from app.schemas.user import UserCreate
 
 ROLE_FRONTEND_TO_BACKEND = {
@@ -22,11 +27,13 @@ ROLE_BACKEND_TO_FRONTEND = {
 def create_user(db: Database, user_in: UserCreate) -> dict:
     """
     Register a new applicant.
-    Normalizes email, hashes password, generates cryptographically secure applicant_id,
-    forces role = 'applicant', and inserts into the users collection.
+    Enforces password complexity policy, normalizes email, hashes password,
+    generates cryptographically secure applicant_id, forces role = 'applicant',
+    initializes tokenVersion = 1, and inserts into the users collection.
     Catches pymongo DuplicateKeyError on applicant_id and retries up to 3 times.
     Raises HTTP 409 Conflict on duplicate email.
     """
+    validate_password_strength(user_in.password)
     normalized_email = user_in.email.strip().lower()
     hashed_password = get_password_hash(user_in.password)
 
@@ -41,6 +48,7 @@ def create_user(db: Database, user_in: UserCreate) -> dict:
             "dob": user_in.dob,
             "role": "applicant",  # Client-provided role can NEVER control registration
             "applicant_id": applicant_id,
+            "tokenVersion": 1,
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
 
@@ -87,6 +95,8 @@ def authenticate_user(
 
     user = db["users"].find_one({"email": normalized_email})
     if not user:
+        # Constant-time dummy hash verification to prevent timing attack enumeration
+        verify_password("dummy_password", DUMMY_HASH)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect email, password, or role",

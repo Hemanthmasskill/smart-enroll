@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+import logging
 
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -7,10 +8,13 @@ from app.api import agents, applications, auth, documents
 from app.api.deps import RequireRole
 from app.core.config import settings
 from app.core.database import close_mongo_connection, connect_to_mongo, get_db
+from app.core.logging_config import RequestIdMiddleware, SensitiveDataRedactionFilter
+from app.core.security import validate_secret_key
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    validate_secret_key()
     connect_to_mongo()
     yield
     from app.agents.providers import close_llm_provider
@@ -24,9 +28,15 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# Attach Redaction Filter to root and app loggers
+for handler in logging.root.handlers:
+    handler.addFilter(SensitiveDataRedactionFilter())
+
+app.add_middleware(RequestIdMiddleware)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=settings.CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -92,4 +102,4 @@ async def health_check():
 @app.get("/api/v1/db-health", tags=["Health"])
 async def db_health(db=Depends(get_db)):
     db.command("ping")
-    return {"status": "Database connected successfully"}
+    return {"status": "ok"}
