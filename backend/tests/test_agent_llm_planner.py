@@ -82,7 +82,9 @@ def make_test_observation(
 ) -> ApplicationObservation:
     missing = missing_docs or []
     uploaded = []
-    for i in range(6 - len(missing)):
+    if unprocessed_docs:
+        uploaded.extend(unprocessed_docs)
+    for i in range(len(uploaded), 6 - len(missing)):
         uploaded.append({
             "documentId": f"doc-{i}",
             "documentType": "10TH_MARKSHEET" if i == 0 else f"DOC_{i}",
@@ -387,7 +389,9 @@ def test_llm_planner_valid_tool_call_proposal():
     provider = OpenAICompatibleProvider(api_key="sk-test", api_base="https://api.openai.com/v1", transport=transport)
     strategy = LLMPlanningStrategy(provider=provider)
 
-    obs = make_test_observation()
+    obs = make_test_observation(
+        unprocessed_docs=[{"documentId": "doc-ocr-123", "documentType": "10TH_MARKSHEET"}]
+    )
     action, outcome, rationale = strategy.plan_next_action(obs, iteration=1)
 
     assert action is not None
@@ -1644,18 +1648,56 @@ def test_orchestration_run_telemetry_captures_clean_llm_vs_fallback(clean_db):
     provider_timeout.close()
 
 
-def test_agent_system_status_endpoint():
+def test_agent_system_status_endpoint(clean_db):
     """
-    Verify GET /api/v1/agents/system-status returns public system configuration
-    without exposing secrets or credentials.
+    Verify GET /api/v1/agents/system-status is protected by RequireRole(["admin"]) (Finding H6)
+    and returns sanitized system configuration without exposing secrets or credentials.
     """
+    from bson import ObjectId
     from fastapi.testclient import TestClient
+    from app.core.security import create_access_token
     from app.main import app
 
+    admin_id = ObjectId()
+    applicant_id = ObjectId()
+
+    clean_db["users"].insert_one({
+        "_id": admin_id,
+        "email": "admin-sys-status@example.com",
+        "role": "admin",
+        "full_name": "Admin Tester",
+        "tokenVersion": 1,
+    })
+    clean_db["users"].insert_one({
+        "_id": applicant_id,
+        "email": "applicant-sys-status@example.com",
+        "role": "applicant",
+        "full_name": "Applicant Tester",
+        "tokenVersion": 1,
+    })
+
+    admin_token = create_access_token(subject=str(admin_id), role="admin")
+    applicant_token = create_access_token(subject=str(applicant_id), role="applicant")
+
     with TestClient(app) as client:
-        response = client.get("/api/v1/agents/system-status")
-        assert response.status_code == 200
-        data = response.json()
+        # 1. Unauthenticated request must return 401
+        res_unauth = client.get("/api/v1/agents/system-status")
+        assert res_unauth.status_code == 401
+
+        # 2. Non-admin authenticated user must return 403
+        res_applicant = client.get(
+            "/api/v1/agents/system-status",
+            headers={"Authorization": f"Bearer {applicant_token}"},
+        )
+        assert res_applicant.status_code == 403
+
+        # 3. Admin user must return 200 with sanitized configuration
+        res_admin = client.get(
+            "/api/v1/agents/system-status",
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        assert res_admin.status_code == 200
+        data = res_admin.json()
         assert "llmProvider" in data
         assert "llmEnabled" in data
         assert "availableToolsCount" in data
@@ -1894,3 +1936,319 @@ def test_llm_provider_exception_with_fallback_disabled(clean_db):
     assert len(fallback_audits) == 0
 
     provider.close()
+
+
+# =====================================================================
+# 13. Security Probe Vectors & Hardening Tests (Finding H1, M2)
+# =====================================================================
+
+def test_security_llm_proposal_skipping_verification_to_eligible_rejected(clean_db):
+    """
+    Model attempts to jump directly to ELIGIBLE while application has unverified documents.
+    Must be rejected, recorded as llm_proposal_rejected in audit, and fall back to deterministic action.
+    """
+    obs = make_test_observation(
+        application_id="app-sec-skip-eligible",
+        current_status="PROCESSING",
+        unprocessed_docs=[{"documentId": "doc-0", "documentType": "10TH_MARKSHEET"}],
+    )
+    proposal = {
+        "action_type": "TOOL_CALL",
+        "tool": "update_application_status",
+        "parameters": {"application_id": "app-sec-skip-eligible", "new_status": "ELIGIBLE"},
+        "rationale": "Arbitrarily declaring applicant eligible.",
+        "stage": "ACT",
+        "is_terminal": False,
+        "terminal_outcome": None,
+    }
+    transport = make_mock_transport_for_json(make_openai_response(proposal))
+    provider = OpenAICompatibleProvider(api_key="sk-test", api_base="https://api.openai.com/v1", transport=transport)
+    strategy = LLMPlanningStrategy(provider=provider, db=clean_db, fallback_enabled=True)
+
+    action, outcome, rationale = strategy.plan_next_action(obs, iteration=1)
+
+    assert action is not None
+    assert action.planner == "FALLBACK"
+    assert action.tool == ToolName.PROCESS_DOCUMENT
+
+    audit = clean_db["agent_activity"].find_one({"applicationId": "app-sec-skip-eligible", "status": "FALLBACK"})
+    assert audit is not None
+    assert audit["action"] == "llm_proposal_rejected"
+    assert "forbidden transition" in audit["result"].lower() or "not permitted" in audit["result"].lower()
+    provider.close()
+
+
+def test_security_llm_proposal_skipping_to_eligibility_check_unverified_rejected(clean_db):
+    """
+    Model attempts to jump to ELIGIBILITY_CHECK while documents are unprocessed or unverified.
+    Must be hard-gate rejected.
+    """
+    obs = make_test_observation(
+        application_id="app-sec-skip-elig-check",
+        current_status="PROCESSING",
+        unprocessed_docs=[{"documentId": "doc-0", "documentType": "10TH_MARKSHEET"}],
+    )
+    proposal = {
+        "action_type": "TOOL_CALL",
+        "tool": "update_application_status",
+        "parameters": {"application_id": "app-sec-skip-elig-check", "new_status": "ELIGIBILITY_CHECK"},
+        "rationale": "Skipping document OCR to evaluate eligibility immediately.",
+        "stage": "ACT",
+        "is_terminal": False,
+        "terminal_outcome": None,
+    }
+    transport = make_mock_transport_for_json(make_openai_response(proposal))
+    provider = OpenAICompatibleProvider(api_key="sk-test", api_base="https://api.openai.com/v1", transport=transport)
+    strategy = LLMPlanningStrategy(provider=provider, db=clean_db, fallback_enabled=True)
+
+    action, outcome, rationale = strategy.plan_next_action(obs, iteration=1)
+
+    assert action is not None
+    assert action.planner == "FALLBACK"
+    assert action.tool == ToolName.PROCESS_DOCUMENT
+    provider.close()
+
+
+def test_security_llm_proposal_unauthorized_document_id_rejected(clean_db):
+    """
+    Model attempts to operate on a document_id that is not uploaded for the application.
+    Must be rejected with document scoping violation.
+    """
+    obs = make_test_observation(
+        application_id="app-sec-foreign-doc",
+        current_status="PROCESSING",
+        unprocessed_docs=[{"documentId": "doc-own-1", "documentType": "10TH_MARKSHEET"}],
+    )
+    proposal = {
+        "action_type": "TOOL_CALL",
+        "tool": "process_document",
+        "parameters": {"document_id": "doc-foreign-victim-999"},
+        "rationale": "Processing a document ID belonging to another application.",
+        "stage": "ACT",
+        "is_terminal": False,
+        "terminal_outcome": None,
+    }
+    transport = make_mock_transport_for_json(make_openai_response(proposal))
+    provider = OpenAICompatibleProvider(api_key="sk-test", api_base="https://api.openai.com/v1", transport=transport)
+    strategy = LLMPlanningStrategy(provider=provider, db=clean_db, fallback_enabled=True)
+
+    action, outcome, rationale = strategy.plan_next_action(obs, iteration=1)
+
+    assert action is not None
+    assert action.planner == "FALLBACK"
+    audit = clean_db["agent_activity"].find_one({"applicationId": "app-sec-foreign-doc", "status": "FALLBACK"})
+    assert audit is not None
+    assert "does not belong" in audit["result"].lower()
+    provider.close()
+
+
+def test_security_llm_proposal_run_id_injection_rejected(clean_db):
+    """
+    Model attempts to inject run_id into tool parameters.
+    Forbidden parameter check must reject the proposal.
+    """
+    obs = make_test_observation(
+        application_id="app-sec-fencing-inject",
+        current_status="PROCESSING",
+        unprocessed_docs=[{"documentId": "doc-0", "documentType": "10TH_MARKSHEET"}],
+    )
+    proposal = {
+        "action_type": "TOOL_CALL",
+        "tool": "process_document",
+        "parameters": {"document_id": "doc-0", "run_id": "hijacked-fencing-token"},
+        "rationale": "Injecting run_id parameter.",
+        "stage": "ACT",
+        "is_terminal": False,
+        "terminal_outcome": None,
+    }
+    transport = make_mock_transport_for_json(make_openai_response(proposal))
+    provider = OpenAICompatibleProvider(api_key="sk-test", api_base="https://api.openai.com/v1", transport=transport)
+    strategy = LLMPlanningStrategy(provider=provider, db=clean_db, fallback_enabled=True)
+
+    action, outcome, rationale = strategy.plan_next_action(obs, iteration=1)
+
+    assert action is not None
+    assert action.planner == "FALLBACK"
+    audit = clean_db["agent_activity"].find_one({"applicationId": "app-sec-fencing-inject", "status": "FALLBACK"})
+    assert audit is not None
+    assert "forbidden parameter" in audit["result"].lower()
+    provider.close()
+
+
+def test_security_llm_proposal_terminal_outcome_inconsistency_rejected(clean_db):
+    """
+    Model proposes is_terminal=True with terminal_outcome=None, or is_terminal=False with outcome.
+    Both must be rejected before execution.
+    """
+    obs = make_test_observation(application_id="app-sec-inconsistent-terminal")
+
+    # Case A: is_terminal=True but terminal_outcome=None
+    proposal_a = {
+        "action_type": "TERMINATE",
+        "tool": None,
+        "parameters": {},
+        "rationale": "Inconsistent termination.",
+        "stage": "ACT",
+        "is_terminal": True,
+        "terminal_outcome": None,
+    }
+    transport_a = make_mock_transport_for_json(make_openai_response(proposal_a))
+    provider_a = OpenAICompatibleProvider(api_key="sk-test", api_base="https://api.openai.com/v1", transport=transport_a)
+    strategy_a = LLMPlanningStrategy(provider=provider_a, db=clean_db, fallback_enabled=True)
+
+    action_a, outcome_a, _ = strategy_a.plan_next_action(obs, iteration=1)
+    assert action_a is not None or outcome_a is not None
+    assert strategy_a.last_iteration_fallback is True
+    provider_a.close()
+
+    # Case B: is_terminal=False but terminal_outcome='COMPLETED'
+    proposal_b = {
+        "action_type": "TOOL_CALL",
+        "tool": "process_document",
+        "parameters": {"document_id": "doc-0"},
+        "rationale": "Inconsistent non-terminal.",
+        "stage": "ACT",
+        "is_terminal": False,
+        "terminal_outcome": "COMPLETED",
+    }
+    transport_b = make_mock_transport_for_json(make_openai_response(proposal_b))
+    provider_b = OpenAICompatibleProvider(api_key="sk-test", api_base="https://api.openai.com/v1", transport=transport_b)
+    strategy_b = LLMPlanningStrategy(provider=provider_b, db=clean_db, fallback_enabled=True)
+
+    action_b, outcome_b, _ = strategy_b.plan_next_action(obs, iteration=1)
+    assert strategy_b.last_iteration_fallback is True
+    provider_b.close()
+
+
+def test_security_llm_proposal_path_traversal_rejected(clean_db):
+    """
+    Model attempts to pass path traversal sequences in string parameters.
+    Must be rejected with path traversal error.
+    """
+    obs = make_test_observation(
+        application_id="app-sec-path-traversal",
+        current_status="PROCESSING",
+        unprocessed_docs=[{"documentId": "doc-0", "documentType": "10TH_MARKSHEET"}],
+    )
+    for bad_id in ("../etc/passwd", "doc-0/../../shadow", "doc-0\\..\\windows", "doc-0\x00evil"):
+        proposal = {
+            "action_type": "TOOL_CALL",
+            "tool": "process_document",
+            "parameters": {"document_id": bad_id},
+            "rationale": "Path traversal attempt.",
+            "stage": "ACT",
+            "is_terminal": False,
+            "terminal_outcome": None,
+        }
+        transport = make_mock_transport_for_json(make_openai_response(proposal))
+        provider = OpenAICompatibleProvider(api_key="sk-test", api_base="https://api.openai.com/v1", transport=transport)
+        strategy = LLMPlanningStrategy(provider=provider, db=clean_db, fallback_enabled=True)
+
+        action, outcome, _ = strategy.plan_next_action(obs, iteration=1)
+        assert action is not None
+        assert action.planner == "FALLBACK"
+        provider.close()
+
+
+def test_security_llm_proposal_unknown_parameters_rejected(clean_db):
+    """
+    Model proposes unexpected parameters outside of TOOL_PARAM_SCHEMAS.
+    Must be rejected with unknown parameter error.
+    """
+    obs = make_test_observation(
+        application_id="app-sec-unknown-param",
+        current_status="PROCESSING",
+        unprocessed_docs=[{"documentId": "doc-0", "documentType": "10TH_MARKSHEET"}],
+    )
+    proposal = {
+        "action_type": "TOOL_CALL",
+        "tool": "process_document",
+        "parameters": {"document_id": "doc-0", "unauthorized_flag": True},
+        "rationale": "Injecting unknown flag.",
+        "stage": "ACT",
+        "is_terminal": False,
+        "terminal_outcome": None,
+    }
+    transport = make_mock_transport_for_json(make_openai_response(proposal))
+    provider = OpenAICompatibleProvider(api_key="sk-test", api_base="https://api.openai.com/v1", transport=transport)
+    strategy = LLMPlanningStrategy(provider=provider, db=clean_db, fallback_enabled=True)
+
+    action, outcome, _ = strategy.plan_next_action(obs, iteration=1)
+    assert action is not None
+    assert action.planner == "FALLBACK"
+    provider.close()
+
+
+def test_security_remote_http_endpoint_rejected():
+    """
+    Validate that remote endpoints without HTTPS are rejected by SSRF protection.
+    """
+    # Remote HTTP must be rejected even if allow_local_endpoints is False
+    with pytest.raises(LLMSSRFValidationError) as exc1:
+        validate_endpoint_url("http://remote-llm.example.com/v1", allow_local_endpoints=False)
+    assert "https" in str(exc1.value).lower()
+
+    # Remote HTTP must also be rejected if allow_local_endpoints is True
+    with pytest.raises(LLMSSRFValidationError) as exc2:
+        validate_endpoint_url("http://remote-llm.example.com/v1", allow_local_endpoints=True)
+    assert "https" in str(exc2.value).lower()
+
+    # Local loopback with HTTP is permitted ONLY when allow_local_endpoints is True
+    assert validate_endpoint_url("http://localhost:11434/v1", allow_local_endpoints=True) == "http://localhost:11434/v1"
+    assert validate_endpoint_url("http://127.0.0.1:11434/v1", allow_local_endpoints=True) == "http://127.0.0.1:11434/v1"
+
+
+def test_security_orchestration_wall_clock_timeout_aborts(clean_db):
+    """
+    Verify that an orchestration run exceeding ORCHESTRATION_MAX_SECONDS is safely aborted
+    with outcome TIMEOUT and audit log entry.
+    """
+    app_id = "app-sec-timeout-test"
+    user = {"_id": "user_timeout_1", "role": "applicant", "applicant_id": "applicant-timeout-1"}
+
+    clean_db["applications"].insert_one({
+        "applicationId": app_id,
+        "applicantId": "applicant-timeout-1",
+        "userId": "user_timeout_1",
+        "status": "SUBMITTED",
+        "programmeId": "mca",
+    })
+
+    orchestrator = AgentOrchestrator(db=clean_db, max_iterations=5)
+
+    with patch("app.core.config.settings.ORCHESTRATION_MAX_SECONDS", 0.0):
+        res = orchestrator.run(application_id=app_id, triggered_by_user=user)
+
+    assert res.outcome == OrchestrationOutcome.TIMEOUT
+    assert res.status == OrchestrationRunStatus.FAILED
+
+    timeout_audit = clean_db["agent_activity"].find_one({"applicationId": app_id, "action": "Orchestration run timed out"})
+    assert timeout_audit is not None
+    assert timeout_audit["status"] == "FAILED"
+    assert "timeout" in timeout_audit["result"].lower()
+
+
+def test_security_tool_execution_strips_internal_keys(clean_db):
+    """
+    Verify that execute_tool strips caller-provided db, current_user, and run_id keys,
+    preventing parameter injection and run_id hijacking.
+    """
+    from app.agents.tools import execute_tool
+
+    user = {"_id": "test_user", "role": "admin"}
+    server_run_id = "real-fencing-token-123"
+
+    # Process document will fail document lookup gracefully, but parameter binding must not crash with TypeError
+    res = execute_tool(
+        tool_name="process_document",
+        parameters={
+            "document_id": "doc-test-999",
+            "run_id": "injected-fake-run-id",
+            "db": "fake_injected_db",
+            "current_user": {"role": "applicant"},
+        },
+        current_user=user,
+        db=clean_db,
+        run_id=server_run_id,
+    )
+    assert res.status in ("FAILED", "COMPLETED")

@@ -1,3 +1,4 @@
+import { USE_MOCKS } from "../../services/apiClient";
 import { useEffect, useMemo, useState } from "react";
 import PageHeader from "../../components/PageHeader";
 import StatusBadge from "../../components/StatusBadge";
@@ -99,7 +100,7 @@ export default function AgentActivity() {
   // System status & live backend connection
   const [systemStatus, setSystemStatus] = useState(null);
   const [liveToken, setLiveToken] = useState(
-    session?.token && session.token !== "mock-jwt-token" ? session.token : null
+    (USE_MOCKS || session?.token === "test-auth-token") ? null : (session?.token || null)
   );
   const [liveConnected, setLiveConnected] = useState(false);
   const [showConnectForm, setShowConnectForm] = useState(false);

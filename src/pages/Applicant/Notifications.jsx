@@ -3,6 +3,7 @@ import { useAuth } from "../../context/AuthContext";
 import { getNotifications, markNotificationRead, markAllNotificationsRead } from "../../services/api";
 import PageHeader from "../../components/PageHeader";
 import NotificationItem from "../../components/NotificationItem";
+import PrototypeNotice from "../../components/PrototypeNotice";
 import { EmptyState, ErrorState, LoadingState } from "../../components/AsyncState";
 import "./Notifications.css";
 
@@ -60,6 +61,10 @@ export default function Notifications() {
           )
         }
       />
+
+      <PrototypeNotice>
+        Notifications service (Increment 17) is not yet connected to the backend. This screen displays prototype data.
+      </PrototypeNotice>
 
       {feedback && (
         <div className="notification-feedback" role="status" aria-live="polite">

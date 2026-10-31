@@ -24,6 +24,12 @@ const OVERALL_COPY = {
     description:
       "Evaluation is still in progress. Some criteria are waiting on document verification.",
   },
+  DEPENDENCY_PENDING: {
+    heading: "Eligibility engine not yet available (DEPENDENCY_PENDING)",
+    tone: "neutral",
+    description:
+      "The automated eligibility evaluation engine (Increments 16+) is not yet connected to the backend.",
+  },
 };
 
 export default function Eligibility() {

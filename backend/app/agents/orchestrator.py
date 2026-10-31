@@ -1,3 +1,4 @@
+from app.api.deps import assert_owner
 """
 Smart Enroll — Autonomous Agent Orchestrator (Increment 15, Task 15.2)
 
@@ -14,6 +15,7 @@ from abc import ABC, abstractmethod
 from datetime import datetime, timedelta, timezone
 import logging
 import threading
+import time
 from typing import Any
 import uuid
 
@@ -65,7 +67,7 @@ def map_outcome_to_lifecycle_status(outcome: OrchestrationOutcome) -> Orchestrat
         OrchestrationOutcome.DEPENDENCY_PENDING,
     ):
         return OrchestrationRunStatus.COMPLETED
-    elif outcome == OrchestrationOutcome.FAILED:
+    elif outcome in (OrchestrationOutcome.FAILED, OrchestrationOutcome.TIMEOUT):
         return OrchestrationRunStatus.FAILED
     elif outcome == OrchestrationOutcome.ALREADY_RUNNING:
         return OrchestrationRunStatus.RUNNING
@@ -111,6 +113,10 @@ class ApplicationObservation:
         self.manual_review_documents = manual_review_documents
         self.validated_documents = validated_documents
         self.eligibility_result = eligibility_result
+
+    @property
+    def required_documents(self) -> list[str]:
+        return sorted(list(REQUIRED_DOCUMENT_TYPES))
 
 
 class PlannedAction:
@@ -163,6 +169,213 @@ class PlanningStrategy(ABC):
         pass
 
 
+def compute_expected_action(
+    observation: ApplicationObservation,
+) -> tuple[PlannedAction | None, OrchestrationOutcome | None, str | None]:
+    """
+    Pure deterministic decision table for application workflow progression.
+    Evaluates observation snapshot and returns:
+    - PlannedAction (or None if no action to execute)
+    - Final OrchestrationOutcome (if workflow should terminate or halt)
+    - Reason / summary string
+    """
+    app_id = observation.application_id
+    status = observation.current_status
+
+    # 1. DRAFT state: cannot orchestrate an unsubmitted draft
+    if status == "DRAFT":
+        return (
+            None,
+            OrchestrationOutcome.WAITING_FOR_APPLICANT,
+            "Application is in DRAFT status. Awaiting applicant submission.",
+        )
+
+    # 2. SUBMITTED state: verify documents or initiate processing
+    if status == "SUBMITTED":
+        if not observation.is_document_complete:
+            missing_str = ", ".join(observation.missing_document_types)
+            return (
+                PlannedAction(
+                    tool=ToolName.UPDATE_APPLICATION_STATUS,
+                    parameters={"application_id": app_id, "new_status": "WAITING_FOR_DOCUMENTS"},
+                    rationale=f"Missing {len(observation.missing_document_types)} required document(s): {missing_str}.",
+                    is_terminal=True,
+                    terminal_outcome=OrchestrationOutcome.WAITING_FOR_APPLICANT,
+                ),
+                OrchestrationOutcome.WAITING_FOR_APPLICANT,
+                f"Waiting for applicant to upload missing required documents: {missing_str}.",
+            )
+        else:
+            return (
+                PlannedAction(
+                    tool=ToolName.UPDATE_APPLICATION_STATUS,
+                    parameters={"application_id": app_id, "new_status": "PROCESSING"},
+                    rationale="Application submitted with required documents. Initiating automated processing workflow.",
+                ),
+                None,
+                None,
+            )
+
+    # 3. PROCESSING or WAITING_FOR_DOCUMENTS: document collection and processing
+    if status in ("PROCESSING", "WAITING_FOR_DOCUMENTS"):
+        # Check for missing required documents
+        if not observation.is_document_complete:
+            missing_str = ", ".join(observation.missing_document_types)
+            if status != "WAITING_FOR_DOCUMENTS":
+                return (
+                    PlannedAction(
+                        tool=ToolName.UPDATE_APPLICATION_STATUS,
+                        parameters={"application_id": app_id, "new_status": "WAITING_FOR_DOCUMENTS"},
+                        rationale=f"Missing {len(observation.missing_document_types)} required document(s): {missing_str}.",
+                        is_terminal=True,
+                        terminal_outcome=OrchestrationOutcome.WAITING_FOR_APPLICANT,
+                    ),
+                    OrchestrationOutcome.WAITING_FOR_APPLICANT,
+                    f"Waiting for applicant to upload missing required documents: {missing_str}.",
+                )
+            else:
+                return (
+                    None,
+                    OrchestrationOutcome.WAITING_FOR_APPLICANT,
+                    f"Application is waiting for applicant to upload missing documents: {missing_str}.",
+                )
+
+        # All 6 documents are present. If status was WAITING_FOR_DOCUMENTS, resume PROCESSING
+        if status == "WAITING_FOR_DOCUMENTS":
+            return (
+                PlannedAction(
+                    tool=ToolName.UPDATE_APPLICATION_STATUS,
+                    parameters={"application_id": app_id, "new_status": "PROCESSING"},
+                    rationale="All 6 required documents uploaded. Resuming workflow processing.",
+                ),
+                None,
+                None,
+            )
+
+        # Check if any documents need OCR processing
+        if observation.unprocessed_documents:
+            next_doc = observation.unprocessed_documents[0]
+            doc_id = next_doc.get("documentId")
+            doc_type = next_doc.get("documentType", "DOCUMENT")
+            return (
+                PlannedAction(
+                    tool=ToolName.PROCESS_DOCUMENT,
+                    parameters={"document_id": doc_id},
+                    rationale=f"Executing OCR extraction and classification for document '{doc_type}' ({doc_id}).",
+                ),
+                None,
+                None,
+            )
+
+        # Check if any document failed OCR
+        if observation.failed_documents:
+            failed_types = [d.get("documentType", "DOCUMENT") for d in observation.failed_documents]
+            return (
+                PlannedAction(
+                    tool=ToolName.UPDATE_APPLICATION_STATUS,
+                    parameters={"application_id": app_id, "new_status": "EXCEPTION"},
+                    rationale=f"Document OCR processing failed for {len(failed_types)} document(s): {', '.join(failed_types)}.",
+                    is_terminal=True,
+                    terminal_outcome=OrchestrationOutcome.MANUAL_REVIEW_REQUIRED,
+                ),
+                OrchestrationOutcome.MANUAL_REVIEW_REQUIRED,
+                f"Document processing failed for: {', '.join(failed_types)}. Manual inspection required.",
+            )
+
+        # All uploaded documents are processed. Check validation results
+        if observation.mismatched_documents or observation.manual_review_documents:
+            discrepancy_count = len(observation.mismatched_documents) + len(observation.manual_review_documents)
+            return (
+                PlannedAction(
+                    tool=ToolName.UPDATE_APPLICATION_STATUS,
+                    parameters={"application_id": app_id, "new_status": "EXCEPTION"},
+                    rationale=f"Validation detected {discrepancy_count} document(s) with data conflicts or manual review flags.",
+                    is_terminal=True,
+                    terminal_outcome=OrchestrationOutcome.MANUAL_REVIEW_REQUIRED,
+                ),
+                OrchestrationOutcome.MANUAL_REVIEW_REQUIRED,
+                "Document validation encountered data conflicts or manual review conditions. Routed to exception management.",
+            )
+
+        # All documents are validated! Transition to VERIFICATION_IN_PROGRESS
+        return (
+            PlannedAction(
+                tool=ToolName.UPDATE_APPLICATION_STATUS,
+                parameters={"application_id": app_id, "new_status": "VERIFICATION_IN_PROGRESS"},
+                rationale="All 6 required documents validated successfully. Transitioning to verification.",
+            ),
+            None,
+            None,
+        )
+
+    # 4. VERIFICATION_IN_PROGRESS: advance to ELIGIBILITY_CHECK
+    if status == "VERIFICATION_IN_PROGRESS":
+        return (
+            PlannedAction(
+                tool=ToolName.UPDATE_APPLICATION_STATUS,
+                parameters={"application_id": app_id, "new_status": "ELIGIBILITY_CHECK"},
+                rationale="Document verification completed. Transitioning to eligibility evaluation.",
+            ),
+            None,
+            None,
+        )
+
+    # 5. ELIGIBILITY_CHECK: invoke check_eligibility (Increment 16 dependency)
+    if status == "ELIGIBILITY_CHECK":
+        return (
+            PlannedAction(
+                tool=ToolName.CHECK_ELIGIBILITY,
+                parameters={"application_id": app_id},
+                rationale="Evaluating academic admission eligibility for programme.",
+            ),
+            None,
+            None,
+        )
+
+    # 6. EXCEPTION state: requires manual administrative intervention
+    if status == "EXCEPTION":
+        return (
+            None,
+            OrchestrationOutcome.MANUAL_REVIEW_REQUIRED,
+            "Application is currently in EXCEPTION state. Awaiting administrative review or exception resolution.",
+        )
+
+    # 7. ELIGIBLE or INELIGIBLE state:
+    if status in ("ELIGIBLE", "INELIGIBLE"):
+        if observation.eligibility_result:
+            return (
+                PlannedAction(
+                    tool=ToolName.UPDATE_APPLICATION_STATUS,
+                    parameters={"application_id": app_id, "new_status": "PROCESSING_COMPLETE"},
+                    rationale=f"Eligibility determined as {status}. Concluding workflow processing.",
+                    is_terminal=True,
+                    terminal_outcome=OrchestrationOutcome.COMPLETED,
+                ),
+                OrchestrationOutcome.COMPLETED,
+                f"Application processing concluded with status {status}.",
+            )
+        else:
+            return (
+                None,
+                OrchestrationOutcome.DEPENDENCY_PENDING,
+                "Deterministic eligibility evaluation result pending from Increment 16.",
+            )
+
+    # 8. PROCESSING_COMPLETE: terminal state
+    if status == "PROCESSING_COMPLETE":
+        return (
+            None,
+            OrchestrationOutcome.COMPLETED,
+            "Application processing has already reached completion.",
+        )
+
+    return (
+        None,
+        OrchestrationOutcome.FAILED,
+        f"Unrecognized application status '{status}'.",
+    )
+
+
 class DeterministicPlanningStrategy(PlanningStrategy):
     """
     Deterministic rule-based planning strategy for Increment 15.
@@ -177,201 +390,7 @@ class DeterministicPlanningStrategy(PlanningStrategy):
         observation: ApplicationObservation,
         iteration: int,
     ) -> tuple[PlannedAction | None, OrchestrationOutcome | None, str | None]:
-        app_id = observation.application_id
-        status = observation.current_status
-
-        # 1. DRAFT state: cannot orchestrate an unsubmitted draft
-        if status == "DRAFT":
-            return (
-                None,
-                OrchestrationOutcome.WAITING_FOR_APPLICANT,
-                "Application is in DRAFT status. Awaiting applicant submission.",
-            )
-
-        # 2. SUBMITTED state: verify documents or initiate processing
-        if status == "SUBMITTED":
-            if not observation.is_document_complete:
-                missing_str = ", ".join(observation.missing_document_types)
-                return (
-                    PlannedAction(
-                        tool=ToolName.UPDATE_APPLICATION_STATUS,
-                        parameters={"application_id": app_id, "new_status": "WAITING_FOR_DOCUMENTS"},
-                        rationale=f"Missing {len(observation.missing_document_types)} required document(s): {missing_str}.",
-                        is_terminal=True,
-                        terminal_outcome=OrchestrationOutcome.WAITING_FOR_APPLICANT,
-                    ),
-                    OrchestrationOutcome.WAITING_FOR_APPLICANT,
-                    f"Waiting for applicant to upload missing required documents: {missing_str}.",
-                )
-            else:
-                return (
-                    PlannedAction(
-                        tool=ToolName.UPDATE_APPLICATION_STATUS,
-                        parameters={"application_id": app_id, "new_status": "PROCESSING"},
-                        rationale="Application submitted with required documents. Initiating automated processing workflow.",
-                    ),
-                    None,
-                    None,
-                )
-
-        # 3. PROCESSING or WAITING_FOR_DOCUMENTS: document collection and processing
-        if status in ("PROCESSING", "WAITING_FOR_DOCUMENTS"):
-            # Check for missing required documents
-            if not observation.is_document_complete:
-                missing_str = ", ".join(observation.missing_document_types)
-                if status != "WAITING_FOR_DOCUMENTS":
-                    return (
-                        PlannedAction(
-                            tool=ToolName.UPDATE_APPLICATION_STATUS,
-                            parameters={"application_id": app_id, "new_status": "WAITING_FOR_DOCUMENTS"},
-                            rationale=f"Missing {len(observation.missing_document_types)} required document(s): {missing_str}.",
-                            is_terminal=True,
-                            terminal_outcome=OrchestrationOutcome.WAITING_FOR_APPLICANT,
-                        ),
-                        OrchestrationOutcome.WAITING_FOR_APPLICANT,
-                        f"Waiting for applicant to upload missing required documents: {missing_str}.",
-                    )
-                else:
-                    return (
-                        None,
-                        OrchestrationOutcome.WAITING_FOR_APPLICANT,
-                        f"Application is waiting for applicant to upload missing documents: {missing_str}.",
-                    )
-
-            # All 6 documents are present. If status was WAITING_FOR_DOCUMENTS, resume PROCESSING
-            if status == "WAITING_FOR_DOCUMENTS":
-                return (
-                    PlannedAction(
-                        tool=ToolName.UPDATE_APPLICATION_STATUS,
-                        parameters={"application_id": app_id, "new_status": "PROCESSING"},
-                        rationale="All 6 required documents uploaded. Resuming workflow processing.",
-                    ),
-                    None,
-                    None,
-                )
-
-            # Check if any documents need OCR processing
-            if observation.unprocessed_documents:
-                next_doc = observation.unprocessed_documents[0]
-                doc_id = next_doc.get("documentId")
-                doc_type = next_doc.get("documentType", "DOCUMENT")
-                return (
-                    PlannedAction(
-                        tool=ToolName.PROCESS_DOCUMENT,
-                        parameters={"document_id": doc_id},
-                        rationale=f"Executing OCR extraction and classification for document '{doc_type}' ({doc_id}).",
-                    ),
-                    None,
-                    None,
-                )
-
-            # Check if any document failed OCR
-            if observation.failed_documents:
-                failed_types = [d.get("documentType", "DOCUMENT") for d in observation.failed_documents]
-                return (
-                    PlannedAction(
-                        tool=ToolName.UPDATE_APPLICATION_STATUS,
-                        parameters={"application_id": app_id, "new_status": "EXCEPTION"},
-                        rationale=f"Document OCR processing failed for {len(failed_types)} document(s): {', '.join(failed_types)}.",
-                        is_terminal=True,
-                        terminal_outcome=OrchestrationOutcome.MANUAL_REVIEW_REQUIRED,
-                    ),
-                    OrchestrationOutcome.MANUAL_REVIEW_REQUIRED,
-                    f"Document processing failed for: {', '.join(failed_types)}. Manual inspection required.",
-                )
-
-            # All uploaded documents are processed. Check validation results
-            if observation.mismatched_documents or observation.manual_review_documents:
-                discrepancy_count = len(observation.mismatched_documents) + len(observation.manual_review_documents)
-                return (
-                    PlannedAction(
-                        tool=ToolName.UPDATE_APPLICATION_STATUS,
-                        parameters={"application_id": app_id, "new_status": "EXCEPTION"},
-                        rationale=f"Validation detected {discrepancy_count} document(s) with data conflicts or manual review flags.",
-                        is_terminal=True,
-                        terminal_outcome=OrchestrationOutcome.MANUAL_REVIEW_REQUIRED,
-                    ),
-                    OrchestrationOutcome.MANUAL_REVIEW_REQUIRED,
-                    "Document validation encountered data conflicts or manual review conditions. Routed to exception management.",
-                )
-
-            # All documents are validated! Transition to VERIFICATION_IN_PROGRESS
-            return (
-                PlannedAction(
-                    tool=ToolName.UPDATE_APPLICATION_STATUS,
-                    parameters={"application_id": app_id, "new_status": "VERIFICATION_IN_PROGRESS"},
-                    rationale="All 6 required documents validated successfully. Transitioning to verification.",
-                ),
-                None,
-                None,
-            )
-
-        # 4. VERIFICATION_IN_PROGRESS: advance to ELIGIBILITY_CHECK
-        if status == "VERIFICATION_IN_PROGRESS":
-            return (
-                PlannedAction(
-                    tool=ToolName.UPDATE_APPLICATION_STATUS,
-                    parameters={"application_id": app_id, "new_status": "ELIGIBILITY_CHECK"},
-                    rationale="Document verification completed. Transitioning to eligibility evaluation.",
-                ),
-                None,
-                None,
-            )
-
-        # 5. ELIGIBILITY_CHECK: invoke check_eligibility (Increment 16 dependency)
-        if status == "ELIGIBILITY_CHECK":
-            return (
-                PlannedAction(
-                    tool=ToolName.CHECK_ELIGIBILITY,
-                    parameters={"application_id": app_id},
-                    rationale="Evaluating academic admission eligibility for programme.",
-                ),
-                None,
-                None,
-            )
-
-        # 6. EXCEPTION state: requires manual administrative intervention
-        if status == "EXCEPTION":
-            return (
-                None,
-                OrchestrationOutcome.MANUAL_REVIEW_REQUIRED,
-                "Application is currently in EXCEPTION state. Awaiting administrative review or exception resolution.",
-            )
-
-        # 7. ELIGIBLE or INELIGIBLE state:
-        if status in ("ELIGIBLE", "INELIGIBLE"):
-            if observation.eligibility_result:
-                return (
-                    PlannedAction(
-                        tool=ToolName.UPDATE_APPLICATION_STATUS,
-                        parameters={"application_id": app_id, "new_status": "PROCESSING_COMPLETE"},
-                        rationale=f"Eligibility determined as {status}. Concluding workflow processing.",
-                        is_terminal=True,
-                        terminal_outcome=OrchestrationOutcome.COMPLETED,
-                    ),
-                    OrchestrationOutcome.COMPLETED,
-                    f"Application processing concluded with status {status}.",
-                )
-            else:
-                return (
-                    None,
-                    OrchestrationOutcome.DEPENDENCY_PENDING,
-                    "Deterministic eligibility evaluation result pending from Increment 16.",
-                )
-
-        # 8. PROCESSING_COMPLETE: terminal state
-        if status == "PROCESSING_COMPLETE":
-            return (
-                None,
-                OrchestrationOutcome.COMPLETED,
-                "Application processing has already reached completion.",
-            )
-
-        return (
-            None,
-            OrchestrationOutcome.FAILED,
-            f"Unrecognized application status '{status}'.",
-        )
+        return compute_expected_action(observation)
 
 
 class HeartbeatRenewer:
@@ -452,46 +471,17 @@ class AgentOrchestrator:
             self.strategy = planning_strategy
         else:
             from app.core.config import settings
+            from app.agents.providers import get_llm_provider
+            from app.agents.llm_planner import LLMPlanningStrategy
 
-            if settings.LLM_PROVIDER in ("openai_compatible", "openai"):
-                from app.agents.providers import (
-                    LLMProviderError,
-                    LLMSSRFValidationError,
-                    OpenAICompatibleProvider,
-                    is_local_endpoint,
+            provider = get_llm_provider()
+            if provider is not None:
+                self.strategy = LLMPlanningStrategy(
+                    provider=provider,
+                    fallback_strategy=DeterministicPlanningStrategy(),
+                    fallback_enabled=settings.LLM_FALLBACK_TO_DETERMINISTIC,
+                    db=db,
                 )
-                from app.agents.llm_planner import LLMPlanningStrategy
-
-                is_local = is_local_endpoint(settings.LLM_API_BASE)
-                has_valid_credentials = bool(settings.LLM_API_KEY and settings.LLM_API_KEY.strip())
-                can_initialize = (is_local and settings.LLM_ALLOW_LOCAL_ENDPOINTS) or (
-                    not is_local and has_valid_credentials
-                )
-
-                if can_initialize:
-                    try:
-                        provider = OpenAICompatibleProvider(
-                            api_key=settings.LLM_API_KEY,
-                            model=settings.LLM_MODEL,
-                            api_base=settings.LLM_API_BASE,
-                            timeout_seconds=settings.LLM_TIMEOUT_SECONDS,
-                            temperature=settings.LLM_TEMPERATURE,
-                            allow_local_endpoints=settings.LLM_ALLOW_LOCAL_ENDPOINTS,
-                        )
-                        self.strategy = LLMPlanningStrategy(
-                            provider=provider,
-                            fallback_strategy=DeterministicPlanningStrategy(),
-                            fallback_enabled=settings.LLM_FALLBACK_TO_DETERMINISTIC,
-                            db=db,
-                        )
-                    except (LLMSSRFValidationError, LLMProviderError) as exc:
-                        logger.warning(
-                            "Cannot initialize LLM provider due to validation error: %s. Falling back to deterministic planner.",
-                            exc,
-                        )
-                        self.strategy = DeterministicPlanningStrategy()
-                else:
-                    self.strategy = DeterministicPlanningStrategy()
             else:
                 self.strategy = DeterministicPlanningStrategy()
         self.max_iterations = max_iterations
@@ -857,15 +847,9 @@ class AgentOrchestrator:
             )
 
         role = triggered_by_user.get("role")
-        user_id = str(triggered_by_user.get("_id"))
-        applicant_id = triggered_by_user.get("applicant_id")
-
+        user_id = str(triggered_by_user.get("_id") or triggered_by_user.get("id"))
         if role == "applicant":
-            if app.get("userId") != user_id and app.get("applicantId") != applicant_id:
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail="Not authorized to orchestrate this application.",
-                )
+            assert_owner(app, triggered_by_user)
         elif role != "admin":
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -912,9 +896,37 @@ class AgentOrchestrator:
         pending_dependency = None
         fallback_occurred = False
         fallback_count = 0
+        start_time = time.monotonic()
 
         try:
             for iteration in range(1, limit + 1):
+                # Timeout Check
+                from app.core.config import settings
+                elapsed = time.monotonic() - start_time
+                if elapsed > settings.ORCHESTRATION_MAX_SECONDS:
+                    logger.warning(
+                        "Orchestration run %s for application %s exceeded maximum execution time (%s > %s). Aborting with TIMEOUT.",
+                        run_id,
+                        application_id,
+                        elapsed,
+                        settings.ORCHESTRATION_MAX_SECONDS,
+                    )
+                    final_outcome = OrchestrationOutcome.TIMEOUT
+                    failure_reason = f"Execution exceeded maximum wall-clock timeout of {settings.ORCHESTRATION_MAX_SECONDS} seconds."
+                    summary = failure_reason
+                    tool_record_audit_event(
+                        db=self.db,
+                        current_user=system_context,
+                        application_id=application_id,
+                        stage=WorkflowStage.RE_PLAN.value,
+                        tool="orchestrator",
+                        action="Orchestration run timed out",
+                        result=failure_reason,
+                        status="FAILED",
+                        applicant_name=owner_user.get("full_name", "Applicant"),
+                    )
+                    break
+
                 # Fencing & Heartbeat Check
                 now_step = datetime.now(timezone.utc)
                 lease_expires_step = (now_step + timedelta(seconds=self.stale_timeout_seconds)).isoformat()
@@ -1186,13 +1198,12 @@ class AgentOrchestrator:
         app_id = run_doc.get("applicationId")
         if current_user.get("role") == "applicant":
             app = self.db["applications"].find_one({"applicationId": app_id})
-            user_id = str(current_user["_id"])
-            applicant_id = current_user.get("applicant_id")
-            if not app or (app.get("userId") != user_id and app.get("applicantId") != applicant_id):
+            if not app:
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail="Not authorized to access this orchestration run.",
                 )
+            assert_owner(app, current_user)
 
         return OrchestrationRunResponse.model_validate(run_doc)
 
@@ -1204,13 +1215,12 @@ class AgentOrchestrator:
         """Retrieve the latest orchestration run for an application with authorization enforcement."""
         if current_user.get("role") == "applicant":
             app = self.db["applications"].find_one({"applicationId": application_id})
-            user_id = str(current_user["_id"])
-            applicant_id = current_user.get("applicant_id")
-            if not app or (app.get("userId") != user_id and app.get("applicantId") != applicant_id):
+            if not app:
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail="Not authorized to access orchestration for this application.",
                 )
+            assert_owner(app, current_user)
 
         run_doc = self.db["orchestration_runs"].find_one(
             {"applicationId": application_id},

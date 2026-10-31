@@ -1,10 +1,16 @@
+import secrets
 import uuid
 from datetime import datetime, timezone
 from fastapi import HTTPException, status
 from pymongo.database import Database
 from pymongo.errors import DuplicateKeyError
 
-from app.core.security import get_password_hash, verify_password
+from app.core.security import (
+    DUMMY_HASH,
+    get_password_hash,
+    validate_password_strength,
+    verify_password,
+)
 from app.schemas.user import UserCreate
 
 ROLE_FRONTEND_TO_BACKEND = {
@@ -21,34 +27,47 @@ ROLE_BACKEND_TO_FRONTEND = {
 def create_user(db: Database, user_in: UserCreate) -> dict:
     """
     Register a new applicant.
-    Normalizes email, hashes password, generates applicant_id,
-    forces role = 'applicant', and inserts into the users collection.
+    Enforces password complexity policy, normalizes email, hashes password,
+    generates cryptographically secure applicant_id, forces role = 'applicant',
+    initializes tokenVersion = 1, and inserts into the users collection.
+    Catches pymongo DuplicateKeyError on applicant_id and retries up to 3 times.
     Raises HTTP 409 Conflict on duplicate email.
     """
+    validate_password_strength(user_in.password)
     normalized_email = user_in.email.strip().lower()
     hashed_password = get_password_hash(user_in.password)
-    applicant_id = f"APL-{uuid.uuid4().hex[:6].upper()}"
 
-    user_doc = {
-        "email": normalized_email,
-        "hashed_password": hashed_password,
-        "full_name": user_in.fullName,
-        "mobile": user_in.mobile,
-        "dob": user_in.dob,
-        "role": "applicant",  # Client-provided role can NEVER control registration
-        "applicant_id": applicant_id,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-    }
+    max_retries = 3
+    for attempt in range(max_retries):
+        applicant_id = f"APL-{secrets.token_hex(6).upper()}"
+        user_doc = {
+            "email": normalized_email,
+            "hashed_password": hashed_password,
+            "full_name": user_in.fullName,
+            "mobile": user_in.mobile,
+            "dob": user_in.dob,
+            "role": "applicant",  # Client-provided role can NEVER control registration
+            "applicant_id": applicant_id,
+            "tokenVersion": 1,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
 
-    try:
-        result = db["users"].insert_one(user_doc)
-        user_doc["_id"] = result.inserted_id
-        return user_doc
-    except DuplicateKeyError:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Email already registered",
-        )
+        try:
+            result = db["users"].insert_one(user_doc)
+            user_doc["_id"] = result.inserted_id
+            return user_doc
+        except DuplicateKeyError as e:
+            err_msg = str(e)
+            if "email" in err_msg:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Email already registered",
+                )
+            if attempt == max_retries - 1:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Failed to generate unique applicant ID after multiple attempts.",
+                )
 
 
 def authenticate_user(
@@ -76,6 +95,8 @@ def authenticate_user(
 
     user = db["users"].find_one({"email": normalized_email})
     if not user:
+        # Constant-time dummy hash verification to prevent timing attack enumeration
+        verify_password("dummy_password", DUMMY_HASH)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect email, password, or role",

@@ -688,12 +688,15 @@ def test_ownership_when_both_applicants_have_identical_applicant_id():
     client = TestClient(app)
     db = get_db()
 
+    # Note: users.applicant_id has a unique index, so each user has their own unique ID,
+    # but the applications below test that identical applicantId on application records
+    # does NOT bypass strict userId ownership isolation.
     u1 = {
         "email": "u1_shared@example.com",
         "hashed_password": get_password_hash("Pass123!"),
         "full_name": "User 1 Shared",
         "role": "applicant",
-        "applicant_id": "APL-SHARED",
+        "applicant_id": "APL-SHARED-U1",
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     res1 = db["users"].insert_one(u1)
@@ -714,7 +717,7 @@ def test_ownership_when_both_applicants_have_identical_applicant_id():
         "hashed_password": get_password_hash("Pass123!"),
         "full_name": "User 2 Shared",
         "role": "applicant",
-        "applicant_id": "APL-SHARED",
+        "applicant_id": "APL-SHARED-U2",
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     res2 = db["users"].insert_one(u2)

@@ -1,7 +1,9 @@
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Request, status
+from app.core.rate_limit import enforce_rate_limit, get_client_ip
 from pymongo.database import Database
 
 from app.core.database import get_db
+from app.api.deps import get_current_user
 from app.core.security import create_access_token
 from app.schemas.user import AuthResponse, UserCreate, UserLogin
 from app.services.user import (
@@ -18,14 +20,20 @@ router = APIRouter()
     response_model=AuthResponse,
     status_code=status.HTTP_201_CREATED,
 )
-def register(user_in: UserCreate, db: Database = Depends(get_db)):
+def register(user_in: UserCreate, request: Request, db: Database = Depends(get_db)):
     """
     Public registration endpoint.
     Creates a new applicant, generates an access token, and returns
     a flat session response conforming to the frozen frontend contract.
     """
+    ip = get_client_ip(request)
+    enforce_rate_limit(f"register:ip:{ip}", max_requests=3, window_seconds=60, action_description="registration attempts")
     user = create_user(db, user_in)
-    token = create_access_token(subject=str(user["_id"]), role=user["role"])
+    token = create_access_token(
+        subject=str(user["_id"]),
+        role=user["role"],
+        token_version=user.get("tokenVersion", 1),
+    )
 
     frontend_role = ROLE_BACKEND_TO_FRONTEND.get(user["role"], "user")
 
@@ -43,14 +51,24 @@ def register(user_in: UserCreate, db: Database = Depends(get_db)):
     response_model=AuthResponse,
     status_code=status.HTTP_200_OK,
 )
-def login(login_in: UserLogin, db: Database = Depends(get_db)):
+def login(login_in: UserLogin, request: Request, db: Database = Depends(get_db)):
     """
     User/Admin login endpoint.
     Authenticates against credentials and requested role, generates an
     access token, and returns a flat session response.
     """
+    ip = get_client_ip(request)
+    normalized_email = login_in.email.strip().lower()
+    # Independent IP rate limit: max 20 attempts per IP per minute
+    enforce_rate_limit(f"login:ip:{ip}", max_requests=20, window_seconds=60, action_description="login attempts from this IP")
+    # Independent account rate limit: max 5 attempts per account per minute
+    enforce_rate_limit(f"login:account:{normalized_email}", max_requests=5, window_seconds=60, action_description="login attempts for this account")
     user = authenticate_user(db, login_in.email, login_in.password, login_in.role)
-    token = create_access_token(subject=str(user["_id"]), role=user["role"])
+    token = create_access_token(
+        subject=str(user["_id"]),
+        role=user["role"],
+        token_version=user.get("tokenVersion", 1),
+    )
 
     frontend_role = ROLE_BACKEND_TO_FRONTEND.get(user["role"], login_in.role)
 
@@ -61,3 +79,17 @@ def login(login_in: UserLogin, db: Database = Depends(get_db)):
         applicantId=user.get("applicant_id"),
         token=token,
     )
+
+
+@router.get(
+    "/me",
+    response_model=dict,
+    tags=["Authentication"],
+)
+def get_current_authenticated_user(current_user: dict = Depends(get_current_user)):
+    """
+    Retrieve current authenticated user context.
+    """
+    user_copy = current_user.copy()
+    user_copy["_id"] = str(user_copy["_id"])
+    return user_copy

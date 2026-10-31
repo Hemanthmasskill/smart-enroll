@@ -5,7 +5,7 @@ const applicantSession = {
   name: "Hemanth M.P.",
   email: "hemanth@example.com",
   applicantId: "APL-1001",
-  token: "mock-jwt-token",
+  token: "test-auth-token",
 };
 
 const adminSession = {
@@ -13,7 +13,7 @@ const adminSession = {
   name: "Admin User",
   email: "admin@example.com",
   applicantId: null,
-  token: "mock-jwt-token",
+  token: "test-auth-token",
 };
 
 function visitWithSession(path, session) {

@@ -548,6 +548,19 @@ def test_direct_transition_draft_or_submitted_to_processing_complete_rejected(ad
 # 5. ELIGIBLE or INELIGIBLE cannot be set without an appropriate deterministic eligibility result.
 def test_eligible_or_ineligible_requires_deterministic_result(admin_auth, applicant_auth, clean_db):
     app_id = applicant_auth["application"]["applicationId"]
+    user_id = applicant_auth["application"]["userId"]
+
+    # Seed all six required documents in VALIDATED state so ELIGIBILITY_CHECK gate passes
+    clean_db["documents"].delete_many({"applicationId": app_id})
+    for dtype in REQUIRED_DOCUMENT_TYPES:
+        clean_db["documents"].insert_one({
+            "applicationId": app_id,
+            "userId": user_id,
+            "documentType": dtype,
+            "status": "VALIDATED",
+            "processingStatus": "COMPLETED",
+            "validationStatus": "VALIDATED",
+        })
 
     # Progress application to ELIGIBILITY_CHECK
     for stage in ["SUBMITTED", "PROCESSING", "VERIFICATION_IN_PROGRESS", "ELIGIBILITY_CHECK"]:
@@ -568,6 +581,183 @@ def test_eligible_or_ineligible_requires_deterministic_result(admin_auth, applic
     assert res_inel.dependency == "Increment 16: Eligibility Engine"
     assert "Increment 16" in res_inel.message
     assert clean_db["applications"].find_one({"applicationId": app_id})["status"] == "ELIGIBILITY_CHECK"
+
+
+# 5c. Transition to ELIGIBILITY_CHECK enforces document-verification evidence.
+def test_status_transition_enforces_document_verification_evidence(admin_auth, applicant_auth, clean_db):
+    app_id = applicant_auth["application"]["applicationId"]
+    user_id = applicant_auth["application"]["userId"]
+
+    # Set up application in VERIFICATION_IN_PROGRESS
+    clean_db["applications"].update_one(
+        {"applicationId": app_id},
+        {"$set": {"status": "VERIFICATION_IN_PROGRESS"}},
+    )
+
+    # Insert all six required documents, but one has validationStatus == "MISMATCH"
+    clean_db["documents"].delete_many({"applicationId": app_id})
+    for dtype in REQUIRED_DOCUMENT_TYPES:
+        clean_db["documents"].insert_one({
+            "applicationId": app_id,
+            "userId": user_id,
+            "documentType": dtype,
+            "status": "VALIDATED" if dtype != "10TH_MARKSHEET" else "UPLOADED",
+            "processingStatus": "COMPLETED",
+            "validationStatus": "VALIDATED" if dtype != "10TH_MARKSHEET" else "MISMATCH",
+        })
+
+    # Transition to ELIGIBILITY_CHECK must fail due to MISMATCH
+    res_mismatch = tool_update_application_status(clean_db, admin_auth["user"], app_id, "ELIGIBILITY_CHECK")
+    assert res_mismatch.status == ToolStatus.FAILED.value
+    assert "data conflicts or manual review flags" in res_mismatch.message
+
+    # Update 10TH_MARKSHEET document to validationStatus == "VALIDATED"
+    clean_db["documents"].update_one(
+        {"applicationId": app_id, "documentType": "10TH_MARKSHEET"},
+        {"$set": {"validationStatus": "VALIDATED", "status": "VALIDATED"}},
+    )
+
+    # Now transition to ELIGIBILITY_CHECK must succeed with all 6 documents valid
+    res_valid = tool_update_application_status(clean_db, admin_auth["user"], app_id, "ELIGIBILITY_CHECK")
+    assert res_valid.status == ToolStatus.COMPLETED.value
+    assert clean_db["applications"].find_one({"applicationId": app_id})["status"] == "ELIGIBILITY_CHECK"
+
+
+def test_eligibility_check_gate_rejects_zero_documents(admin_auth, applicant_auth, clean_db):
+    app_id = applicant_auth["application"]["applicationId"]
+    clean_db["applications"].update_one(
+        {"applicationId": app_id},
+        {"$set": {"status": "VERIFICATION_IN_PROGRESS"}},
+    )
+    clean_db["documents"].delete_many({"applicationId": app_id})
+
+    res = tool_update_application_status(clean_db, admin_auth["user"], app_id, "ELIGIBILITY_CHECK")
+    assert res.status == ToolStatus.FAILED.value
+    assert "missing 6 required document type(s)" in res.message
+
+
+def test_eligibility_check_gate_rejects_one_document(admin_auth, applicant_auth, clean_db):
+    app_id = applicant_auth["application"]["applicationId"]
+    user_id = applicant_auth["application"]["userId"]
+    clean_db["applications"].update_one(
+        {"applicationId": app_id},
+        {"$set": {"status": "VERIFICATION_IN_PROGRESS"}},
+    )
+    clean_db["documents"].delete_many({"applicationId": app_id})
+    clean_db["documents"].insert_one({
+        "applicationId": app_id,
+        "userId": user_id,
+        "documentType": "10TH_MARKSHEET",
+        "status": "VALIDATED",
+        "processingStatus": "COMPLETED",
+        "validationStatus": "VALIDATED",
+    })
+
+    res = tool_update_application_status(clean_db, admin_auth["user"], app_id, "ELIGIBILITY_CHECK")
+    assert res.status == ToolStatus.FAILED.value
+    assert "missing 5 required document type(s)" in res.message
+
+
+def test_eligibility_check_gate_rejects_missing_document_type(admin_auth, applicant_auth, clean_db):
+    app_id = applicant_auth["application"]["applicationId"]
+    user_id = applicant_auth["application"]["userId"]
+    clean_db["applications"].update_one(
+        {"applicationId": app_id},
+        {"$set": {"status": "VERIFICATION_IN_PROGRESS"}},
+    )
+    clean_db["documents"].delete_many({"applicationId": app_id})
+    # Insert 5 out of 6
+    for dtype in REQUIRED_DOCUMENT_TYPES[:-1]:
+        clean_db["documents"].insert_one({
+            "applicationId": app_id,
+            "userId": user_id,
+            "documentType": dtype,
+            "status": "VALIDATED",
+            "processingStatus": "COMPLETED",
+            "validationStatus": "VALIDATED",
+        })
+
+    res = tool_update_application_status(clean_db, admin_auth["user"], app_id, "ELIGIBILITY_CHECK")
+    assert res.status == ToolStatus.FAILED.value
+    assert "missing 1 required document type(s)" in res.message
+    assert REQUIRED_DOCUMENT_TYPES[-1] in res.message
+
+
+def test_eligibility_check_gate_rejects_failed_document(admin_auth, applicant_auth, clean_db):
+    app_id = applicant_auth["application"]["applicationId"]
+    user_id = applicant_auth["application"]["userId"]
+    clean_db["applications"].update_one(
+        {"applicationId": app_id},
+        {"$set": {"status": "VERIFICATION_IN_PROGRESS"}},
+    )
+    clean_db["documents"].delete_many({"applicationId": app_id})
+    for dtype in REQUIRED_DOCUMENT_TYPES:
+        clean_db["documents"].insert_one({
+            "applicationId": app_id,
+            "userId": user_id,
+            "documentType": dtype,
+            "status": "FAILED" if dtype == "DEGREE_CERTIFICATE" else "VALIDATED",
+            "processingStatus": "FAILED" if dtype == "DEGREE_CERTIFICATE" else "COMPLETED",
+            "validationStatus": "FAILED" if dtype == "DEGREE_CERTIFICATE" else "VALIDATED",
+        })
+
+    res = tool_update_application_status(clean_db, admin_auth["user"], app_id, "ELIGIBILITY_CHECK")
+    assert res.status == ToolStatus.FAILED.value
+    assert "failed" in res.message.lower()
+
+
+def test_eligibility_check_gate_rejects_unprocessed_document(admin_auth, applicant_auth, clean_db):
+    app_id = applicant_auth["application"]["applicationId"]
+    user_id = applicant_auth["application"]["userId"]
+    clean_db["applications"].update_one(
+        {"applicationId": app_id},
+        {"$set": {"status": "VERIFICATION_IN_PROGRESS"}},
+    )
+    clean_db["documents"].delete_many({"applicationId": app_id})
+    for dtype in REQUIRED_DOCUMENT_TYPES:
+        clean_db["documents"].insert_one({
+            "applicationId": app_id,
+            "userId": user_id,
+            "documentType": dtype,
+            "status": "UPLOADED" if dtype == "TRANSFER_CERTIFICATE" else "VALIDATED",
+            "processingStatus": "PENDING" if dtype == "TRANSFER_CERTIFICATE" else "COMPLETED",
+            "validationStatus": "VALIDATED",
+        })
+
+    res = tool_update_application_status(clean_db, admin_auth["user"], app_id, "ELIGIBILITY_CHECK")
+    assert res.status == ToolStatus.FAILED.value
+    assert "processingStatus" in res.message
+
+
+def test_eligibility_check_gate_rejects_document_missing_processing_status(admin_auth, applicant_auth, clean_db):
+    """
+    Regression test: a document with status='VALIDATED' and validationStatus='VALIDATED'
+    but NO processingStatus field must make transition to ELIGIBILITY_CHECK fail.
+    """
+    app_id = applicant_auth["application"]["applicationId"]
+    user_id = applicant_auth["application"]["userId"]
+    clean_db["applications"].update_one(
+        {"applicationId": app_id},
+        {"$set": {"status": "VERIFICATION_IN_PROGRESS"}},
+    )
+    clean_db["documents"].delete_many({"applicationId": app_id})
+    for dtype in REQUIRED_DOCUMENT_TYPES:
+        doc = {
+            "applicationId": app_id,
+            "userId": user_id,
+            "documentType": dtype,
+            "status": "VALIDATED",
+            "validationStatus": "VALIDATED",
+        }
+        if dtype != "GOVERNMENT_ID":
+            doc["processingStatus"] = "COMPLETED"
+        # GOVERNMENT_ID has NO processingStatus field
+        clean_db["documents"].insert_one(doc)
+
+    res = tool_update_application_status(clean_db, admin_auth["user"], app_id, "ELIGIBILITY_CHECK")
+    assert res.status == ToolStatus.FAILED.value
+    assert "processingStatus" in res.message
+
 
 
 # 6. PROCESSING_COMPLETE cannot be set without required workflow-completion evidence.

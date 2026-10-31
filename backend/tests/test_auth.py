@@ -54,6 +54,7 @@ def clean_users_collection():
         assert db.name == "smartenroll_test"
         db["users"].delete_many({})
         db["users"].create_index("email", unique=True)
+        db["users"].create_index("applicant_id", unique=True, partialFilterExpression={"applicant_id": {"$type": "string"}})
         yield
         assert db.name == "smartenroll_test"
         db["users"].delete_many({})
@@ -98,7 +99,8 @@ def test_successful_applicant_registration():
         assert data["name"] == "Hemanth M.P."
         assert data["email"] == "hemanth@example.com"
         assert data["applicantId"].startswith("APL-")
-        assert len(data["applicantId"]) == 10  # APL- + 6 hex chars
+        # Task 2.2: secrets.token_hex(6) generates 12 hex chars -> 'APL-' + 12 chars = 16 chars
+        assert len(data["applicantId"]) == 16
         assert isinstance(data["token"], str)
         assert len(data["token"]) > 20
 
@@ -493,3 +495,221 @@ def test_create_admin_script():
         assert res.json()["name"] == "New Admin"
         assert res.json()["applicantId"] is None
 
+def test_applicant_id_cryptographically_secure_and_unique():
+    """
+    Regression test for H2 (Task 2.2):
+    Verify applicant ID format matches APL-[0-9A-F]{12} (12 hex characters),
+    and unique index prevents collisions.
+    """
+    import re
+    from scripts.migrate_applicant_ids import migrate_applicant_ids
+
+    with TestClient(app) as client:
+        res = client.post(
+            "/api/v1/auth/register",
+            json={
+                "fullName": "Secure Applicant",
+                "email": "secure.applicant@example.com",
+                "mobile": "9876543210",
+                "dob": "2000-01-01",
+                "password": "Password123!",
+            },
+        )
+        assert res.status_code == 201
+        data = res.json()
+        applicant_id = data["applicantId"]
+        assert re.match(r"^APL-[0-9A-F]{12}$", applicant_id), f"Unexpected ID format: {applicant_id}"
+
+        # Test migration script on clean database
+        db = get_db()
+        # Seed an applicant with legacy short ID
+        db["users"].insert_one({
+            "email": "legacy@example.com",
+            "hashed_password": "hash",
+            "full_name": "Legacy Applicant",
+            "role": "applicant",
+            "applicant_id": "APL-1234",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+
+        # Run migration in dry-run mode
+        dry_res = migrate_applicant_ids(apply_changes=False, db=db)
+        assert dry_res["needs_migration"] == 1
+        assert dry_res["migrated"] == 0
+
+        # Run migration in apply mode
+        apply_res = migrate_applicant_ids(apply_changes=True, db=db)
+        assert apply_res["needs_migration"] == 1
+        assert apply_res["migrated"] == 1
+
+        # Verify the legacy user now has a compliant ID
+        migrated_user = db["users"].find_one({"email": "legacy@example.com"})
+        assert re.match(r"^APL-[0-9A-F]{12}$", migrated_user["applicant_id"])
+
+        # Running again is idempotent
+        repeat_res = migrate_applicant_ids(apply_changes=True, db=db)
+        assert repeat_res["needs_migration"] == 0
+        assert repeat_res["migrated"] == 0
+
+
+# =====================================================================
+# Strict JWT Claim Enforcement (Follow-up Task 5)
+# =====================================================================
+
+def test_jwt_claims_mandatory_iss_aud_tokenversion():
+    """Verify get_current_user strictly rejects tokens missing iss, aud, or tokenVersion."""
+    db = get_db()
+    user_id = ObjectId()
+    db["users"].insert_one({
+        "_id": user_id,
+        "email": "jwt_strict@example.com",
+        "role": "applicant",
+        "full_name": "JWT Strict User",
+        "applicant_id": "APL-1234567890AB",
+        "tokenVersion": 1,
+    })
+
+    base_payload = {
+        "sub": str(user_id),
+        "role": "applicant",
+        "iss": "smart-enroll",
+        "aud": "smart-enroll-api",
+        "tokenVersion": 1,
+        "exp": datetime.now(timezone.utc) + timedelta(hours=1),
+    }
+
+    with TestClient(app) as client:
+        # 1. Valid token passes
+        valid_token = jwt.encode(base_payload, settings.SECRET_KEY, algorithm="HS256")
+        res = client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {valid_token}"})
+        assert res.status_code == 200
+
+        # 2. Missing iss claim
+        no_iss = dict(base_payload)
+        del no_iss["iss"]
+        tok = jwt.encode(no_iss, settings.SECRET_KEY, algorithm="HS256")
+        res = client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {tok}"})
+        assert res.status_code == 401
+
+        # 3. Invalid iss claim
+        bad_iss = dict(base_payload, iss="untrusted-issuer")
+        tok = jwt.encode(bad_iss, settings.SECRET_KEY, algorithm="HS256")
+        res = client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {tok}"})
+        assert res.status_code == 401
+
+        # 4. Missing aud claim
+        no_aud = dict(base_payload)
+        del no_aud["aud"]
+        tok = jwt.encode(no_aud, settings.SECRET_KEY, algorithm="HS256")
+        res = client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {tok}"})
+        assert res.status_code == 401
+
+        # 5. Invalid aud claim
+        bad_aud = dict(base_payload, aud="wrong-audience")
+        tok = jwt.encode(bad_aud, settings.SECRET_KEY, algorithm="HS256")
+        res = client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {tok}"})
+        assert res.status_code == 401
+
+        # 6. Missing tokenVersion claim
+        no_ver = dict(base_payload)
+        del no_ver["tokenVersion"]
+        tok = jwt.encode(no_ver, settings.SECRET_KEY, algorithm="HS256")
+        res = client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {tok}"})
+        assert res.status_code == 401
+        assert "tokenVersion" in res.json()["detail"]
+
+        # 7. Mismatched tokenVersion
+        mismatched_ver = dict(base_payload, tokenVersion=99)
+        tok = jwt.encode(mismatched_ver, settings.SECRET_KEY, algorithm="HS256")
+        res = client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {tok}"})
+        assert res.status_code == 401
+        assert "revoked or invalidated" in res.json()["detail"]
+
+
+# =====================================================================
+# Field-Length and Format Validation Tests (Follow-up Task 6)
+# =====================================================================
+
+def test_user_create_field_validation():
+    """Verify UserCreate rejects invalid field lengths and formats with 422."""
+    valid_payload = {
+        "fullName": "Valid Candidate",
+        "email": "candidate@example.com",
+        "mobile": "9876543210",
+        "dob": "2000-01-15",
+        "password": "StrongPassword123!",
+    }
+
+    with TestClient(app) as client:
+        # 1. Blank full name
+        bad_name = dict(valid_payload, fullName="   ")
+        res = client.post("/api/v1/auth/register", json=bad_name)
+        assert res.status_code == 422
+        # 2. Name exceeds 100 characters
+        too_long_name = dict(valid_payload, fullName="A" * 101)
+        res = client.post("/api/v1/auth/register", json=too_long_name)
+        assert res.status_code == 422
+        # 3. Invalid mobile length/format
+        bad_mobile = dict(valid_payload, mobile="12345")
+        res = client.post("/api/v1/auth/register", json=bad_mobile)
+        assert res.status_code == 422
+        bad_mobile_alpha = dict(valid_payload, mobile="98765abcde")
+        res = client.post("/api/v1/auth/register", json=bad_mobile_alpha)
+        assert res.status_code == 422
+        # 4. Invalid DOB format
+        bad_dob_slash = dict(valid_payload, dob="2000/01/15")
+        res = client.post("/api/v1/auth/register", json=bad_dob_slash)
+        assert res.status_code == 422
+        bad_dob_calendar = dict(valid_payload, dob="2000-02-31")
+        res = client.post("/api/v1/auth/register", json=bad_dob_calendar)
+        assert res.status_code == 422
+        # 5. Password length boundaries in schema
+        short_pwd = dict(valid_payload, password="Short1!")
+        res = client.post("/api/v1/auth/register", json=short_pwd)
+        assert res.status_code == 422
+        long_pwd = dict(valid_payload, password="A" * 129)
+        res = client.post("/api/v1/auth/register", json=long_pwd)
+        assert res.status_code == 422
+
+def test_user_login_field_validation():
+    """Verify UserLogin rejects invalid roles and oversized passwords with 422."""
+    with TestClient(app) as client:
+        # 1. Invalid role
+        res = client.post(
+            "/api/v1/auth/login",
+            json={"email": "login@example.com", "password": "Password123!", "role": "superuser"},
+        )
+        assert res.status_code == 422
+        assert "Invalid role" in str(res.json())
+
+        # 2. Oversized password (> 128 characters)
+        res = client.post(
+            "/api/v1/auth/login",
+            json={"email": "login@example.com", "password": "A" * 130, "role": "user"},
+        )
+        assert res.status_code == 422
+        # 3. Empty password
+        res = client.post(
+            "/api/v1/auth/login",
+            json={"email": "login@example.com", "password": "", "role": "user"},
+        )
+        assert res.status_code == 422
+
+
+# =====================================================================
+# Docstring Placement Tests (Follow-up Task 9)
+# =====================================================================
+
+def test_docstring_placement_in_auth_and_security():
+    """Verify function docstrings are properly accessible on __doc__ for OpenAPI reflection."""
+    from app.api.auth import register, login
+    from app.core.security import validate_password_strength
+
+    assert register.__doc__ is not None
+    assert "Public registration endpoint" in register.__doc__
+
+    assert login.__doc__ is not None
+    assert "User/Admin login endpoint" in login.__doc__
+
+    assert validate_password_strength.__doc__ is not None
+    assert "Enforce enterprise password complexity" in validate_password_strength.__doc__

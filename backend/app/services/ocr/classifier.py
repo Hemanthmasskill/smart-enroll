@@ -2,6 +2,8 @@ import re
 from app.schemas.document import DOCUMENT_TYPES
 from app.schemas.document_processing import ClassificationResult
 
+MAX_CLASSIFIER_TEXT_LENGTH = 100_000
+
 # Evidence rules with weighting
 CLASSIFICATION_PATTERNS: dict[str, list[tuple[re.Pattern, str, float]]] = {
     "10TH_MARKSHEET": [
@@ -59,7 +61,9 @@ def classify_document(text: str, expected_type: str | None = None) -> Classifica
             observation="No text content available to perform document classification.",
         )
 
-    clean_text = " ".join(text.split())
+    # Defense-in-depth: cap text length to prevent ReDoS
+    capped_text = text[:MAX_CLASSIFIER_TEXT_LENGTH]
+    clean_text = " ".join(capped_text.split())
 
     scores: dict[str, float] = {dtype: 0.0 for dtype in DOCUMENT_TYPES}
     evidence_map: dict[str, list[str]] = {dtype: [] for dtype in DOCUMENT_TYPES}

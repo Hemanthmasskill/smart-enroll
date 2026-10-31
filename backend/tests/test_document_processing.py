@@ -795,7 +795,7 @@ def test_real_concurrent_processing_requests(monkeypatch):
     real_run_pipeline = doc_module.run_document_processing_pipeline
 
     def delayed_pipeline(*args, **kwargs):
-        time.sleep(0.08)
+        time.sleep(0.25)
         return real_run_pipeline(*args, **kwargs)
 
     monkeypatch.setattr(doc_module, "run_document_processing_pipeline", delayed_pipeline)

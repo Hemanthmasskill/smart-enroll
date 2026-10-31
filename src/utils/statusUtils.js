@@ -42,6 +42,7 @@ export const ELIGIBILITY_RESULT_STATES = {
   PENDING: "Pending",
   FAILED: "Failed",
   NOT_APPLICABLE: "Not Applicable",
+  DEPENDENCY_PENDING: "Dependency Pending",
 };
 
 // Semantic tone drives the StatusBadge color — not the raw status string.
@@ -76,6 +77,7 @@ const TONE_MAP = {
   PENDING: "warning",
   FAILED: "danger",
   NOT_APPLICABLE: "neutral",
+  DEPENDENCY_PENDING: "neutral",
 };
 
 export function getStatusLabel(code) {

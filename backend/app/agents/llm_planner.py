@@ -24,8 +24,15 @@ from app.agents.orchestrator import (
     DeterministicPlanningStrategy,
     PlannedAction,
     PlanningStrategy,
+    compute_expected_action,
 )
-from app.agents.providers import LLMProvider, LLMProviderError
+from app.agents.providers import (
+    LLMProvider,
+    LLMProviderConnectionError,
+    LLMProviderError,
+    LLMProviderHTTPError,
+    LLMProviderTimeoutError,
+)
 from app.agents.tools import (
     TOOL_REGISTRY,
     tool_record_audit_event,
@@ -39,6 +46,124 @@ from app.schemas.agent import (
 )
 
 logger = logging.getLogger(__name__)
+
+TOOL_PARAM_SCHEMAS: dict[str, dict[str, type | tuple[type, ...]]] = {
+    ToolName.GET_APPLICATION.value: {
+        "application_id": str,
+    },
+    ToolName.GET_PROGRAM_REQUIREMENTS.value: {
+        "programme_id": str,
+    },
+    ToolName.CHECK_DOCUMENT_COMPLETENESS.value: {
+        "application_id": str,
+    },
+    ToolName.PROCESS_DOCUMENT.value: {
+        "document_id": str,
+    },
+    ToolName.EXTRACT_DOCUMENT_DATA.value: {
+        "document_id": str,
+    },
+    ToolName.VERIFY_DOCUMENT.value: {
+        "document_id": str,
+    },
+    ToolName.COMPARE_APPLICANT_DETAILS.value: {
+        "document_id": str,
+        "application_id": str,
+    },
+    ToolName.CHECK_ELIGIBILITY.value: {
+        "application_id": str,
+    },
+    ToolName.CREATE_EXCEPTION.value: {
+        "application_id": str,
+        "exception_type": str,
+        "description": str,
+        "severity": str,
+    },
+    ToolName.REQUEST_MISSING_DOCUMENT.value: {
+        "application_id": str,
+        "document_type": str,
+    },
+    ToolName.UPDATE_APPLICATION_STATUS.value: {
+        "application_id": str,
+        "new_status": str,
+    },
+    ToolName.SEND_NOTIFICATION.value: {
+        "title": str,
+        "description": str,
+        "user_id": str,
+        "applicant_id": str,
+    },
+}
+
+FORBIDDEN_PARAM_KEYS = {"run_id", "db", "current_user", "credentials", "token"}
+
+ALLOWED_TOOLS_BY_STATUS = {
+    "DRAFT": set(),
+    "SUBMITTED": {
+        ToolName.UPDATE_APPLICATION_STATUS.value,
+        ToolName.CHECK_DOCUMENT_COMPLETENESS.value,
+        ToolName.GET_APPLICATION.value,
+    },
+    "WAITING_FOR_DOCUMENTS": {
+        ToolName.UPDATE_APPLICATION_STATUS.value,
+        ToolName.REQUEST_MISSING_DOCUMENT.value,
+        ToolName.CHECK_DOCUMENT_COMPLETENESS.value,
+        ToolName.GET_APPLICATION.value,
+    },
+    "PROCESSING": {
+        ToolName.PROCESS_DOCUMENT.value,
+        ToolName.EXTRACT_DOCUMENT_DATA.value,
+        ToolName.VERIFY_DOCUMENT.value,
+        ToolName.COMPARE_APPLICANT_DETAILS.value,
+        ToolName.CHECK_DOCUMENT_COMPLETENESS.value,
+        ToolName.GET_APPLICATION.value,
+        ToolName.UPDATE_APPLICATION_STATUS.value,
+        ToolName.CREATE_EXCEPTION.value,
+    },
+    "VERIFICATION_IN_PROGRESS": {
+        ToolName.UPDATE_APPLICATION_STATUS.value,
+        ToolName.GET_APPLICATION.value,
+    },
+    "ELIGIBILITY_CHECK": {
+        ToolName.CHECK_ELIGIBILITY.value,
+        ToolName.GET_APPLICATION.value,
+        ToolName.GET_PROGRAM_REQUIREMENTS.value,
+    },
+    "EXCEPTION": {
+        ToolName.CREATE_EXCEPTION.value,
+        ToolName.GET_APPLICATION.value,
+        ToolName.SEND_NOTIFICATION.value,
+    },
+    "ELIGIBLE": {
+        ToolName.UPDATE_APPLICATION_STATUS.value,
+        ToolName.SEND_NOTIFICATION.value,
+    },
+    "INELIGIBLE": {
+        ToolName.UPDATE_APPLICATION_STATUS.value,
+        ToolName.SEND_NOTIFICATION.value,
+    },
+    "PROCESSING_COMPLETE": set(),
+}
+
+ALLOWED_TERMINAL_OUTCOMES_BY_STATUS = {
+    "DRAFT": {OrchestrationOutcome.WAITING_FOR_APPLICANT},
+    "SUBMITTED": {OrchestrationOutcome.WAITING_FOR_APPLICANT},
+    "WAITING_FOR_DOCUMENTS": {OrchestrationOutcome.WAITING_FOR_APPLICANT},
+    "PROCESSING": {OrchestrationOutcome.MANUAL_REVIEW_REQUIRED, OrchestrationOutcome.WAITING_FOR_APPLICANT},
+    "VERIFICATION_IN_PROGRESS": set(),
+    "ELIGIBILITY_CHECK": {OrchestrationOutcome.DEPENDENCY_PENDING},
+    "EXCEPTION": {OrchestrationOutcome.MANUAL_REVIEW_REQUIRED},
+    "ELIGIBLE": {OrchestrationOutcome.COMPLETED, OrchestrationOutcome.DEPENDENCY_PENDING},
+    "INELIGIBLE": {OrchestrationOutcome.COMPLETED, OrchestrationOutcome.DEPENDENCY_PENDING},
+    "PROCESSING_COMPLETE": {OrchestrationOutcome.COMPLETED},
+}
+
+
+def _check_string_for_path_traversal(val: str, key_name: str) -> None:
+    if any(seq in val for seq in ("..", "/", "\\", "\x00")):
+        raise ValueError(
+            f"Path traversal or restricted character sequence detected in parameter '{key_name}'."
+        )
 
 
 # =====================================================================
@@ -255,12 +380,16 @@ class LLMPlanningStrategy(PlanningStrategy):
 
             reason_summary = f"LLM planning rejected ({safe_error_type}): {safe_message}"
 
+            action_name = "llm_proposal_rejected"
+            if isinstance(exc, (LLMProviderTimeoutError, LLMProviderConnectionError, LLMProviderHTTPError)):
+                action_name = "Deterministic fallback invoked"
+
             if self.fallback_enabled:
                 self.last_iteration_fallback = True
                 self._fallback_occurred_this_run = True
                 self.last_fallback_reason = reason_summary
                 logger.warning("%s. Delegating to deterministic fallback planner.", reason_summary)
-                self._record_fallback_audit(observation.application_id, reason_summary)
+                self._record_fallback_audit(observation.application_id, reason_summary, action=action_name)
                 fallback_action, fallback_outcome, fallback_rationale = self.fallback_strategy.plan_next_action(
                     observation, iteration
                 )
@@ -453,6 +582,12 @@ class LLMPlanningStrategy(PlanningStrategy):
         """
         Strictly enforce application policy and safety guardrails on model proposals.
         """
+        # Validate terminal outcome consistency
+        if proposal.is_terminal and proposal.terminal_outcome is None:
+            raise ValueError("Terminal proposal (is_terminal=True) must specify a valid terminal_outcome.")
+        if not proposal.is_terminal and proposal.terminal_outcome is not None:
+            raise ValueError("Non-terminal proposal (is_terminal=False) cannot specify a terminal_outcome.")
+
         if proposal.action_type == "TERMINATE":
             if not proposal.terminal_outcome:
                 raise ValueError("TERMINATE action proposal must specify a valid terminal_outcome.")
@@ -463,6 +598,12 @@ class LLMPlanningStrategy(PlanningStrategy):
                 parameters={},
                 observation=observation,
             )
+            # Evaluate allowed outcomes for current state
+            allowed_outcomes = ALLOWED_TERMINAL_OUTCOMES_BY_STATUS.get(observation.current_status, set())
+            if proposal.terminal_outcome not in allowed_outcomes:
+                raise ValueError(
+                    f"Terminal outcome '{proposal.terminal_outcome.value}' is not permitted for application status '{observation.current_status}'."
+                )
             return None, proposal.terminal_outcome, proposal.rationale
 
         if proposal.action_type != "TOOL_CALL":
@@ -480,6 +621,68 @@ class LLMPlanningStrategy(PlanningStrategy):
             raise ValueError(
                 "Forbidden tool call: 'record_audit_event' is an internal system tool and cannot be proposed as a workflow action."
             )
+
+        # Check forbidden parameter keys
+        for k in proposal.parameters.keys():
+            if k.lower() in FORBIDDEN_PARAM_KEYS:
+                raise ValueError(f"Forbidden parameter key '{k}' detected in proposal.")
+
+        # Check parameter schema, nulls, types, and path traversal
+        allowed_schema = TOOL_PARAM_SCHEMAS.get(tool_clean)
+        if allowed_schema is not None:
+            for k, val in proposal.parameters.items():
+                if k not in allowed_schema:
+                    raise ValueError(f"Unknown parameter '{k}' for tool '{tool_clean}'. Allowed parameters: {sorted(allowed_schema.keys())}.")
+                if val is None:
+                    raise ValueError(f"Parameter '{k}' cannot be null.")
+                expected_type = allowed_schema[k]
+                if not isinstance(val, expected_type):
+                    raise ValueError(f"Parameter '{k}' must be of type {expected_type.__name__}, got {type(val).__name__}.")
+                if isinstance(val, str):
+                    _check_string_for_path_traversal(val, k)
+
+        # Document scoping check
+        if "document_id" in proposal.parameters:
+            doc_id = proposal.parameters["document_id"]
+            uploaded_ids = {d.get("documentId") for d in observation.uploaded_documents if d.get("documentId")}
+            if doc_id not in uploaded_ids:
+                raise ValueError(
+                    f"Document ID '{doc_id}' does not belong to application '{observation.application_id}' or is not uploaded."
+                )
+            if tool_clean == ToolName.PROCESS_DOCUMENT.value:
+                unprocessed_ids = {d.get("documentId") for d in observation.unprocessed_documents if d.get("documentId")}
+                if doc_id not in unprocessed_ids:
+                    raise ValueError(
+                        f"Document ID '{doc_id}' is not in unprocessed documents list for application '{observation.application_id}'."
+                    )
+
+        # Hard-gate on ELIGIBILITY_CHECK
+        if (tool_clean == ToolName.CHECK_ELIGIBILITY.value) or (
+            tool_clean == ToolName.UPDATE_APPLICATION_STATUS.value
+            and proposal.parameters.get("new_status") == "ELIGIBILITY_CHECK"
+        ):
+            required_count = len(observation.required_documents) if hasattr(observation, "required_documents") else 6
+            has_all_required = (
+                len(observation.uploaded_documents) >= required_count
+                and observation.is_document_complete
+                and not observation.missing_document_types
+            )
+            all_validated = (
+                not observation.unprocessed_documents
+                and not observation.failed_documents
+                and not observation.mismatched_documents
+                and not observation.manual_review_documents
+                and all(
+                    d.get("validationStatus") in ("VALIDATED", "VALID")
+                    or d.get("status") in ("VALIDATED", "VALID")
+                    for d in observation.uploaded_documents
+                )
+            )
+            if observation.current_status != "VERIFICATION_IN_PROGRESS" or not has_all_required or not all_validated:
+                raise ValueError(
+                    "Forbidden transition: Model cannot propose ELIGIBILITY_CHECK unless application is in "
+                    "'VERIFICATION_IN_PROGRESS', all required documents are present, and all documents are validated without errors."
+                )
 
         # Enforce Rule 1: DRAFT state permits no tool executions
         if observation.current_status == "DRAFT":
@@ -654,6 +857,19 @@ class LLMPlanningStrategy(PlanningStrategy):
                 observation=observation,
             )
 
+        # Evaluate proposal against allowed tools and terminal outcomes for current state
+        allowed_tools = ALLOWED_TOOLS_BY_STATUS.get(observation.current_status, set())
+        if tool_clean not in allowed_tools:
+            raise ValueError(
+                f"Tool '{tool_clean}' is not permitted for application status '{observation.current_status}'."
+            )
+        if proposal.is_terminal and proposal.terminal_outcome:
+            allowed_outcomes = ALLOWED_TERMINAL_OUTCOMES_BY_STATUS.get(observation.current_status, set())
+            if proposal.terminal_outcome not in allowed_outcomes:
+                raise ValueError(
+                    f"Terminal outcome '{proposal.terminal_outcome.value}' is not permitted for status '{observation.current_status}'."
+                )
+
         # Build PlannedAction
         planned_action = PlannedAction(
             tool=proposal.tool,
@@ -670,7 +886,12 @@ class LLMPlanningStrategy(PlanningStrategy):
         terminal_outcome = proposal.terminal_outcome if proposal.is_terminal else None
         return planned_action, terminal_outcome, proposal.rationale
 
-    def _record_fallback_audit(self, application_id: str, reason: str) -> None:
+    def _record_fallback_audit(
+        self,
+        application_id: str,
+        reason: str,
+        action: str = "llm_proposal_rejected",
+    ) -> None:
         """
         Record a sanitized FALLBACK audit record in agent_activity collection.
         Never logs credentials, full prompts, or raw model text.
@@ -690,7 +911,7 @@ class LLMPlanningStrategy(PlanningStrategy):
                 application_id=application_id,
                 stage=WorkflowStage.PLAN.value,
                 tool="llm_planner",
-                action="Deterministic fallback invoked",
+                action=action,
                 result=reason,
                 status="FALLBACK",
             )

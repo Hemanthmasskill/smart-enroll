@@ -129,7 +129,7 @@ export default function Documents() {
       let validationDetails = {};
       let authDetails = { status: "PENDING" };
 
-      if (session?.token && session.token !== "mock-jwt-token") {
+      if (session?.token) {
         if (doc.documentId) {
           try {
             const verifRes = await getVerificationStatus(
