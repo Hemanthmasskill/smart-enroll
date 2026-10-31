@@ -25,6 +25,9 @@ def clean_db():
     db["applications"].delete_many({})
     db["programme_rules"].delete_many({})
     yield db
+    # Teardown: ensure database is left with canonical seeded rules for any subsequent tests
+    db["programme_rules"].delete_many({})
+    seed_programme_rules(db)
 
 
 @pytest.fixture
