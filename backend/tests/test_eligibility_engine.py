@@ -195,6 +195,62 @@ def test_qualification_normalization_and_mtech_engineering_family():
     assert "could not be resolved" in qual_rule.reason
 
 
+def test_normalize_degree_leading_token_and_true_positives_table():
+    """
+    Verify normalize_degree matches whole string or leading token only.
+    Bare-word substring matches anywhere in the string are rejected.
+    """
+    # 1. Negative test explicitly specified: "Bachelor of Arts to be conferred"
+    # must NOT resolve to Engineering (via 'be'); it must resolve to ARTS.
+    res_ba = normalize_degree("Bachelor of Arts to be conferred")
+    assert res_ba is not None
+    assert res_ba[1] == "ARTS"
+    assert res_ba[0] == "Bachelor of Arts"
+    assert res_ba[1] != "ENGINEERING_TECHNOLOGY"
+
+    # String with 'be' in the middle but not leading degree
+    assert normalize_degree("Certificate to be issued upon request") is None
+    assert normalize_degree("Doctor of Philosophy to be conferred") is None
+
+    # 2. Comprehensive table of true positives
+    true_positives = [
+        ("BE", "Bachelor of Engineering", "ENGINEERING_TECHNOLOGY"),
+        ("B.E.", "Bachelor of Engineering", "ENGINEERING_TECHNOLOGY"),
+        ("B.E. Computer Science and Engineering", "Bachelor of Engineering", "ENGINEERING_TECHNOLOGY"),
+        ("BTech", "Bachelor of Technology", "ENGINEERING_TECHNOLOGY"),
+        ("B.Tech", "Bachelor of Technology", "ENGINEERING_TECHNOLOGY"),
+        ("B.Tech in Information Technology", "Bachelor of Technology", "ENGINEERING_TECHNOLOGY"),
+        ("Bachelor of Technology (Honours)", "Bachelor of Technology", "ENGINEERING_TECHNOLOGY"),
+        ("Bachelor of Engineering in Mechanical", "Bachelor of Engineering", "ENGINEERING_TECHNOLOGY"),
+        ("BCA", "Bachelor of Computer Applications", "COMPUTER_APPLICATIONS"),
+        ("B.C.A.", "Bachelor of Computer Applications", "COMPUTER_APPLICATIONS"),
+        ("Bachelor of Computer Applications with Data Science", "Bachelor of Computer Applications", "COMPUTER_APPLICATIONS"),
+        ("BSc", "Bachelor of Science", "SCIENCE"),
+        ("B.Sc.", "Bachelor of Science", "SCIENCE"),
+        ("BSc CS", "Bachelor of Science in Computer Science", "SCIENCE"),
+        ("B.Sc. Computer Science", "Bachelor of Science in Computer Science", "SCIENCE"),
+        ("BSc IT", "Bachelor of Science in Information Technology", "SCIENCE"),
+        ("B.Com", "Bachelor of Commerce", "COMMERCE"),
+        ("Bachelor of Commerce (Finance)", "Bachelor of Commerce", "COMMERCE"),
+        ("BBA", "Bachelor of Business Administration", "MANAGEMENT"),
+        ("B.B.A.", "Bachelor of Business Administration", "MANAGEMENT"),
+        ("Bachelor of Business Administration in Marketing", "Bachelor of Business Administration", "MANAGEMENT"),
+        ("BA", "Bachelor of Arts", "ARTS"),
+        ("B.A. English Literature", "Bachelor of Arts", "ARTS"),
+        ("Bachelor of Arts", "Bachelor of Arts", "ARTS"),
+        ("BArch", "Bachelor of Architecture", "ARCHITECTURE"),
+        ("B.Pharm", "Bachelor of Pharmacy", "PHARMACY"),
+        ("LLB", "Bachelor of Laws", "LAW"),
+        ("MBBS", "Bachelor of Medicine, Bachelor of Surgery", "MEDICINE"),
+    ]
+
+    for raw_input, expected_name, expected_family in true_positives:
+        norm = normalize_degree(raw_input)
+        assert norm is not None, f"Failed to normalize true positive: '{raw_input}'"
+        assert norm[0] == expected_name, f"Expected {expected_name} for '{raw_input}', got {norm[0]}"
+        assert norm[1] == expected_family, f"Expected family {expected_family} for '{raw_input}', got {norm[1]}"
+
+
 def test_mathematics_evidence_presence_and_absence():
     """Verify mathematics prerequisite logic: absence never yields FAILED, only NEEDS_REVIEW."""
     rules_mca = get_canonical_rule("mca")

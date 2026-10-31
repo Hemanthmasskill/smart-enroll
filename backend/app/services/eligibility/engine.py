@@ -158,6 +158,8 @@ def compute_input_hash(
 def normalize_degree(degree_str: str | None) -> tuple[str, str, str] | None:
     """
     Normalize raw degree string using DEGREE_NORMALIZATION_TABLE (D4).
+    Matches either the whole normalized string or the leading degree token only.
+    Bare-word substring matching anywhere in the text is strictly forbidden.
     Returns (Canonical Name, Degree Family, Degree Level) or None if unrecognized.
     """
     if not degree_str or not isinstance(degree_str, str):
@@ -165,16 +167,14 @@ def normalize_degree(degree_str: str | None) -> tuple[str, str, str] | None:
 
     cleaned = re.sub(r"[^\w\s]", " ", degree_str.lower()).strip()
     cleaned = re.sub(r"\s+", " ", cleaned)
+    if not cleaned:
+        return None
 
-    # 1. Exact lookup in normalization table
-    if cleaned in DEGREE_NORMALIZATION_TABLE:
-        return DEGREE_NORMALIZATION_TABLE[cleaned]
-
-    # 2. Check for token/prefix variants
-    for key, val in DEGREE_NORMALIZATION_TABLE.items():
-        pattern = r"\b" + re.escape(key) + r"\b"
-        if re.search(pattern, cleaned):
-            return val
+    # Check matches against known degree patterns, prioritizing longer/more specific degree phrases first
+    # Match must anchor to the start of the string (^): whole string or leading token
+    for key in sorted(DEGREE_NORMALIZATION_TABLE.keys(), key=len, reverse=True):
+        if re.match(r"^" + re.escape(key) + r"(?:\b|\s|$)", cleaned):
+            return DEGREE_NORMALIZATION_TABLE[key]
 
     return None
 
