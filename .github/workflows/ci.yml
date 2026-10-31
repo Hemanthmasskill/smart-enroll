@@ -48,9 +48,9 @@ jobs:
           ENABLE_DEV_SEED: "false"
         run: |
           PYTHONPATH=backend pytest backend/tests \
-            --cov=backend/app/agents \
-            --cov=backend/app/api \
-            --cov=backend/app/services/application \
+            --cov=app.agents \
+            --cov=app.api \
+            --cov=app.services.application \
             --cov-report=term-missing \
             --cov-fail-under=80
 
