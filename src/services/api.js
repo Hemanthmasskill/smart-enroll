@@ -7,7 +7,9 @@
  * FastAPI backend — nothing in the components needs to change.
  *
  * Future base URL:
- *   const BASE_URL = "http://localhost:8000/api/v1";
+ *   import apiClient, { API_BASE_URL, USE_MOCKS, ApiError } from "./apiClient";
+
+const BASE_URL = API_BASE_URL;
  */
 
 import {
@@ -128,30 +130,7 @@ function syncApplicationState(applicantId) {
 /* ----------------------------- Auth ----------------------------- */
 // POST `${BASE_URL}/auth/login`
 export async function loginRequest({ email, password, role }) {
-  let response;
-  try {
-    response = await fetch(`${BASE_URL}/auth/login`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ email, password, role }),
-    });
-  } catch (err) {
-    if (err.name === "TypeError" || (err.message && err.message.includes("fetch"))) {
-      throw new Error(
-        `Unable to connect to backend at ${BASE_URL}. Ensure the FastAPI server is running.`
-      );
-    }
-    throw err;
-  }
-
-  if (!response.ok) {
-    const errJson = await response.json().catch(() => ({}));
-    throw new Error(errJson.detail || "Authentication failed.");
-  }
-
-  const data = await response.json();
+  const data = await apiClient.post("/auth/login", { email, password, role });
   return {
     role: data.role,
     name: data.name,
@@ -163,36 +142,13 @@ export async function loginRequest({ email, password, role }) {
 
 // POST `${BASE_URL}/auth/register`
 export async function registerRequest(formData) {
-  let response;
-  try {
-    response = await fetch(`${BASE_URL}/auth/register`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        fullName: formData.fullName,
-        email: formData.email,
-        mobile: formData.mobile,
-        dob: formData.dob,
-        password: formData.password,
-      }),
-    });
-  } catch (err) {
-    if (err.name === "TypeError" || (err.message && err.message.includes("fetch"))) {
-      throw new Error(
-        `Unable to connect to backend at ${BASE_URL}. Ensure the FastAPI server is running.`
-      );
-    }
-    throw err;
-  }
-
-  if (!response.ok) {
-    const errJson = await response.json().catch(() => ({}));
-    throw new Error(errJson.detail || "Registration failed.");
-  }
-
-  const data = await response.json();
+  const data = await apiClient.post("/auth/register", {
+    fullName: formData.fullName,
+    email: formData.email,
+    mobile: formData.mobile,
+    dob: formData.dob,
+    password: formData.password,
+  });
   return {
     role: data.role,
     name: data.name,
@@ -270,363 +226,283 @@ const DOC_TYPE_TO_FRONTEND_ID = {
   "GOVERNMENT_ID": "doc-govt-id",
 };
 
-// GET `${BASE_URL}/documents` (uses backend when token is present, mock fallback)
+// GET `${BASE_URL}/documents` (uses backend via apiClient; no silent mock fallback)
 export async function getDocuments(applicantId, token) {
-  if (token && Boolean(token)) {
-    try {
-      const response = await fetch(`${BASE_URL}/documents`, {
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
-      });
-      if (response.ok) {
-        const slots = await response.json();
-        return slots.map((s) => ({
-          id: s.id || DOC_TYPE_TO_FRONTEND_ID[s.documentType] || s.documentType.toLowerCase(),
-          documentId: s.documentId,
-          documentType: s.documentType,
-          documentVariant: s.documentVariant,
-          variant: s.documentVariant,
-          name: s.name,
-          required: s.required ?? true,
-          status: s.status,
-          processingStatus: s.processingStatus || null,
-          processingConfidence: s.processingConfidence || null,
-          fileName: s.originalFileName || s.fileName,
-          uploadedAt: s.uploadedAt
-            ? new Date(s.uploadedAt).toLocaleDateString("en-IN", {
-                day: "2-digit",
-                month: "short",
-                year: "numeric",
-              })
-            : null,
-          details: null,
-        }));
-      }
-    } catch {
-      // Fallback to mock data if backend request fails
-    }
+  if (USE_MOCKS) {
+    await delay(400);
+    return mockDocuments[applicantId] ?? [];
   }
 
-  await delay(400);
-  return mockDocuments[applicantId] ?? [];
+  const headers = token ? { Authorization: `Bearer ${token}` } : {};
+  const slots = await apiClient.get("/documents", { headers });
+  return (slots || []).map((s) => ({
+    id: s.id || DOC_TYPE_TO_FRONTEND_ID[s.documentType] || s.documentType.toLowerCase(),
+    documentId: s.documentId,
+    documentType: s.documentType,
+    documentVariant: s.documentVariant,
+    variant: s.documentVariant,
+    name: s.name,
+    required: s.required ?? true,
+    status: s.status,
+    processingStatus: s.processingStatus || null,
+    processingConfidence: s.processingConfidence || null,
+    fileName: s.originalFileName || s.fileName,
+    uploadedAt: s.uploadedAt
+      ? new Date(s.uploadedAt).toLocaleDateString("en-IN", {
+          day: "2-digit",
+          month: "short",
+          year: "numeric",
+        })
+      : null,
+    details: null,
+  }));
 }
 
 // POST `${BASE_URL}/documents/upload`
 export async function uploadDocument(applicantId, documentId, file, variant, token) {
-  if (token && Boolean(token)) {
-    const formData = new FormData();
-    formData.append("file", file);
-    const docType = FRONTEND_ID_TO_DOC_TYPE[documentId] || documentId;
-    formData.append("documentType", docType);
+  if (USE_MOCKS) {
+    await delay(900);
+    const documents = mockDocuments[applicantId] ?? [];
+    const doc = documents.find((d) => d.id === documentId);
+    if (!doc) throw new Error("Document not found.");
+
+    doc.status = "UPLOADED";
+    doc.fileName = file?.name ?? "uploaded_file.pdf";
     if (variant) {
-      formData.append("documentVariant", variant);
+      doc.documentVariant = variant;
+      doc.variant = variant;
     }
-
-    const response = await fetch(`${BASE_URL}/documents/upload`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
-      body: formData,
+    doc.uploadedAt = new Date().toLocaleDateString("en-IN", {
+      day: "2-digit",
+      month: "short",
+      year: "numeric",
     });
+    doc.details = null;
+    syncApplicationState(applicantId);
 
-    if (!response.ok) {
-      const errJson = await response.json().catch(() => ({}));
-      throw new Error(errJson.detail || "Document upload failed.");
-    }
-
-    const saved = await response.json();
-    return {
-      id: documentId,
-      documentId: saved.documentId,
-      documentType: saved.documentType,
-      documentVariant: saved.documentVariant,
-      variant: saved.documentVariant,
-      name: saved.name || documentId,
-      required: saved.required ?? true,
-      status: saved.status,
-      processingStatus: saved.processingStatus || null,
-      processingConfidence: saved.processingConfidence || null,
-      fileName: saved.originalFileName || saved.fileName,
-      uploadedAt: new Date(saved.uploadedAt).toLocaleDateString("en-IN", {
-        day: "2-digit",
-        month: "short",
-        year: "numeric",
-      }),
-      details: null,
-    };
+    return { ...doc };
   }
 
-  await delay(900);
-  const documents = mockDocuments[applicantId] ?? [];
-  const doc = documents.find((d) => d.id === documentId);
-  if (!doc) throw new Error("Document not found.");
-
-  doc.status = "UPLOADED";
-  doc.fileName = file?.name ?? "uploaded_file.pdf";
+  const formData = new FormData();
+  formData.append("file", file);
+  const docType = FRONTEND_ID_TO_DOC_TYPE[documentId] || documentId;
+  formData.append("documentType", docType);
   if (variant) {
-    doc.documentVariant = variant;
-    doc.variant = variant;
+    formData.append("documentVariant", variant);
   }
-  doc.uploadedAt = new Date().toLocaleDateString("en-IN", {
-    day: "2-digit",
-    month: "short",
-    year: "numeric",
-  });
-  doc.details = null;
-  syncApplicationState(applicantId);
 
-  return { ...doc };
+  const headers = token ? { Authorization: `Bearer ${token}` } : {};
+  const saved = await apiClient.post("/documents/upload", formData, { headers });
+
+  return {
+    id: documentId,
+    documentId: saved.documentId,
+    documentType: saved.documentType,
+    documentVariant: saved.documentVariant,
+    variant: saved.documentVariant,
+    name: saved.name || documentId,
+    required: saved.required ?? true,
+    status: saved.status,
+    processingStatus: saved.processingStatus || null,
+    processingConfidence: saved.processingConfidence || null,
+    fileName: saved.originalFileName || saved.fileName,
+    uploadedAt: new Date(saved.uploadedAt).toLocaleDateString("en-IN", {
+      day: "2-digit",
+      month: "short",
+      year: "numeric",
+    }),
+    details: null,
+  };
 }
 
 // DELETE `${BASE_URL}/documents/{id}`
 export async function removeDocument(applicantId, documentSlotId, token, backendDocumentId, docContext) {
-  if (token && Boolean(token)) {
-    const targetDocId = backendDocumentId || docContext?.documentId;
-
-    if (!targetDocId) {
-      throw new Error("Cannot delete document: missing backend document identifier.");
+  if (USE_MOCKS) {
+    await delay(400);
+    const documents = mockDocuments[applicantId] ?? [];
+    const doc = documents.find((d) => d.id === documentSlotId);
+    if (doc) {
+      doc.status = "NOT_UPLOADED";
+      doc.fileName = null;
+      doc.documentVariant = null;
+      doc.variant = null;
+      doc.uploadedAt = null;
+      doc.processingStatus = null;
+      doc.processingConfidence = null;
+      doc.details = null;
     }
-
-    const response = await fetch(`${BASE_URL}/documents/${targetDocId}`, {
-      method: "DELETE",
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
-    });
-
-    if (!response.ok) {
-      const errJson = await response.json().catch(() => null);
-      throw new Error(errJson?.detail || `Document removal failed (${response.status}).`);
-    }
-
-    // Successfully deleted on real backend: return slot in NOT_UPLOADED state
-    return {
-      id: docContext?.id || documentSlotId,
-      documentId: null,
-      documentType: docContext?.documentType || FRONTEND_ID_TO_DOC_TYPE[documentSlotId] || documentSlotId,
-      documentVariant: null,
-      variant: null,
-      name: docContext?.name || documentSlotId,
-      required: docContext?.required ?? true,
-      status: "NOT_UPLOADED",
-      processingStatus: null,
-      processingConfidence: null,
-      fileName: null,
-      uploadedAt: null,
-      details: null,
-    };
+    syncApplicationState(applicantId);
+    return { ...doc };
   }
 
-  await delay(400);
-  const documents = mockDocuments[applicantId] ?? [];
-  const doc = documents.find((d) => d.id === documentSlotId);
-  if (doc) {
-    doc.status = "NOT_UPLOADED";
-    doc.fileName = null;
-    doc.documentVariant = null;
-    doc.variant = null;
-    doc.uploadedAt = null;
-    doc.processingStatus = null;
-    doc.processingConfidence = null;
-    doc.details = null;
+  const targetDocId = backendDocumentId || docContext?.documentId;
+  if (!targetDocId) {
+    throw new Error("Cannot delete document: missing backend document identifier.");
   }
-  syncApplicationState(applicantId);
-  return { ...doc };
+
+  const headers = token ? { Authorization: `Bearer ${token}` } : {};
+  await apiClient.delete(`/documents/${targetDocId}`, { headers });
+
+  // Successfully deleted on real backend: return slot in NOT_UPLOADED state
+  return {
+    id: docContext?.id || documentSlotId,
+    documentId: null,
+    documentType: docContext?.documentType || FRONTEND_ID_TO_DOC_TYPE[documentSlotId] || documentSlotId,
+    documentVariant: null,
+    variant: null,
+    name: docContext?.name || documentSlotId,
+    required: docContext?.required ?? true,
+    status: "NOT_UPLOADED",
+    processingStatus: null,
+    processingConfidence: null,
+    fileName: null,
+    uploadedAt: null,
+    details: null,
+  };
 }
 
 // POST `${BASE_URL}/documents/{document_id}/process`
 export async function processDocument(applicantId, documentSlotId, token, backendDocumentId) {
-  if (token && Boolean(token)) {
-    if (!backendDocumentId) {
-      throw new Error("Cannot process document: missing backend document identifier.");
-    }
+  if (USE_MOCKS) {
+    await delay(700);
+    const documents = mockDocuments[applicantId] ?? [];
+    const doc = documents.find((d) => d.id === documentSlotId);
+    if (!doc) throw new Error("Document not found for processing.");
 
-    const response = await fetch(`${BASE_URL}/documents/${backendDocumentId}/process`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${token}`,
+    doc.processingStatus = "COMPLETED";
+    doc.processingConfidence = 0.90;
+    doc.details = doc.details ?? {
+      extraction: {
+        "Candidate Name": "Hemanth M.P.",
+        "Roll Number": "2022MCA041",
+        "Marks/Percentage": "86.5%",
+        "Institution": "B.S. Abdur Rahman Crescent Institute",
+        "Overall Confidence": "90%",
       },
-    });
+      validation: {
+        "Name Match": "Matches application record",
+        "DOB Match": "Matches application record",
+        "Academic Qualification": "Meets criteria",
+      },
+      authoritative: {
+        status: "PENDING",
+      },
+    };
+    syncApplicationState(applicantId);
 
-    if (!response.ok) {
-      const errJson = await response.json().catch(() => ({}));
-      throw new Error(errJson.detail || `Document processing failed (${response.status}).`);
-    }
-
-    return await response.json();
+    return {
+      documentId: backendDocumentId || documentSlotId,
+      processingState: "COMPLETED",
+      overallConfidence: 0.90,
+      textExtracted: true,
+      classification: {
+        predictedType: FRONTEND_ID_TO_DOC_TYPE[documentSlotId] || "10TH_MARKSHEET",
+        confidence: 0.92,
+        typeMismatch: false,
+      },
+      fields: {
+        candidateName: { rawValue: "Hemanth M.P.", normalizedValue: "Hemanth M.P.", confidence: 0.92 },
+        registrationNumber: { rawValue: "2022MCA041", normalizedValue: "2022MCA041", confidence: 0.88 },
+        percentage: { rawValue: "86.5%", normalizedValue: 86.5, confidence: 0.90 },
+      },
+    };
   }
 
-  await delay(700);
-  const documents = mockDocuments[applicantId] ?? [];
-  const doc = documents.find((d) => d.id === documentSlotId);
-  if (!doc) throw new Error("Document not found for processing.");
+  if (!backendDocumentId) {
+    throw new Error("Cannot process document: missing backend document identifier.");
+  }
 
-  doc.processingStatus = "COMPLETED";
-  doc.processingConfidence = 0.90;
-  doc.details = doc.details ?? {
-    extraction: {
-      "Candidate Name": "Hemanth M.P.",
-      "Roll Number": "2022MCA041",
-      "Marks/Percentage": "86.5%",
-      "Institution": "B.S. Abdur Rahman Crescent Institute",
-      "Overall Confidence": "90%",
-    },
-    validation: {
-      "Name Match": "Matches application record",
-      "DOB Match": "Matches application record",
-      "Academic Qualification": "Meets criteria",
-    },
-    authoritative: {
-      status: "PENDING",
-    },
-  };
-  syncApplicationState(applicantId);
-
-  return {
-    documentId: backendDocumentId || documentSlotId,
-    processingState: "COMPLETED",
-    overallConfidence: 0.90,
-    textExtracted: true,
-    classification: {
-      predictedType: FRONTEND_ID_TO_DOC_TYPE[documentSlotId] || "10TH_MARKSHEET",
-      confidence: 0.92,
-      typeMismatch: false,
-    },
-    fields: {
-      candidateName: { rawValue: "Hemanth M.P.", normalizedValue: "Hemanth M.P.", confidence: 0.92 },
-      registrationNumber: { rawValue: "2022MCA041", normalizedValue: "2022MCA041", confidence: 0.88 },
-      percentage: { rawValue: "86.5%", normalizedValue: 86.5, confidence: 0.90 },
-    },
-  };
+  const headers = token ? { Authorization: `Bearer ${token}` } : {};
+  return await apiClient.post(`/documents/${backendDocumentId}/process`, {}, { headers });
 }
 
 // GET `${BASE_URL}/documents/{document_id}/processing-result`
 export async function getDocumentProcessingResult(applicantId, documentSlotId, token, backendDocumentId) {
-  if (token && Boolean(token)) {
-    if (!backendDocumentId) {
-      throw new Error("Cannot retrieve processing result: missing backend document identifier.");
-    }
-
-    const response = await fetch(`${BASE_URL}/documents/${backendDocumentId}/processing-result`, {
-      headers: {
-        Authorization: `Bearer ${token}`,
+  if (USE_MOCKS) {
+    await delay(300);
+    return {
+      documentId: backendDocumentId || documentSlotId,
+      processingState: "COMPLETED",
+      overallConfidence: 0.90,
+      textExtracted: true,
+      classification: {
+        predictedType: FRONTEND_ID_TO_DOC_TYPE[documentSlotId] || "10TH_MARKSHEET",
+        confidence: 0.92,
+        typeMismatch: false,
       },
-    });
-
-    if (!response.ok) {
-      const errJson = await response.json().catch(() => ({}));
-      throw new Error(errJson.detail || `Failed to retrieve processing result (${response.status}).`);
-    }
-
-    return await response.json();
+    };
   }
 
-  await delay(300);
-  return {
-    documentId: backendDocumentId || documentSlotId,
-    processingState: "COMPLETED",
-    overallConfidence: 0.90,
-    textExtracted: true,
-    classification: {
-      predictedType: FRONTEND_ID_TO_DOC_TYPE[documentSlotId] || "10TH_MARKSHEET",
-      confidence: 0.92,
-      typeMismatch: false,
-    },
-  };
+  if (!backendDocumentId) {
+    throw new Error("Cannot retrieve processing result: missing backend document identifier.");
+  }
+
+  const headers = token ? { Authorization: `Bearer ${token}` } : {};
+  return await apiClient.get(`/documents/${backendDocumentId}/processing-result`, { headers });
 }
-
-
 
 // GET `${BASE_URL}/documents/{id}/verification`
 export async function getVerificationStatus(applicantId, documentSlotId, token, backendDocumentId) {
-  if (token && Boolean(token)) {
-    if (!backendDocumentId) {
-      throw new Error("Cannot fetch verification status: missing backend document identifier.");
-    }
-    const response = await fetch(`${BASE_URL}/documents/${backendDocumentId}/verification`, {
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
-    });
-    const contentType = response.headers.get("content-type") || "";
-    if (!response.ok || !contentType.includes("json")) {
-      const errJson = contentType.includes("json") ? await response.json().catch(() => ({})) : {};
-      const err = new Error(errJson.detail || `Verification record not found or unavailable (${response.status}).`);
-      err.status = response.status;
-      throw err;
-    }
-    return await response.json();
+  if (USE_MOCKS) {
+    await delay(300);
+    const documents = mockDocuments[applicantId] ?? [];
+    return documents.find((d) => d.id === documentSlotId) ?? null;
   }
 
-  await delay(300);
-  const documents = mockDocuments[applicantId] ?? [];
-  return documents.find((d) => d.id === documentSlotId) ?? null;
+  if (!backendDocumentId) {
+    throw new Error("Cannot fetch verification status: missing backend document identifier.");
+  }
+
+  const headers = token ? { Authorization: `Bearer ${token}` } : {};
+  return await apiClient.get(`/documents/${backendDocumentId}/verification`, { headers });
 }
 
 // POST `${BASE_URL}/documents/{id}/verify`
 export async function verifyDocument(applicantId, documentSlotId, token, backendDocumentId) {
-  if (token && Boolean(token)) {
-    if (!backendDocumentId) {
-      throw new Error("Cannot verify document: missing backend document identifier.");
-    }
-    const response = await fetch(`${BASE_URL}/documents/${backendDocumentId}/verify`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
-    });
-    if (!response.ok) {
-      const errJson = await response.json().catch(() => ({}));
-      throw new Error(errJson.detail || `Document verification failed (${response.status}).`);
-    }
-    return await response.json();
+  if (USE_MOCKS) {
+    await delay(500);
+    const documents = mockDocuments[applicantId] ?? [];
+    const doc = documents.find((d) => d.id === documentSlotId);
+    if (!doc) throw new Error("Document not found for verification.");
+    doc.validationStatus = "VALIDATED";
+    syncApplicationState(applicantId);
+    return {
+      documentId: backendDocumentId || documentSlotId,
+      documentType: FRONTEND_ID_TO_DOC_TYPE[documentSlotId] || "10TH_MARKSHEET",
+      validationStatus: "VALIDATED",
+      fieldResults: {},
+      crossDocumentResults: [],
+      reasons: [],
+    };
   }
 
-  await delay(500);
-  const documents = mockDocuments[applicantId] ?? [];
-  const doc = documents.find((d) => d.id === documentSlotId);
-  if (!doc) throw new Error("Document not found for verification.");
-  doc.validationStatus = "VALIDATED";
-  syncApplicationState(applicantId);
-  return {
-    documentId: backendDocumentId || documentSlotId,
-    documentType: FRONTEND_ID_TO_DOC_TYPE[documentSlotId] || "10TH_MARKSHEET",
-    validationStatus: "VALIDATED",
-    fieldResults: {},
-    crossDocumentResults: [],
-    reasons: [],
-  };
+  if (!backendDocumentId) {
+    throw new Error("Cannot verify document: missing backend document identifier.");
+  }
+
+  const headers = token ? { Authorization: `Bearer ${token}` } : {};
+  return await apiClient.post(`/documents/${backendDocumentId}/verify`, {}, { headers });
 }
 
 // POST `${BASE_URL}/documents/{id}/authoritative-verify`
 export async function authoritativeVerifyDocument(applicantId, documentSlotId, token, backendDocumentId) {
-  if (token && Boolean(token)) {
-    if (!backendDocumentId) {
-      throw new Error("Cannot run authoritative verification: missing backend document identifier.");
-    }
-    const response = await fetch(`${BASE_URL}/documents/${backendDocumentId}/authoritative-verify`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
-    });
-    if (!response.ok) {
-      const errJson = await response.json().catch(() => ({}));
-      throw new Error(errJson.detail || `Authoritative verification failed (${response.status}).`);
-    }
-    return await response.json();
+  if (USE_MOCKS) {
+    await delay(600);
+    return {
+      provider: "SyntheticDigiLockerProvider",
+      status: "SIMULATED_MATCH",
+      isSimulated: true,
+      disclaimer: "Simulated record for testing/evaluation. Not connected to live DigiLocker/government APIs.",
+      message: "Simulated authoritative credential verified via DigiLocker simulation.",
+    };
   }
 
-  await delay(600);
-  return {
-    provider: "SyntheticDigiLockerProvider",
-    status: "SIMULATED_MATCH",
-    isSimulated: true,
-    disclaimer: "Simulated record for testing/evaluation. Not connected to live DigiLocker/government APIs.",
-    message: "Simulated authoritative credential verified via DigiLocker simulation.",
-  };
+  if (!backendDocumentId) {
+    throw new Error("Cannot run authoritative verification: missing backend document identifier.");
+  }
+
+  const headers = token ? { Authorization: `Bearer ${token}` } : {};
+  return await apiClient.post(`/documents/${backendDocumentId}/authoritative-verify`, {}, { headers });
 }
 
 /* --------------------------- DigiLocker ------------------------------- */
@@ -872,42 +748,29 @@ export async function updateProgrammeRules(programmeId, updates) {
 }
 
 /* ----------------------------- Agent Activity & Orchestration ----------------------------- */
-// GET `${BASE_URL}/admin/agent-activity` or `${BASE_URL}/agents/activity`
+// GET `${BASE_URL}/agents/activity`
 export async function getAgentActivity(filters = {}, token) {
-  if (token && Boolean(token)) {
-    const params = new URLSearchParams();
-    if (filters.applicationId && filters.applicationId !== "ALL") params.append("applicationId", filters.applicationId);
-    if (filters.stage && filters.stage !== "ALL") params.append("stage", filters.stage);
-    if (filters.status && filters.status !== "ALL") params.append("status", filters.status);
-    params.append("limit", "100");
-
-    const response = await fetch(`${BASE_URL}/agents/activity?${params.toString()}`, {
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
-    });
-
-    if (!response.ok) {
-      const errJson = await response.json().catch(() => ({}));
-      throw new Error(errJson.detail || `Failed to fetch live agent activity (${response.status}).`);
-    }
-
-    const data = await response.json();
-    return data.map((r) => ({ ...r, isLive: true }));
+  if (USE_MOCKS) {
+    await delay(400);
+    return [...mockAgentActivity];
   }
 
-  await delay(400);
-  return [...mockAgentActivity];
+  const params = new URLSearchParams();
+  if (filters.applicationId && filters.applicationId !== "ALL") params.append("applicationId", filters.applicationId);
+  if (filters.stage && filters.stage !== "ALL") params.append("stage", filters.stage);
+  if (filters.status && filters.status !== "ALL") params.append("status", filters.status);
+  params.append("limit", "100");
+
+  const headers = token ? { Authorization: `Bearer ${token}` } : {};
+  const data = await apiClient.get(`/agents/activity?${params.toString()}`, { headers });
+  return (data || []).map((r) => ({ ...r, isLive: true }));
 }
 
 // GET `${BASE_URL}/agents/system-status`
 export async function getAgentSystemStatus() {
   try {
-    const response = await fetch(`${BASE_URL}/agents/system-status`);
-    if (response.ok) {
-      const data = await response.json();
-      return { ...data, isLive: true };
-    }
+    const data = await apiClient.get("/agents/system-status");
+    return { ...data, isLive: true };
   } catch {
     // Backend offline or unreachable
   }
@@ -944,185 +807,68 @@ export async function getAgentSystemStatus() {
 
 // GET `${BASE_URL}/agents/runs`
 export async function getRecentOrchestrationRuns(token) {
-  if (token && Boolean(token)) {
-    try {
-      const response = await fetch(`${BASE_URL}/agents/runs`, {
-        headers: {
-          Authorization: `Bearer ${token}`,
+  if (USE_MOCKS) {
+    await delay(300);
+    return {
+      runs: [
+        {
+          runId: "demo-run-001",
+          applicationId: "SE20260001",
+          status: "COMPLETED",
+          outcome: "WAITING_FOR_APPLICANT",
+          currentApplicationStatus: "WAITING_FOR_DOCUMENTS",
+          stepsCompleted: 2,
+          summary: "Missing required documents detected; application safely transitioned to WAITING_FOR_DOCUMENTS.",
+          planner: "LLM",
+          fallbackOccurred: false,
+          fallbackCount: 0,
+          startedAt: "2026-10-26T14:30:00Z",
+          completedAt: "2026-10-26T14:30:02Z",
+          isDemoMock: true,
+          steps: [
+            {
+              stepIndex: 1,
+              stage: "ACT",
+              tool: "check_document_completeness",
+              action: "Inspect uploaded documents against programme requirements",
+              resultSummary: "4 of 6 required documents present. Missing: 12TH_MARKSHEET, TRANSFER_CERTIFICATE",
+              status: "COMPLETED",
+              planner: "LLM",
+              fallbackUsed: false,
+              executedAt: "2026-10-26T14:30:01Z",
+            },
+            {
+              stepIndex: 2,
+              stage: "ACT",
+              tool: "update_application_status",
+              action: "Update application status to WAITING_FOR_DOCUMENTS",
+              resultSummary: "Application SE20260001 status updated from SUBMITTED to WAITING_FOR_DOCUMENTS.",
+              status: "COMPLETED",
+              planner: "LLM",
+              fallbackUsed: false,
+              executedAt: "2026-10-26T14:30:02Z",
+            },
+          ],
         },
-      });
-      if (!response.ok) {
-        const errJson = await response.json().catch(() => ({}));
-        return { runs: [], isLive: false, error: errJson.detail || `HTTP ${response.status} fetching runs` };
-      }
-      const data = await response.json();
-      return { runs: data, isLive: true, error: null };
-    } catch (err) {
-      return { runs: [], isLive: false, error: err.message };
-    }
+      ],
+      isLive: false,
+      error: null,
+    };
   }
 
-  await delay(300);
-  // Labelled mock demonstration runs
-  return {
-    runs: [
-      {
-        runId: "demo-run-001",
-        applicationId: "SE20260001",
-        status: "COMPLETED",
-        outcome: "WAITING_FOR_APPLICANT",
-        currentApplicationStatus: "WAITING_FOR_DOCUMENTS",
-        stepsCompleted: 2,
-        summary: "Missing required documents detected; application safely transitioned to WAITING_FOR_DOCUMENTS.",
-        planner: "LLM",
-        fallbackOccurred: false,
-        fallbackCount: 0,
-        startedAt: "2026-10-26T14:30:00Z",
-        completedAt: "2026-10-26T14:30:02Z",
-        isDemoMock: true,
-        steps: [
-          {
-            stepIndex: 1,
-            stage: "ACT",
-            tool: "check_document_completeness",
-            action: "Inspect uploaded documents against programme requirements",
-            resultSummary: "4 of 6 required documents present. Missing: 12TH_MARKSHEET, TRANSFER_CERTIFICATE",
-            status: "COMPLETED",
-            planner: "LLM",
-            fallbackUsed: false,
-            executedAt: "2026-10-26T14:30:01Z",
-          },
-          {
-            stepIndex: 2,
-            stage: "ACT",
-            tool: "update_application_status",
-            action: "Update application status to WAITING_FOR_DOCUMENTS",
-            resultSummary: "Application SE20260001 status updated from SUBMITTED to WAITING_FOR_DOCUMENTS.",
-            status: "COMPLETED",
-            planner: "LLM",
-            fallbackUsed: false,
-            executedAt: "2026-10-26T14:30:02Z",
-          },
-        ],
-      },
-      {
-        runId: "demo-run-002",
-        applicationId: "SE20260002",
-        status: "COMPLETED",
-        outcome: "WAITING_FOR_APPLICANT",
-        currentApplicationStatus: "WAITING_FOR_DOCUMENTS",
-        stepsCompleted: 2,
-        summary: "Model proposed invalid tool call for missing documents; domain guardrail (Rule 2) triggered safe deterministic fallback.",
-        planner: "LLM",
-        fallbackOccurred: true,
-        fallbackCount: 1,
-        startedAt: "2026-10-26T15:10:00Z",
-        completedAt: "2026-10-26T15:10:03Z",
-        isDemoMock: true,
-        steps: [
-          {
-            stepIndex: 1,
-            stage: "ACT",
-            tool: "check_document_completeness",
-            action: "Inspect uploaded documents",
-            resultSummary: "5 of 6 required documents present",
-            status: "COMPLETED",
-            planner: "LLM",
-            fallbackUsed: false,
-            executedAt: "2026-10-26T15:10:01Z",
-          },
-          {
-            stepIndex: 2,
-            stage: "ACT",
-            tool: "update_application_status",
-            action: "Transition to WAITING_FOR_DOCUMENTS via deterministic fallback",
-            resultSummary: "Fallback updated status safely after out-of-policy model proposal was rejected.",
-            status: "COMPLETED",
-            planner: "FALLBACK",
-            fallbackUsed: true,
-            fallbackReason: "Model proposed request_missing_document before status transition; rejected by Rule 2 guardrail.",
-            executedAt: "2026-10-26T15:10:03Z",
-          },
-        ],
-      },
-      {
-        runId: "demo-run-003",
-        applicationId: "SE20260003",
-        status: "COMPLETED",
-        outcome: "DEPENDENCY_PENDING",
-        currentApplicationStatus: "ELIGIBILITY_CHECK",
-        stepsCompleted: 3,
-        summary: "Verification completed; academic eligibility check paused awaiting Increment 16 engine.",
-        planner: "DETERMINISTIC",
-        fallbackOccurred: false,
-        fallbackCount: 0,
-        startedAt: "2026-10-26T16:00:00Z",
-        completedAt: "2026-10-26T16:00:04Z",
-        isDemoMock: true,
-        steps: [
-          {
-            stepIndex: 1,
-            stage: "ACT",
-            tool: "check_document_completeness",
-            action: "Verify all 6 documents present",
-            resultSummary: "6 of 6 required documents present. Complete.",
-            status: "COMPLETED",
-            planner: "DETERMINISTIC",
-            fallbackUsed: false,
-            executedAt: "2026-10-26T16:00:01Z",
-          },
-          {
-            stepIndex: 2,
-            stage: "ACT",
-            tool: "verify_document",
-            action: "Validate degree certificate extractions",
-            resultSummary: "Layer 2 validation completed: VALIDATED",
-            status: "COMPLETED",
-            planner: "DETERMINISTIC",
-            fallbackUsed: false,
-            executedAt: "2026-10-26T16:00:03Z",
-          },
-          {
-            stepIndex: 3,
-            stage: "ACT",
-            tool: "check_eligibility",
-            action: "Evaluate candidate against programme requirements",
-            resultSummary: "Deterministic eligibility evaluation service is pending backend implementation in Increment 16.",
-            status: "DEPENDENCY_PENDING",
-            planner: "DETERMINISTIC",
-            fallbackUsed: false,
-            executedAt: "2026-10-26T16:00:04Z",
-          },
-        ],
-      },
-    ],
-    isLive: false,
-    error: null,
-  };
+  try {
+    const headers = token ? { Authorization: `Bearer ${token}` } : {};
+    const data = await apiClient.get("/agents/runs", { headers });
+    return { runs: data || [], isLive: true, error: null };
+  } catch (err) {
+    return { runs: [], isLive: false, error: err.message };
+  }
 }
 
 // POST `${BASE_URL}/agents/orchestrate/{application_id}`
 export async function triggerAgentOrchestration(applicationId, token) {
-  if (!token || false) {
-    throw new Error(
-      "A real backend JWT token is required to execute autonomous orchestration. " +
-      "Mock credentials cannot authenticate against the FastAPI orchestrator."
-    );
-  }
-
-  const response = await fetch(`${BASE_URL}/agents/orchestrate/${applicationId}`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${token}`,
-    },
-  });
-
-  if (!response.ok) {
-    const errJson = await response.json().catch(() => ({}));
-    throw new Error(errJson.detail || `Orchestration trigger failed (${response.status}).`);
-  }
-
-  return await response.json();
+  const headers = token ? { Authorization: `Bearer ${token}` } : {};
+  return await apiClient.post(`/agents/orchestrate/${applicationId}`, {}, { headers });
 }
 
 // Backend Admin Login (for live evaluator connection)
