@@ -387,22 +387,37 @@ def test_evidence_hierarchy_ignores_declared_form_values_alone():
     assert res.status == "INELIGIBLE"
 
 
-def test_document_completeness_failure_leads_to_ineligible():
-    """Missing or unvalidated documents fail the DOCUMENT_COMPLETENESS rule."""
+def test_document_completeness_incomplete_leads_to_needs_review():
+    """
+    Missing, unvalidated, or mismatched required documents give NEEDS_REVIEW (incomplete), not FAILED.
+    Explicitly tests zero documents and one unvalidated document.
+    """
     rules_mca = get_canonical_rule("mca")
     app = {"applicationId": "APP-001"}
 
-    # 1. One document unvalidated
-    docs_unvalidated = build_test_documents(all_validated=False)
-    res_unval = evaluate_eligibility(rules_mca, app, docs_unvalidated)
-    assert res_unval.status == "INELIGIBLE"
-    doc_rule = next(r for r in res_unval.rules if r.ruleId == "DOCUMENT_COMPLETENESS")
-    assert doc_rule.result == "FAILED"
+    # 1. Zero documents provided
+    res_zero = evaluate_eligibility(rules_mca, app, [])
+    assert res_zero.status == "NEEDS_REVIEW"
+    doc_rule_zero = next(r for r in res_zero.rules if r.ruleId == "DOCUMENT_COMPLETENESS")
+    assert doc_rule_zero.result == "NEEDS_REVIEW"
+    assert "Missing or unvalidated" in doc_rule_zero.reason
 
-    # 2. Missing degree certificate completely
+    # 2. One unvalidated document (5 validated, 1 with validationStatus="MANUAL_REVIEW")
+    docs_all = build_test_documents(all_validated=True)
+    docs_one_unval = [copy.deepcopy(d) for d in docs_all]
+    docs_one_unval[0]["validationStatus"] = "MANUAL_REVIEW"
+    res_one_unval = evaluate_eligibility(rules_mca, app, docs_one_unval)
+    assert res_one_unval.status == "NEEDS_REVIEW"
+    doc_rule_unval = next(r for r in res_one_unval.rules if r.ruleId == "DOCUMENT_COMPLETENESS")
+    assert doc_rule_unval.result == "NEEDS_REVIEW"
+    assert "Missing or unvalidated 1 required document" in doc_rule_unval.reason
+
+    # 3. Missing degree certificate completely
     docs_missing = [d for d in build_test_documents() if d["documentType"] != "DEGREE_CERTIFICATE"]
     res_missing = evaluate_eligibility(rules_mca, app, docs_missing)
-    assert res_missing.status == "INELIGIBLE"
+    assert res_missing.status == "NEEDS_REVIEW"
+    doc_rule_missing = next(r for r in res_missing.rules if r.ruleId == "DOCUMENT_COMPLETENESS")
+    assert doc_rule_missing.result == "NEEDS_REVIEW"
 
 
 def test_degree_level_mismatch_and_fallback_to_ug_marksheet():

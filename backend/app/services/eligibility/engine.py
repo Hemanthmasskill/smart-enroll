@@ -271,8 +271,8 @@ def evaluate_eligibility(
                     "validatedTypes": sorted(list(validated_docs_by_type.keys())),
                     "missingTypes": sorted(missing_docs),
                 },
-                result="FAILED",
-                reason=f"Missing {len(missing_docs)} required validated document(s): {', '.join(sorted(missing_docs))}.",
+                result="NEEDS_REVIEW",
+                reason=f"Missing or unvalidated {len(missing_docs)} required document(s): {', '.join(sorted(missing_docs))}; incomplete document set.",
                 evidence=doc_evidence,
             )
         )
