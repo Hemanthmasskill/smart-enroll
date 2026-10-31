@@ -309,11 +309,11 @@ def test_dependency_pending_tools_do_not_fabricate_results(applicant_auth, clean
     app_id = applicant_auth["application"]["applicationId"]
     user = applicant_auth["user"]
 
-    # Tool 8: check_eligibility -> depends on Increment 16
+    # Tool 8: check_eligibility -> Increment 16 deterministic engine replaces stub.
+    # When application is in DRAFT, check_eligibility fails deterministically (not permitted in DRAFT).
     res_elig = tool_check_eligibility(clean_db, user, app_id)
-    assert res_elig.status == ToolStatus.DEPENDENCY_PENDING.value
-    assert res_elig.dependency == "Increment 16: Eligibility Engine"
-    assert "Increment 16" in res_elig.message
+    assert res_elig.status == ToolStatus.FAILED.value
+    assert "ELIGIBILITY_CHECK" in res_elig.message
 
     # Tool 9: create_exception -> depends on Increment 17
     res_exc = tool_create_exception(clean_db, user, app_id, "MISSING_DOCUMENT", "Missing Transfer Certificate")
@@ -568,18 +568,16 @@ def test_eligible_or_ineligible_requires_deterministic_result(admin_auth, applic
         assert res.status == ToolStatus.COMPLETED.value
 
     # Application is in ELIGIBILITY_CHECK with no deterministic eligibilityResult in MongoDB
-    # 5a. Attempt transition to ELIGIBLE
+    # 5a. Attempt transition to ELIGIBLE without deterministic result fails
     res_el = tool_update_application_status(clean_db, admin_auth["user"], app_id, "ELIGIBLE")
-    assert res_el.status == ToolStatus.DEPENDENCY_PENDING.value
-    assert res_el.dependency == "Increment 16: Eligibility Engine"
-    assert "Increment 16" in res_el.message
+    assert res_el.status == ToolStatus.FAILED.value
+    assert "deterministic eligibility evaluation" in res_el.message
     assert clean_db["applications"].find_one({"applicationId": app_id})["status"] == "ELIGIBILITY_CHECK"
 
-    # 5b. Attempt transition to INELIGIBLE
+    # 5b. Attempt transition to INELIGIBLE without deterministic result fails
     res_inel = tool_update_application_status(clean_db, admin_auth["user"], app_id, "INELIGIBLE")
-    assert res_inel.status == ToolStatus.DEPENDENCY_PENDING.value
-    assert res_inel.dependency == "Increment 16: Eligibility Engine"
-    assert "Increment 16" in res_inel.message
+    assert res_inel.status == ToolStatus.FAILED.value
+    assert "deterministic eligibility evaluation" in res_inel.message
     assert clean_db["applications"].find_one({"applicationId": app_id})["status"] == "ELIGIBILITY_CHECK"
 
 
@@ -907,12 +905,19 @@ def test_authorized_audit_log_queries(api_client, applicant_auth, admin_auth, cl
 # Task 15.2: Autonomous Orchestrator Loop Tests
 # =====================================================================
 
-def upload_all_six_documents(api_client, applicant_auth, app_id, mismatch_marksheet: bool = False):
+def upload_all_six_documents(
+    api_client,
+    applicant_auth,
+    app_id,
+    mismatch_marksheet: bool = False,
+    include_math: bool = True,
+):
     """Helper to upload all 6 required canonical documents."""
     marksheet_name = "Candidate Name: Ramesh Kumar" if mismatch_marksheet else "Candidate Name: Hemanth M.P."
+    math_line = "Mathematics: 95 / 100" if include_math else "General Knowledge: 75 / 100"
     docs_to_upload = [
         ("10TH_MARKSHEET", ["Secondary School Certificate", marksheet_name, "Date of Birth: 15/05/2000", "Marks: 432 / 500", "Percentage: 86.4%", "State Board of Secondary Education"]),
-        ("12TH_MARKSHEET", ["Higher Secondary Certificate", "Candidate Name: Hemanth M.P.", "Date of Birth: 15/05/2000", "Marks: 440 / 500", "Percentage: 88.0%", "State Board of Higher Secondary"]),
+        ("12TH_MARKSHEET", ["Higher Secondary Certificate", "Candidate Name: Hemanth M.P.", "Date of Birth: 15/05/2000", "Marks: 440 / 500", "Percentage: 88.0%", math_line, "State Board of Higher Secondary"]),
         ("UG_MARKSHEET", ["Bachelor of Computer Applications Marksheet", "Candidate Name: Hemanth M.P.", "Date of Birth: 15/05/2000", "CGPA: 8.5", "Graduation Year: 2022", "University: Crescent"]),
         ("DEGREE_CERTIFICATE", ["B.S. Abdur Rahman Crescent Institute of Science and Technology", "Degree of Bachelor of Computer Applications", "Candidate Name: Hemanth M.P.", "Conferred: 2022"]),
         ("TRANSFER_CERTIFICATE", ["Transfer Certificate", "Student Name: Hemanth M.P.", "Date of Birth: 15/05/2000", "Conduct: Good"]),
@@ -961,15 +966,14 @@ def test_orchestration_successful_multi_step_path(api_client, applicant_auth, cl
     app_id = applicant_auth["application"]["applicationId"]
 
     clean_db["applications"].update_one({"applicationId": app_id}, {"$set": {"status": "SUBMITTED"}})
-    upload_all_six_documents(api_client, applicant_auth, app_id)
+    upload_all_six_documents(api_client, applicant_auth, app_id, include_math=True)
 
     orchestrator = AgentOrchestrator(db=clean_db)
     res = orchestrator.run(app_id, applicant_auth["user"])
 
-    assert res.outcome == OrchestrationOutcome.DEPENDENCY_PENDING
-    assert res.pendingDependency == "Increment 16: Eligibility Engine"
-    assert res.currentApplicationStatus == "ELIGIBILITY_CHECK"
-    assert clean_db["applications"].find_one({"applicationId": app_id})["status"] == "ELIGIBILITY_CHECK"
+    assert res.outcome == OrchestrationOutcome.COMPLETED
+    assert res.currentApplicationStatus == "PROCESSING_COMPLETE"
+    assert clean_db["applications"].find_one({"applicationId": app_id})["status"] == "PROCESSING_COMPLETE"
     assert res.stepsCompleted >= 8
 
 
@@ -1029,21 +1033,22 @@ def test_orchestration_ocr_failure_does_not_trigger_false_verification(api_clien
     assert clean_db["applications"].find_one({"applicationId": app_id})["status"] == "EXCEPTION"
 
 
-# 6. Eligibility dependency-pending does not mark the application eligible.
+# 6. Eligibility evaluation requiring review does not mark the application eligible.
 def test_orchestration_eligibility_dependency_pending_does_not_mark_eligible(api_client, applicant_auth, clean_db):
     app_id = applicant_auth["application"]["applicationId"]
 
     clean_db["applications"].update_one({"applicationId": app_id}, {"$set": {"status": "SUBMITTED"}})
-    upload_all_six_documents(api_client, applicant_auth, app_id)
+    upload_all_six_documents(api_client, applicant_auth, app_id, include_math=False)
 
     orchestrator = AgentOrchestrator(db=clean_db)
     res = orchestrator.run(app_id, applicant_auth["user"])
 
-    assert res.outcome == OrchestrationOutcome.DEPENDENCY_PENDING
-    assert clean_db["applications"].find_one({"applicationId": app_id})["status"] == "ELIGIBILITY_CHECK"
+    assert res.outcome == OrchestrationOutcome.MANUAL_REVIEW_REQUIRED
+    assert res.currentApplicationStatus == "EXCEPTION"
+    assert clean_db["applications"].find_one({"applicationId": app_id})["status"] == "EXCEPTION"
     # Must NOT be marked ELIGIBLE or INELIGIBLE or PROCESSING_COMPLETE
     final_status = clean_db["applications"].find_one({"applicationId": app_id})["status"]
-    assert final_status not in ("ELIGIBLE", "INELIGIBLE", "PROCESSING_COMPLETE")
+    assert final_status not in ("ELIGIBLE", "PROCESSING_COMPLETE")
 
 
 # 7. Notification/exception dependencies do not fabricate records.
@@ -1470,16 +1475,16 @@ def test_orchestration_lifecycle_status_and_outcome_mapping(api_client, applican
     assert run_doc_waiting["status"] == OrchestrationRunStatus.COMPLETED.value
     assert run_doc_waiting["outcome"] == OrchestrationOutcome.WAITING_FOR_APPLICANT.value
 
-    # 2. DEPENDENCY_PENDING outcome -> lifecycle status is COMPLETED
-    upload_all_six_documents(api_client, applicant_auth, app_id)
+    # 2. Multi-step outcome -> lifecycle status is COMPLETED
+    upload_all_six_documents(api_client, applicant_auth, app_id, include_math=True)
     clean_db["applications"].update_one({"applicationId": app_id}, {"$set": {"status": "SUBMITTED"}})
     res_dep = AgentOrchestrator(db=clean_db).run(app_id, applicant_auth["user"])
-    assert res_dep.outcome == OrchestrationOutcome.DEPENDENCY_PENDING
+    assert res_dep.outcome == OrchestrationOutcome.COMPLETED
     assert res_dep.status == OrchestrationRunStatus.COMPLETED
 
     run_doc_dep = clean_db["orchestration_runs"].find_one({"runId": res_dep.runId})
     assert run_doc_dep["status"] == OrchestrationRunStatus.COMPLETED.value
-    assert run_doc_dep["outcome"] == OrchestrationOutcome.DEPENDENCY_PENDING.value
+    assert run_doc_dep["outcome"] == OrchestrationOutcome.COMPLETED.value
 
     # 3. All runs cleared the partial unique index on RUNNING
     running_runs = list(clean_db["orchestration_runs"].find({"applicationId": app_id, "status": "RUNNING"}))

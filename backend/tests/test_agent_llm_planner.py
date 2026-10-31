@@ -1661,6 +1661,7 @@ def test_agent_system_status_endpoint(clean_db):
     admin_id = ObjectId()
     applicant_id = ObjectId()
 
+    clean_db["users"].delete_many({"email": {"$in": ["admin-sys-status@example.com", "applicant-sys-status@example.com"]}})
     clean_db["users"].insert_one({
         "_id": admin_id,
         "email": "admin-sys-status@example.com",

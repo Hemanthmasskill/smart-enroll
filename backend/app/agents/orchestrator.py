@@ -320,17 +320,53 @@ def compute_expected_action(
             None,
         )
 
-    # 5. ELIGIBILITY_CHECK: invoke check_eligibility (Increment 16 dependency)
+    # 5. ELIGIBILITY_CHECK: invoke check_eligibility or advance based on deterministic result (Increment 16)
     if status == "ELIGIBILITY_CHECK":
-        return (
-            PlannedAction(
-                tool=ToolName.CHECK_ELIGIBILITY,
-                parameters={"application_id": app_id},
-                rationale="Evaluating academic admission eligibility for programme.",
-            ),
-            None,
-            None,
-        )
+        if not observation.eligibility_result:
+            return (
+                PlannedAction(
+                    tool=ToolName.CHECK_ELIGIBILITY,
+                    parameters={"application_id": app_id},
+                    rationale="Evaluating academic admission eligibility against canonical programme rules.",
+                ),
+                None,
+                None,
+            )
+        elig_status = observation.eligibility_result.get("status")
+        if elig_status == "ELIGIBLE":
+            return (
+                PlannedAction(
+                    tool=ToolName.UPDATE_APPLICATION_STATUS,
+                    parameters={"application_id": app_id, "new_status": "ELIGIBLE"},
+                    rationale="Academic eligibility verified. Advancing status to ELIGIBLE.",
+                ),
+                None,
+                None,
+            )
+        elif elig_status == "INELIGIBLE":
+            return (
+                PlannedAction(
+                    tool=ToolName.UPDATE_APPLICATION_STATUS,
+                    parameters={"application_id": app_id, "new_status": "INELIGIBLE"},
+                    rationale="Application determined to be INELIGIBLE based on deterministic rules.",
+                ),
+                None,
+                None,
+            )
+        elif elig_status == "NEEDS_REVIEW":
+            # NEEDS_REVIEW moves the application to EXCEPTION with outcome MANUAL_REVIEW_REQUIRED;
+            # creating the exception record stays DEPENDENCY_PENDING (Increment 17).
+            return (
+                PlannedAction(
+                    tool=ToolName.UPDATE_APPLICATION_STATUS,
+                    parameters={"application_id": app_id, "new_status": "EXCEPTION"},
+                    rationale="Eligibility evaluation requires manual review. Moving application to EXCEPTION.",
+                    is_terminal=True,
+                    terminal_outcome=OrchestrationOutcome.MANUAL_REVIEW_REQUIRED,
+                ),
+                OrchestrationOutcome.MANUAL_REVIEW_REQUIRED,
+                "Eligibility evaluation requires manual review. Application routed to exception management.",
+            )
 
     # 6. EXCEPTION state: requires manual administrative intervention
     if status == "EXCEPTION":

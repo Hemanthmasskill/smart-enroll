@@ -128,6 +128,7 @@ ALLOWED_TOOLS_BY_STATUS = {
         ToolName.CHECK_ELIGIBILITY.value,
         ToolName.GET_APPLICATION.value,
         ToolName.GET_PROGRAM_REQUIREMENTS.value,
+        ToolName.UPDATE_APPLICATION_STATUS.value,
     },
     "EXCEPTION": {
         ToolName.CREATE_EXCEPTION.value,
@@ -151,7 +152,7 @@ ALLOWED_TERMINAL_OUTCOMES_BY_STATUS = {
     "WAITING_FOR_DOCUMENTS": {OrchestrationOutcome.WAITING_FOR_APPLICANT},
     "PROCESSING": {OrchestrationOutcome.MANUAL_REVIEW_REQUIRED, OrchestrationOutcome.WAITING_FOR_APPLICANT},
     "VERIFICATION_IN_PROGRESS": set(),
-    "ELIGIBILITY_CHECK": {OrchestrationOutcome.DEPENDENCY_PENDING},
+    "ELIGIBILITY_CHECK": {OrchestrationOutcome.DEPENDENCY_PENDING, OrchestrationOutcome.MANUAL_REVIEW_REQUIRED},
     "EXCEPTION": {OrchestrationOutcome.MANUAL_REVIEW_REQUIRED},
     "ELIGIBLE": {OrchestrationOutcome.COMPLETED, OrchestrationOutcome.DEPENDENCY_PENDING},
     "INELIGIBLE": {OrchestrationOutcome.COMPLETED, OrchestrationOutcome.DEPENDENCY_PENDING},
@@ -542,11 +543,12 @@ class LLMPlanningStrategy(PlanningStrategy):
                 or bool(observation.failed_documents)
                 or bool(observation.mismatched_documents)
                 or bool(observation.manual_review_documents)
+                or (bool(observation.eligibility_result) and observation.eligibility_result.get("status") == "NEEDS_REVIEW")
             )
             if not has_independent_evidence:
                 raise ValueError(
                     f"Invalid terminal outcome: 'MANUAL_REVIEW_REQUIRED' requires independent workflow evidence "
-                    f"(existing EXCEPTION status, failed documents, validation mismatches, or manual-review documents). "
+                    f"(existing EXCEPTION status, failed documents, validation mismatches, manual-review documents, or eligibility NEEDS_REVIEW). "
                     f"Current status '{observation.current_status}' lacks independent failure or exception evidence."
                 )
 
@@ -656,8 +658,15 @@ class LLMPlanningStrategy(PlanningStrategy):
                         f"Document ID '{doc_id}' is not in unprocessed documents list for application '{observation.application_id}'."
                     )
 
-        # Hard-gate on ELIGIBILITY_CHECK
-        if (tool_clean == ToolName.CHECK_ELIGIBILITY.value) or (
+        # Hard-gate on CHECK_ELIGIBILITY tool invocation
+        if tool_clean == ToolName.CHECK_ELIGIBILITY.value:
+            if observation.current_status != "ELIGIBILITY_CHECK":
+                raise ValueError(
+                    f"Forbidden transition: check_eligibility can only be executed when application is in 'ELIGIBILITY_CHECK' status (current status: '{observation.current_status}')."
+                )
+
+        # Hard-gate on transition to ELIGIBILITY_CHECK
+        if (
             tool_clean == ToolName.UPDATE_APPLICATION_STATUS.value
             and proposal.parameters.get("new_status") == "ELIGIBILITY_CHECK"
         ):
@@ -760,11 +769,12 @@ class LLMPlanningStrategy(PlanningStrategy):
             if not new_status or new_status not in ALLOWED_APPLICATION_STATUSES:
                 raise ValueError(f"Invalid or missing new_status '{new_status}' in application status update.")
 
-            # Model cannot jump directly to ELIGIBLE or INELIGIBLE
+            # Model cannot jump directly to ELIGIBLE or INELIGIBLE without matching deterministic result
             if new_status in ("ELIGIBLE", "INELIGIBLE"):
-                raise ValueError(
-                    f"Forbidden transition: Model cannot arbitrarily set status to '{new_status}'. Must invoke check_eligibility."
-                )
+                if not observation.eligibility_result or observation.eligibility_result.get("status") != new_status:
+                    raise ValueError(
+                        f"Forbidden transition: Model cannot arbitrarily set status to '{new_status}'. Must invoke check_eligibility."
+                    )
 
             # Model cannot jump to PROCESSING_COMPLETE without deterministic eligibility result
             if new_status == "PROCESSING_COMPLETE" and not observation.eligibility_result:
@@ -789,6 +799,7 @@ class LLMPlanningStrategy(PlanningStrategy):
                 or bool(observation.failed_documents)
                 or bool(observation.mismatched_documents)
                 or bool(observation.manual_review_documents)
+                or (bool(observation.eligibility_result) and observation.eligibility_result.get("status") == "NEEDS_REVIEW")
             ):
                 raise ValueError(
                     "Forbidden transition: Cannot transition application to 'EXCEPTION' without independent evidence of "

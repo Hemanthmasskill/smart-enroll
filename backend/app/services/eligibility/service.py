@@ -101,7 +101,7 @@ def run_eligibility_evaluation(
         )
 
     # Append to append-only eligibility_evaluations collection (D8)
-    user_id = str(current_user.get("_id") or current_user.get("id"))
+    user_id = str(current_user.get("_id") or current_user.get("id") or current_user.get("sub") or "orchestrator")
     eval_record = {
         "evaluationId": f"EVAL-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-{secrets.token_hex(4)}",
         "applicationId": application_id,
