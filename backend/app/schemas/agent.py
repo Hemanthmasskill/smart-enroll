@@ -143,8 +143,8 @@ class OrchestrationRunResponse(BaseModel):
         default=OrchestrationRunStatus.COMPLETED,
         description="Execution lifecycle status (RUNNING, COMPLETED, FAILED, ABORTED)",
     )
-    outcome: OrchestrationOutcome = Field(
-        ...,
+    outcome: OrchestrationOutcome | None = Field(
+        default=None,
         description="Business workflow outcome (COMPLETED, WAITING_FOR_APPLICANT, MANUAL_REVIEW_REQUIRED, DEPENDENCY_PENDING, FAILED, ALREADY_RUNNING)",
     )
     currentApplicationStatus: str | None = None

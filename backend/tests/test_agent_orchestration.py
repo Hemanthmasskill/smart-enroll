@@ -2529,3 +2529,107 @@ def test_list_orchestration_runs_backward_compatibility_with_legacy_records(api_
     validated = OrchestrationRunResponse.model_validate(legacy_dict)
     assert validated.currentApplicationStatus is None
     assert validated.currentStage == "ACT"
+
+
+def test_list_orchestration_runs_active_and_recovering_null_outcome(api_client, admin_auth, clean_db):
+    """
+    Ensure active (RUNNING) and recovering (RECOVERING) orchestration runs
+    with outcome=None validate cleanly across Pydantic schemas, GET /agents/runs,
+    and GET /agents/orchestrate/runs/{run_id}.
+    """
+    clean_db["orchestration_runs"].delete_many({})
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    # 1. RUNNING run with outcome=None (persisted initially by _claim_or_recover_run)
+    clean_db["orchestration_runs"].insert_one({
+        "runId": "run-active-01",
+        "applicationId": "SE20261001",
+        "status": OrchestrationRunStatus.RUNNING.value,
+        "outcome": None,
+        "currentApplicationStatus": "PROCESSING",
+        "stepsCompleted": 0,
+        "summary": "Orchestration in progress",
+        "startedAt": now_iso,
+        "completedAt": None,
+        "steps": [],
+        "planner": "DETERMINISTIC",
+    })
+
+    # 2. RECOVERING run with outcome=None (persisted during stale run recovery)
+    clean_db["orchestration_runs"].insert_one({
+        "runId": "run-recovering-02",
+        "applicationId": "SE20261002",
+        "status": OrchestrationRunStatus.RECOVERING.value,
+        "outcome": None,
+        "currentApplicationStatus": "WAITING_FOR_DOCUMENTS",
+        "stepsCompleted": 2,
+        "summary": "Stale run undergoing recovery",
+        "startedAt": now_iso,
+        "completedAt": None,
+        "steps": [],
+        "planner": "DETERMINISTIC",
+    })
+
+    # 3. COMPLETED run with normal outcome
+    clean_db["orchestration_runs"].insert_one({
+        "runId": "run-completed-03",
+        "applicationId": "SE20261003",
+        "status": OrchestrationRunStatus.COMPLETED.value,
+        "outcome": OrchestrationOutcome.COMPLETED.value,
+        "currentApplicationStatus": "PROCESSING_COMPLETE",
+        "stepsCompleted": 5,
+        "summary": "Orchestration completed successfully",
+        "startedAt": now_iso,
+        "completedAt": now_iso,
+        "steps": [],
+        "planner": "DETERMINISTIC",
+    })
+
+    # Execute endpoint call as admin to fetch recent runs
+    res = api_client.get("/api/v1/agents/runs", headers=admin_auth["headers"])
+    assert res.status_code == 200, f"Expected 200 but got {res.status_code}: {res.text}"
+    runs_by_id = {r["runId"]: r for r in res.json()}
+
+    # Assert active run returns 200 and outcome is None
+    active = runs_by_id["run-active-01"]
+    assert active["status"] == "RUNNING"
+    assert active["outcome"] is None
+    assert active["currentApplicationStatus"] == "PROCESSING"
+
+    # Assert recovering run returns 200 and outcome is None
+    recovering = runs_by_id["run-recovering-02"]
+    assert recovering["status"] == "RECOVERING"
+    assert recovering["outcome"] is None
+    assert recovering["currentApplicationStatus"] == "WAITING_FOR_DOCUMENTS"
+
+    # Assert completed run returns 200 and outcome is COMPLETED
+    completed = runs_by_id["run-completed-03"]
+    assert completed["status"] == "COMPLETED"
+    assert completed["outcome"] == "COMPLETED"
+    assert completed["currentApplicationStatus"] == "PROCESSING_COMPLETE"
+
+    # Single-run endpoint check for the active run
+    single_res = api_client.get(
+        "/api/v1/agents/orchestrate/runs/run-active-01",
+        headers=admin_auth["headers"],
+    )
+    assert single_res.status_code == 200, f"Expected 200 but got {single_res.status_code}: {single_res.text}"
+    single_run = single_res.json()
+    assert single_run["runId"] == "run-active-01"
+    assert single_run["status"] == "RUNNING"
+    assert single_run["outcome"] is None
+
+    # Direct Pydantic model validation with outcome=None
+    direct_dict = {
+        "runId": "run-direct-active",
+        "applicationId": "SE20269998",
+        "status": "RUNNING",
+        "outcome": None,
+        "stepsCompleted": 0,
+        "summary": "Active run direct validation",
+        "startedAt": now_iso,
+    }
+    validated = OrchestrationRunResponse.model_validate(direct_dict)
+    assert validated.status == OrchestrationRunStatus.RUNNING
+    assert validated.outcome is None
