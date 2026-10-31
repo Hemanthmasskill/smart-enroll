@@ -1,0 +1,84 @@
+name: CI
+
+on:
+  push:
+    branches: [main, hardening/*, feature/*]
+  pull_request:
+    branches: [main]
+
+jobs:
+  backend-tests:
+    name: Backend Test Suite & Coverage
+    runs-on: ubuntu-latest
+
+    services:
+      mongodb:
+        image: mongo:6.0
+        ports:
+          - 27017:27017
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install System Dependencies (Tesseract OCR)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y tesseract-ocr tesseract-ocr-tam tesseract-ocr-hin
+
+      - name: Install Python Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements.txt -r backend/requirements-dev.txt pytest-cov
+
+      - name: Run Pytest with Coverage
+        env:
+          MONGODB_URI: mongodb://localhost:27017
+          DATABASE_NAME: smartenroll_test
+          TEST_DATABASE_NAME: smartenroll_test
+          SECRET_KEY: ci-environment-test-secret-key-at-least-32-chars!
+          STORAGE_DIR: backend/storage/test_documents
+          RATE_LIMIT_ENABLED: "false"
+          ENABLE_DEV_SEED: "false"
+        run: |
+          PYTHONPATH=backend pytest backend/tests \
+            --cov=backend/app/agents \
+            --cov=backend/app/api \
+            --cov=backend/app/services/application \
+            --cov-report=term-missing \
+            --cov-fail-under=80
+
+  frontend-build-and-test:
+    name: Frontend Build & Cypress Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: "npm"
+
+      - name: Install Node Dependencies
+        run: npm ci
+
+      - name: Verify Production Build
+        run: npm run build
+
+      - name: Run Cypress Test Suite (Mock Mode)
+        env:
+          VITE_USE_MOCKS: "true"
+          VITE_API_BASE_URL: "http://localhost:8000/api/v1"
+        run: |
+          npm run dev &
+          npx wait-on http://localhost:5173
+          npx cypress run
