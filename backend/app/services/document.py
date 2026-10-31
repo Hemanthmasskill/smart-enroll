@@ -30,6 +30,7 @@ from app.schemas.verification import (
     DocumentVerificationDetailsResponse,
 )
 from app.services.ocr import OCREngine, run_document_processing_pipeline
+from app.services.scanner import get_upload_scanner
 from app.services.verification import (
     SyntheticAuthoritativeVerificationProvider,
     validate_document_content,
@@ -300,6 +301,19 @@ async def upload_document(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to write file to storage.",
+        )
+
+    # Security scan hook (Requirement M5)
+    scanner = get_upload_scanner()
+    is_clean, scan_msg = scanner.scan_file(target_path)
+    if not is_clean:
+        try:
+            target_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Security scan rejected uploaded document: {scan_msg}",
         )
 
     now = datetime.now(timezone.utc).isoformat()

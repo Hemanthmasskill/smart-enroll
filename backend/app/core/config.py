@@ -32,6 +32,12 @@ class Settings(BaseSettings):
     RATE_LIMIT_ENABLED: bool = True
     MAX_CONCURRENT_OCR_WORKERS: int = 4
 
+    # Data Retention & Upload Security (Hardening Requirement M5)
+    # Retention period in days for abandoned draft applications and unlinked temporary files
+    # Encryption-at-Rest Notice: STORAGE_DIR must be hosted on an encrypted volume (e.g., LUKS, BitLocker, or AWS EBS KMS).
+    RETENTION_DAYS: int = 30
+    UPLOAD_SCANNER: str = "noop"
+
     @property
     def storage_path(self) -> Path:
         p = Path(self.STORAGE_DIR)
