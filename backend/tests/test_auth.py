@@ -54,6 +54,7 @@ def clean_users_collection():
         assert db.name == "smartenroll_test"
         db["users"].delete_many({})
         db["users"].create_index("email", unique=True)
+        db["users"].create_index("applicant_id", unique=True, sparse=True)
         yield
         assert db.name == "smartenroll_test"
         db["users"].delete_many({})
@@ -98,7 +99,8 @@ def test_successful_applicant_registration():
         assert data["name"] == "Hemanth M.P."
         assert data["email"] == "hemanth@example.com"
         assert data["applicantId"].startswith("APL-")
-        assert len(data["applicantId"]) == 10  # APL- + 6 hex chars
+        # Task 2.2: secrets.token_hex(6) generates 12 hex chars -> 'APL-' + 12 chars = 16 chars
+        assert len(data["applicantId"]) == 16
         assert isinstance(data["token"], str)
         assert len(data["token"]) > 20
 
@@ -493,3 +495,58 @@ def test_create_admin_script():
         assert res.json()["name"] == "New Admin"
         assert res.json()["applicantId"] is None
 
+def test_applicant_id_cryptographically_secure_and_unique():
+    """
+    Regression test for H2 (Task 2.2):
+    Verify applicant ID format matches APL-[0-9A-F]{12} (12 hex characters),
+    and unique index prevents collisions.
+    """
+    import re
+    from scripts.migrate_applicant_ids import migrate_applicant_ids
+
+    with TestClient(app) as client:
+        res = client.post(
+            "/api/v1/auth/register",
+            json={
+                "fullName": "Secure Applicant",
+                "email": "secure.applicant@example.com",
+                "mobile": "9876543210",
+                "dob": "2000-01-01",
+                "password": "Password123!",
+            },
+        )
+        assert res.status_code == 201
+        data = res.json()
+        applicant_id = data["applicantId"]
+        assert re.match(r"^APL-[0-9A-F]{12}$", applicant_id), f"Unexpected ID format: {applicant_id}"
+
+        # Test migration script on clean database
+        db = get_db()
+        # Seed an applicant with legacy short ID
+        db["users"].insert_one({
+            "email": "legacy@example.com",
+            "hashed_password": "hash",
+            "full_name": "Legacy Applicant",
+            "role": "applicant",
+            "applicant_id": "APL-1234",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+
+        # Run migration in dry-run mode
+        dry_res = migrate_applicant_ids(apply_changes=False, db=db)
+        assert dry_res["needs_migration"] == 1
+        assert dry_res["migrated"] == 0
+
+        # Run migration in apply mode
+        apply_res = migrate_applicant_ids(apply_changes=True, db=db)
+        assert apply_res["needs_migration"] == 1
+        assert apply_res["migrated"] == 1
+
+        # Verify the legacy user now has a compliant ID
+        migrated_user = db["users"].find_one({"email": "legacy@example.com"})
+        assert re.match(r"^APL-[0-9A-F]{12}$", migrated_user["applicant_id"])
+
+        # Running again is idempotent
+        repeat_res = migrate_applicant_ids(apply_changes=True, db=db)
+        assert repeat_res["needs_migration"] == 0
+        assert repeat_res["migrated"] == 0

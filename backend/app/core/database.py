@@ -20,6 +20,7 @@ def connect_to_mongo():
     client = MongoClient(settings.MONGODB_URI)
     db = client[settings.DATABASE_NAME]
     db["users"].create_index("email", unique=True)
+    db["users"].create_index("applicant_id", unique=True, sparse=True)
 
     # Ensure unique index on applicationId, resolving any legacy duplicate seed records if present
     try:
