@@ -624,3 +624,73 @@ def test_jwt_claims_mandatory_iss_aud_tokenversion():
         res = client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {tok}"})
         assert res.status_code == 401
         assert "revoked or invalidated" in res.json()["detail"]
+
+
+# =====================================================================
+# Field-Length and Format Validation Tests (Follow-up Task 6)
+# =====================================================================
+
+def test_user_create_field_validation():
+    """Verify UserCreate rejects invalid field lengths and formats with 422."""
+    valid_payload = {
+        "fullName": "Valid Candidate",
+        "email": "candidate@example.com",
+        "mobile": "9876543210",
+        "dob": "2000-01-15",
+        "password": "StrongPassword123!",
+    }
+
+    with TestClient(app) as client:
+        # 1. Blank full name
+        bad_name = dict(valid_payload, fullName="   ")
+        res = client.post("/api/v1/auth/register", json=bad_name)
+        assert res.status_code == 422
+        # 2. Name exceeds 100 characters
+        too_long_name = dict(valid_payload, fullName="A" * 101)
+        res = client.post("/api/v1/auth/register", json=too_long_name)
+        assert res.status_code == 422
+        # 3. Invalid mobile length/format
+        bad_mobile = dict(valid_payload, mobile="12345")
+        res = client.post("/api/v1/auth/register", json=bad_mobile)
+        assert res.status_code == 422
+        bad_mobile_alpha = dict(valid_payload, mobile="98765abcde")
+        res = client.post("/api/v1/auth/register", json=bad_mobile_alpha)
+        assert res.status_code == 422
+        # 4. Invalid DOB format
+        bad_dob_slash = dict(valid_payload, dob="2000/01/15")
+        res = client.post("/api/v1/auth/register", json=bad_dob_slash)
+        assert res.status_code == 422
+        bad_dob_calendar = dict(valid_payload, dob="2000-02-31")
+        res = client.post("/api/v1/auth/register", json=bad_dob_calendar)
+        assert res.status_code == 422
+        # 5. Password length boundaries in schema
+        short_pwd = dict(valid_payload, password="Short1!")
+        res = client.post("/api/v1/auth/register", json=short_pwd)
+        assert res.status_code == 422
+        long_pwd = dict(valid_payload, password="A" * 129)
+        res = client.post("/api/v1/auth/register", json=long_pwd)
+        assert res.status_code == 422
+
+def test_user_login_field_validation():
+    """Verify UserLogin rejects invalid roles and oversized passwords with 422."""
+    with TestClient(app) as client:
+        # 1. Invalid role
+        res = client.post(
+            "/api/v1/auth/login",
+            json={"email": "login@example.com", "password": "Password123!", "role": "superuser"},
+        )
+        assert res.status_code == 422
+        assert "Invalid role" in str(res.json())
+
+        # 2. Oversized password (> 128 characters)
+        res = client.post(
+            "/api/v1/auth/login",
+            json={"email": "login@example.com", "password": "A" * 130, "role": "user"},
+        )
+        assert res.status_code == 422
+        # 3. Empty password
+        res = client.post(
+            "/api/v1/auth/login",
+            json={"email": "login@example.com", "password": "", "role": "user"},
+        )
+        assert res.status_code == 422
