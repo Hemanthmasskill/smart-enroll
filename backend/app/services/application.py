@@ -169,25 +169,10 @@ def update_application(
     app_update: ApplicationUpdate,
 ) -> dict:
     """
-    Update an existing application in DRAFT status.
+    Update an existing application in DRAFT status atomically.
     Applicant can update ONLY their own application while it is in DRAFT.
     Server-managed fields cannot be updated.
     """
-    app = db["applications"].find_one({"applicationId": application_id})
-    if not app:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Application not found",
-        )
-
-    assert_owner(app, current_user)
-
-    if app.get("status") != "DRAFT":
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Cannot edit an application that has already been submitted",
-        )
-
     updates = app_update.model_dump(exclude_unset=True)
     # Strip any protected fields that may have bypassed client validation
     for field in PROTECTED_FIELDS:
@@ -195,24 +180,58 @@ def update_application(
 
     updates["updatedAt"] = datetime.now(timezone.utc).isoformat()
 
+    user_id = str(current_user.get("_id") or current_user.get("id"))
+    is_admin = current_user.get("role") == "admin"
+
+    filter_query = {
+        "applicationId": application_id,
+        "status": "DRAFT",
+    }
+    if not is_admin:
+        filter_query["userId"] = user_id
+
     updated = db["applications"].find_one_and_update(
-        {"_id": app["_id"]},
+        filter_query,
         {"$set": updates},
         return_document=ReturnDocument.AFTER,
         projection={"_id": 0},
     )
+
+    if not updated:
+        existing = db["applications"].find_one({"applicationId": application_id})
+        if not existing:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Application not found",
+            )
+        if not is_admin and existing.get("userId") != user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Forbidden: access denied. Not authorized.",
+            )
+        curr_status = existing.get("status")
+        if curr_status != "DRAFT":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Cannot edit an application that has already been submitted (status: {curr_status})",
+            )
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Concurrent modification conflict. Please retry.",
+        )
+
     return updated
 
 
 def submit_application(db: Database, current_user: dict, application_id: str) -> dict:
     """
-    Submit a draft application.
+    Submit a draft application atomically.
     Enforces:
     - Ownership (applicant owns this application)
     - State is DRAFT
     - Completeness (all required personal, contact, academic fields are present)
     - Valid programme selection
-    Transitions status to SUBMITTED and sets submittedAt.
+    Atomic find_one_and_update ensures exactly one transition to SUBMITTED.
     """
     app = db["applications"].find_one({"applicationId": application_id})
     if not app:
@@ -226,12 +245,12 @@ def submit_application(db: Database, current_user: dict, application_id: str) ->
     current_status = app.get("status")
     if current_status == "SUBMITTED":
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
+            status_code=status.HTTP_409_CONFLICT,
             detail="Application is already submitted",
         )
     if current_status != "DRAFT":
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
+            status_code=status.HTTP_409_CONFLICT,
             detail=f"Cannot submit application in status {current_status}",
         )
 
@@ -262,12 +281,46 @@ def submit_application(db: Database, current_user: dict, application_id: str) ->
         "updatedAt": now,
     }
 
+    user_id = str(current_user.get("_id") or current_user.get("id"))
+    is_admin = current_user.get("role") == "admin"
+
+    filter_query = {
+        "applicationId": application_id,
+        "status": "DRAFT",
+    }
+    if not is_admin:
+        filter_query["userId"] = user_id
+
     updated = db["applications"].find_one_and_update(
-        {"_id": app["_id"]},
+        filter_query,
         {"$set": submission_updates},
         return_document=ReturnDocument.AFTER,
         projection={"_id": 0},
     )
+
+    if not updated:
+        existing = db["applications"].find_one({"applicationId": application_id})
+        if not existing:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Application not found",
+            )
+        if not is_admin and existing.get("userId") != user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Forbidden: access denied. Not authorized.",
+            )
+        curr_status = existing.get("status")
+        if curr_status == "SUBMITTED":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Application is already submitted",
+            )
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Cannot submit application: current status is {curr_status}, expected DRAFT.",
+        )
+
     return updated
 
 

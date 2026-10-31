@@ -419,9 +419,9 @@ def test_already_submitted_application_cannot_be_submitted_again():
         res1 = client.post(f"/api/v1/applications/{app_id}/submit", headers=headers)
         assert res1.status_code == 200
 
-        # Second submit
+        # Second submit: returns 409 Conflict
         res2 = client.post(f"/api/v1/applications/{app_id}/submit", headers=headers)
-        assert res2.status_code == 400
+        assert res2.status_code in (400, 409)
         assert "already submitted" in res2.json()["detail"].lower()
 
 
@@ -625,3 +625,38 @@ def test_concurrent_application_id_generation_gapless_and_unique():
         # Verify gapless sequence from 1 to 20
         seq_numbers = sorted(int(app_id[6:]) for app_id in generated_ids)
         assert seq_numbers == list(range(1, 21)), f"Gaps detected in sequences: {seq_numbers}"
+
+def test_concurrent_application_submission_atomic_conflict():
+    """
+    Regression test for H5 (Task 2.5):
+    Two simultaneous submissions against a draft application using a threading.Barrier
+    must result in exactly one 200 (Success) and one 409 (Conflict).
+    """
+    import threading
+
+    with TestClient(app) as client:
+        _, headers = register_applicant(client, email="race_submit@example.com")
+        create_res = client.post(
+            "/api/v1/applications",
+            json=COMPLETE_APPLICATION_PAYLOAD,
+            headers=headers,
+        )
+        assert create_res.status_code == 201
+        app_id = create_res.json()["applicationId"]
+
+        barrier = threading.Barrier(2)
+        results = []
+
+        def submit_worker():
+            barrier.wait()
+            res = client.post(f"/api/v1/applications/{app_id}/submit", headers=headers)
+            results.append(res.status_code)
+
+        t1 = threading.Thread(target=submit_worker)
+        t2 = threading.Thread(target=submit_worker)
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
+
+        assert sorted(results) == [200, 409], f"Expected [200, 409], got {results}"
