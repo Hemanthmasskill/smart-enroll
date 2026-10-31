@@ -83,6 +83,32 @@ def test_determinism_same_inputs_same_output_and_hash():
     assert res1.model_dump() == res2.model_dump()
 
 
+def test_shuffled_documents_yield_identical_result_object():
+    """
+    Verify that document selection and evidence sorting guarantee order-invariance.
+    Passing documents in different orders must yield identical result objects and inputHash.
+    """
+    import random
+
+    rules = get_canonical_rule("mca")
+    app = {"applicationId": "APP-2026-001", "programmeId": "mca"}
+    docs = build_test_documents(percentage=72.5, degree_name="BCA")
+
+    base_res = evaluate_eligibility(rules, app, docs)
+
+    # Test with multiple shuffled permutations and with multiple documents of same type
+    for seed in range(10):
+        shuffled_docs = copy.deepcopy(docs)
+        random.seed(seed)
+        random.shuffle(shuffled_docs)
+
+        shuffled_res = evaluate_eligibility(rules, app, shuffled_docs)
+
+        assert shuffled_res.status == base_res.status
+        assert shuffled_res.inputHash == base_res.inputHash
+        assert shuffled_res.model_dump() == base_res.model_dump()
+
+
 def test_percentage_boundary_conditions_mca_and_mba():
     """Verify exact inclusive percentage boundary conditions for MCA and MBA (50.0% min)."""
     rules_mca = get_canonical_rule("mca")

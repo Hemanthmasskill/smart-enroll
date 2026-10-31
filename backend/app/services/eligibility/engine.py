@@ -207,6 +207,19 @@ def extract_field_value(field_dict: dict[str, Any], field_name: str) -> Any:
     return field_entry
 
 
+def sort_evidence(evidence_list: list[RuleEvidence]) -> list[RuleEvidence]:
+    """Sort evidence list deterministically by documentType, field, documentId, and value."""
+    return sorted(
+        evidence_list,
+        key=lambda e: (
+            str(e.documentType),
+            str(e.field),
+            str(e.documentId or ""),
+            str(e.value),
+        ),
+    )
+
+
 # =============================================================================
 # Pure Eligibility Evaluator
 # =============================================================================
@@ -223,14 +236,26 @@ def evaluate_eligibility(
     rule_version = str(rules.get("version", "1.0.0"))
     input_hash = compute_input_hash(rules, application_snapshot, documents_snapshot)
 
-    # 1. Index validated documents by documentType (D2: Decide solely on VALIDATED documents)
+    # 1. Index validated documents by documentType deterministically (D2)
+    # Sort snapshot by (documentType, documentId, createdAt) to ensure input order invariance
+    sorted_docs = sorted(
+        documents_snapshot,
+        key=lambda d: (
+            str(d.get("documentType", "")),
+            str(d.get("documentId", "")),
+            str(d.get("createdAt", "")),
+        ),
+    )
+
     validated_docs_by_type: dict[str, dict[str, Any]] = {}
-    for doc in documents_snapshot:
+    for doc in sorted_docs:
         doc_type = doc.get("documentType")
         val_status = doc.get("validationStatus")
         # D2: Values must come from documents whose validationStatus is VALIDATED
         if doc_type and val_status == "VALIDATED":
-            validated_docs_by_type[doc_type] = doc
+            # Deterministically retain the first validated document per type
+            if doc_type not in validated_docs_by_type:
+                validated_docs_by_type[doc_type] = doc
 
     evaluated_rules: list[SingleRuleEvaluation] = []
 
@@ -251,7 +276,8 @@ def evaluate_eligibility(
     missing_docs = [dtype for dtype in required_doc_types if dtype not in validated_docs_by_type]
 
     doc_evidence: list[RuleEvidence] = []
-    for dtype, doc in validated_docs_by_type.items():
+    for dtype in sorted(validated_docs_by_type.keys()):
+        doc = validated_docs_by_type[dtype]
         doc_evidence.append(
             RuleEvidence(
                 documentId=doc.get("documentId"),
@@ -260,6 +286,7 @@ def evaluate_eligibility(
                 value="VALIDATED",
             )
         )
+    doc_evidence = sort_evidence(doc_evidence)
 
     if missing_docs:
         evaluated_rules.append(
@@ -326,6 +353,7 @@ def evaluate_eligibility(
                 metadata={"declaredCrossCheck": str(declared_ug_degree) if declared_ug_degree else None},
             )
         )
+    qual_evidence = sort_evidence(qual_evidence)
 
     if not raw_course or not norm_degree_info:
         evaluated_rules.append(
@@ -511,6 +539,7 @@ def evaluate_eligibility(
         pct_result = "NEEDS_REVIEW"
         pct_reason = "Neither aggregate percentage nor CGPA was found in verified marksheets; manual review required."
 
+    pct_evidence = sort_evidence(pct_evidence)
     evaluated_rules.append(
         SingleRuleEvaluation(
             ruleId="MIN_PERCENTAGE",
@@ -617,6 +646,7 @@ def evaluate_eligibility(
                 math_result = "NEEDS_REVIEW"
                 math_reason = "Mathematics evidence was not detected on 12th Marksheet or UG Marksheet; requires manual review."
 
+    math_evidence = sort_evidence(math_evidence)
     evaluated_rules.append(
         SingleRuleEvaluation(
             ruleId="MATHEMATICS_REQUIREMENT",
