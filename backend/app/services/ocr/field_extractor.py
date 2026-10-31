@@ -391,12 +391,16 @@ def extract_fields_from_text(text: str, document_type: str | None = None) -> Ext
                 continue
             # ReDoS-safe linear check: look for mathematics or maths
             if re.search(r"(?i)\b(?:mathematics|maths)\b", line_clean):
+                # Reject if line contains fail or absent markers
+                if re.search(r"(?i)\b(?:fail|failed|f|ab|abs|absent|withheld)\b", line_clean):
+                    continue
                 mark_match = re.search(r"\b(\d{1,3}(?:\.\d{1,2})?)\b", line_clean)
                 if mark_match:
                     raw_mark = mark_match.group(1)
                     try:
                         numeric_mark = float(raw_mark)
-                        if 0 <= numeric_mark <= 100:
+                        # Require a mark strictly above zero (> 0) and <= 100
+                        if 0 < numeric_mark <= 100:
                             fields.mathematics = ExtractedField(
                                 rawValue=raw_mark,
                                 normalizedValue=True,

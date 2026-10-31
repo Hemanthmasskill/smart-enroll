@@ -40,8 +40,10 @@ The following four canonical programme rules are seeded idempotently with compou
 
 ### 3.3 Mathematics Requirement (D5)
 - Deterministic extraction identifies `Mathematics` or `Maths` subjects along with numeric marks on `12TH_MARKSHEET` and `UG_MARKSHEET`.
-- **Found at required level:** yields `PASSED`.
-- **Not found:** yields `NEEDS_REVIEW` (never `FAILED`), because OCR text omission is not conclusive proof of subject absence.
+- **Positive Passing Mark Required:** Mathematics evidence requires a verified numeric mark strictly above zero ($> 0$). A score of zero or negative value does not qualify.
+- **Fail / Absent Markers Prohibited:** Any line containing explicit failure or absence indicators (such as `FAIL`, `FAILED`, `F`, `AB`, `ABS`, `ABSENT`, `WITHHELD`) is rejected and cannot serve as passing evidence.
+- **Found at required level with valid passing mark:** yields `PASSED`.
+- **Not found, zero score, or marked failed/absent:** yields `NEEDS_REVIEW` (never `FAILED`), because missing or ambiguous OCR text is not conclusive proof of subject absence and requires administrative review of the original physical document.
 
 ### 3.4 Outcome Hierarchy (D6)
 1. **Any rule `FAILED`** $\to$ Overall outcome is **`INELIGIBLE`** (definite failure on verified evidence outranks unknowns).

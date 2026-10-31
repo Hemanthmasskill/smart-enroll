@@ -266,6 +266,28 @@ def test_cgpa_scale_extraction_from_text():
     assert fields_scale_label.cgpaScale.normalizedValue == 10.0
 
 
+def test_mathematics_extraction_rejects_zero_and_fail_markers():
+    """Verify mathematics extraction requires mark > 0 and rejects fail/absent indicators."""
+    from app.services.ocr.field_extractor import extract_fields_from_text
+
+    # Passing mark > 0
+    f_pass = extract_fields_from_text("Subject: Mathematics 85 / 100", document_type="12TH_MARKSHEET")
+    assert f_pass.mathematics is not None
+    assert f_pass.mathematics.normalizedValue is True
+
+    # Zero mark (0 / 100) -> rejected
+    f_zero = extract_fields_from_text("Subject: Mathematics 0 / 100", document_type="12TH_MARKSHEET")
+    assert f_zero.mathematics is None
+
+    # Fail marker -> rejected
+    f_fail = extract_fields_from_text("Mathematics 35 FAIL", document_type="12TH_MARKSHEET")
+    assert f_fail.mathematics is None
+
+    # Absent marker -> rejected
+    f_abs = extract_fields_from_text("Maths AB absent", document_type="12TH_MARKSHEET")
+    assert f_abs.mathematics is None
+
+
 def test_ocr_engine_unavailable_graceful_failure():
     pdf_bytes = create_synthetic_pdf([], pages=1)
     unavailable_engine = MockOCREngine(is_available=False)

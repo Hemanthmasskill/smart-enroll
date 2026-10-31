@@ -576,9 +576,24 @@ def evaluate_eligibility(
             math_field = flds.get("mathematics")
             if isinstance(math_field, dict):
                 norm = math_field.get("normalizedValue")
-                line = math_field.get("matchedLine") or math_field.get("rawValue")
+                line = str(math_field.get("matchedLine") or math_field.get("evidence") or math_field.get("rawValue") or "")
+                raw_val = str(math_field.get("rawValue") or "")
+
+                # Reject if line or evidence contains fail or absent markers
+                if re.search(r"(?i)\b(?:fail|failed|f|ab|abs|absent|withheld)\b", line):
+                    return False, None, None
+
+                # Require a mark strictly above zero (> 0)
+                mark_match = re.search(r"\b(\d{1,3}(?:\.\d{1,2})?)\b", raw_val or line)
+                if mark_match:
+                    try:
+                        if float(mark_match.group(1)) <= 0:
+                            return False, None, None
+                    except ValueError:
+                        return False, None, None
+
                 if norm is True or (norm and str(norm).lower() in ("true", "passed", "yes")):
-                    return True, str(norm), line
+                    return True, str(mark_match.group(1) if mark_match else norm), line
             elif math_field is True:
                 return True, "True", None
 
@@ -588,9 +603,17 @@ def evaluate_eligibility(
                 for line in raw_text.splitlines():
                     # Look for 'Mathematics' or 'Maths' with a numeric mark on the line
                     if re.search(r"(?i)\b(?:mathematics|maths)\b", line):
+                        # Reject fail or absent markers
+                        if re.search(r"(?i)\b(?:fail|failed|f|ab|abs|absent|withheld)\b", line):
+                            continue
                         num_match = re.search(r"\b(\d{1,3}(?:\.\d{1,2})?)\b", line)
                         if num_match:
-                            return True, num_match.group(1), line.strip()
+                            try:
+                                mark_val = float(num_match.group(1))
+                                if mark_val > 0:
+                                    return True, num_match.group(1), line.strip()
+                            except ValueError:
+                                pass
             return False, None, None
 
         ug_math_found, ug_val, ug_line = check_math_in_doc(ug_doc)

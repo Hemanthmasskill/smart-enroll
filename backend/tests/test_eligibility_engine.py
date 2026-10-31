@@ -377,6 +377,47 @@ def test_mathematics_evidence_presence_and_absence():
     math_rule = next(r for r in res_msc_12th_only.rules if r.ruleId == "MATHEMATICS_REQUIREMENT")
     assert math_rule.result == "NEEDS_REVIEW"
 
+    # Math with zero mark (e.g. 0/100) -> requires mark > 0, gives NEEDS_REVIEW
+    docs_zero_math = build_test_documents(percentage=65.0, degree_name="BCA", math_ug=False, math_12th=False)
+    for d in docs_zero_math:
+        if d["documentType"] == "12TH_MARKSHEET":
+            d["extractedFields"]["mathematics"] = {
+                "normalizedValue": True,
+                "rawValue": "0",
+                "matchedLine": "Mathematics: 0 / 100",
+            }
+    res_zero = evaluate_eligibility(rules_mca, app, docs_zero_math)
+    assert res_zero.status == "NEEDS_REVIEW"
+    math_rule_zero = next(r for r in res_zero.rules if r.ruleId == "MATHEMATICS_REQUIREMENT")
+    assert math_rule_zero.result == "NEEDS_REVIEW"
+
+    # Math with explicit "FAIL" or "ABSENT" marker -> gives NEEDS_REVIEW
+    docs_fail_math = build_test_documents(percentage=65.0, degree_name="BCA", math_ug=False, math_12th=False)
+    for d in docs_fail_math:
+        if d["documentType"] == "12TH_MARKSHEET":
+            d["extractedFields"]["mathematics"] = {
+                "normalizedValue": True,
+                "rawValue": "35",
+                "matchedLine": "Mathematics 35 FAIL",
+            }
+    res_fail = evaluate_eligibility(rules_mca, app, docs_fail_math)
+    assert res_fail.status == "NEEDS_REVIEW"
+    math_rule_fail = next(r for r in res_fail.rules if r.ruleId == "MATHEMATICS_REQUIREMENT")
+    assert math_rule_fail.result == "NEEDS_REVIEW"
+
+    docs_abs_math = build_test_documents(percentage=65.0, degree_name="BCA", math_ug=False, math_12th=False)
+    for d in docs_abs_math:
+        if d["documentType"] == "12TH_MARKSHEET":
+            d["extractedFields"]["mathematics"] = {
+                "normalizedValue": True,
+                "rawValue": "0",
+                "matchedLine": "Mathematics ABSENT",
+            }
+    res_abs = evaluate_eligibility(rules_mca, app, docs_abs_math)
+    assert res_abs.status == "NEEDS_REVIEW"
+    math_rule_abs = next(r for r in res_abs.rules if r.ruleId == "MATHEMATICS_REQUIREMENT")
+    assert math_rule_abs.result == "NEEDS_REVIEW"
+
 
 def test_outcome_hierarchy_failed_outranks_needs_review():
     """
