@@ -123,22 +123,18 @@ jobs:
       - name: Install Node Dependencies
         run: npm ci
 
-      - name: Seed Admin User & Start FastAPI Backend
+      - name: Seed Admin User, Start Servers & Run Real-Backend Cypress
         env:
           DATABASE_NAME: smartenroll_ci_real
           ADMIN_PASSWORD: AdminPassword123!
           SECRET_KEY: ci-secret-key-for-real-backend-test-runs-1234
+          VITE_USE_MOCKS: "false"
+          VITE_API_BASE_URL: "http://localhost:8000/api/v1"
         run: |
           PYTHONPATH=backend python backend/scripts/create_admin.py --email admin@smartenroll.edu --name "Admin User"
           PYTHONPATH=backend DATABASE_NAME=smartenroll_ci_real SECRET_KEY=ci-secret-key-for-real-backend-test-runs-1234 \
             python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 &
           npx wait-on http://127.0.0.1:8000/health
-
-      - name: Start Frontend & Run Real-Backend Cypress
-        env:
-          VITE_USE_MOCKS: "false"
-          VITE_API_BASE_URL: "http://localhost:8000/api/v1"
-        run: |
           npm run dev &
           npx wait-on http://localhost:5173
           npm run cy:run:real
