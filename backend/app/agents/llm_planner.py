@@ -778,6 +778,19 @@ class LLMPlanningStrategy(PlanningStrategy):
             if not new_status or new_status not in ALLOWED_APPLICATION_STATUSES:
                 raise ValueError(f"Invalid or missing new_status '{new_status}' in application status update.")
 
+            # Issue 3: When stored eligibility result is ELIGIBLE and application is in ELIGIBILITY_CHECK,
+            # accept ONLY new_status = ELIGIBLE. Reject all other proposed statuses, including PROCESSING_COMPLETE.
+            if (
+                observation.current_status == "ELIGIBILITY_CHECK"
+                and observation.eligibility_result
+                and observation.eligibility_result.get("status") == "ELIGIBLE"
+            ):
+                if new_status != "ELIGIBLE":
+                    raise ValueError(
+                        f"Forbidden transition: When application is in 'ELIGIBILITY_CHECK' with deterministic eligibility 'ELIGIBLE', "
+                        f"only transition to 'ELIGIBLE' is permitted. Proposed status '{new_status}' is rejected."
+                    )
+
             # Model cannot jump directly to ELIGIBLE without matching deterministic result
             if new_status == "ELIGIBLE":
                 if not observation.eligibility_result or observation.eligibility_result.get("status") != "ELIGIBLE":
@@ -790,13 +803,16 @@ class LLMPlanningStrategy(PlanningStrategy):
                     "Forbidden transition: Applications evaluated as INELIGIBLE must be routed to 'EXCEPTION' for administrative confirmation."
                 )
 
-            # Model cannot jump to PROCESSING_COMPLETE without deterministic eligibility result indicating ELIGIBLE
-            if new_status == "PROCESSING_COMPLETE" and (
-                not observation.eligibility_result or observation.eligibility_result.get("status") != "ELIGIBLE"
-            ):
-                raise ValueError(
-                    "Forbidden transition: Cannot transition to 'PROCESSING_COMPLETE' unless eligibility result is deterministically 'ELIGIBLE'."
-                )
+            # Model cannot jump to PROCESSING_COMPLETE without deterministic eligibility result indicating ELIGIBLE, AND application must already be in ELIGIBLE status
+            if new_status == "PROCESSING_COMPLETE":
+                if not observation.eligibility_result or observation.eligibility_result.get("status") != "ELIGIBLE":
+                    raise ValueError(
+                        "Forbidden transition: Cannot transition to 'PROCESSING_COMPLETE' unless eligibility result is deterministically 'ELIGIBLE'."
+                    )
+                if observation.current_status != "ELIGIBLE":
+                    raise ValueError(
+                        f"Forbidden transition: Cannot transition directly to 'PROCESSING_COMPLETE' from '{observation.current_status}'. Application must be in 'ELIGIBLE' status first."
+                    )
 
             # Model cannot jump to VERIFICATION_IN_PROGRESS if documents are unprocessed or failing
             if new_status == "VERIFICATION_IN_PROGRESS" and (
