@@ -34,6 +34,7 @@ def clean_db():
         assert db.name == "smartenroll_test"
         db["users"].delete_many({})
         db["applications"].delete_many({})
+        db["counters"].delete_many({})
         db["users"].create_index("email", unique=True)
         db["applications"].create_index("userId", unique=True, sparse=True)
         db["applications"].create_index("applicationId", unique=True, sparse=True)
@@ -41,6 +42,7 @@ def clean_db():
         assert db.name == "smartenroll_test"
         db["users"].delete_many({})
         db["applications"].delete_many({})
+        db["counters"].delete_many({})
 
 
 def register_applicant(client: TestClient, email: str = "applicant1@example.com", name: str = "Applicant One"):
@@ -581,3 +583,45 @@ def test_applicant_cannot_access_another_applicant_application_by_applicant_id()
             headers=headers_a,
         )
         assert res_submit_applicant_id.status_code in (403, 404)
+
+def test_concurrent_application_id_generation_gapless_and_unique():
+    """
+    Regression test for H5 (Task 2.4):
+    20 simultaneous create_application calls produce 20 distinct sequential IDs
+    with no duplicates and no gaps.
+    """
+    import concurrent.futures
+
+    with TestClient(app) as client:
+        # Pre-register 20 distinct applicants
+        applicants = []
+        for i in range(20):
+            user, headers = register_applicant(
+                client,
+                email=f"concurrent_app_{i}@example.com",
+                name=f"Concurrent Applicant {i}",
+            )
+            applicants.append((user, headers))
+
+        def create_app(idx_and_applicant):
+            idx, (user, headers) = idx_and_applicant
+            payload = {"programmeId": "mca"}
+            res = client.post("/api/v1/applications", json=payload, headers=headers)
+            assert res.status_code == 201, f"Failed at {idx}: {res.text}"
+            return res.json()["applicationId"]
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
+            generated_ids = list(executor.map(create_app, enumerate(applicants)))
+
+        # 20 distinct sequential IDs with no duplicates
+        assert len(generated_ids) == 20
+        assert len(set(generated_ids)) == 20
+
+        # Verify all start with SE2026
+        for app_id in generated_ids:
+            assert app_id.startswith("SE2026")
+            assert len(app_id) == 11  # SE (2) + 2026 (4) + 00001 (5) = 11
+
+        # Verify gapless sequence from 1 to 20
+        seq_numbers = sorted(int(app_id[6:]) for app_id in generated_ids)
+        assert seq_numbers == list(range(1, 21)), f"Gaps detected in sequences: {seq_numbers}"

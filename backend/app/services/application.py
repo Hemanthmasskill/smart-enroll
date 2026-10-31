@@ -47,30 +47,28 @@ SUBMISSION_REQUIRED_FIELDS = [
 
 def generate_application_id(db: Database) -> str:
     """
-    Generate next application ID following the project convention:
-    SE<current_year><4-digit sequential>, e.g., SE20260001.
+    Generate next application ID atomically using the 'counters' collection.
+    Format: SE<current_year><5-digit sequential>, e.g., SE202600001.
+    Capacity: 99,999 applications per year. Raises RuntimeError if exceeded.
     """
     current_year = datetime.now(timezone.utc).year
-    # Preserve 2026 academic year convention if before or in 2026
     year_str = str(max(current_year, 2026))
-    prefix = f"SE{year_str}"
+    counter_id = f"applications_{year_str}"
 
-    pattern = f"^{prefix}\\d{{4}}$"
-    highest_doc = db["applications"].find_one(
-        {"applicationId": {"$regex": pattern}},
-        sort=[("applicationId", -1)],
+    counter_doc = db["counters"].find_one_and_update(
+        {"_id": counter_id},
+        {"$inc": {"seq": 1}},
+        upsert=True,
+        return_document=ReturnDocument.AFTER,
     )
 
-    if highest_doc and "applicationId" in highest_doc:
-        try:
-            seq = int(highest_doc["applicationId"][len(prefix) :])
-            next_seq = seq + 1
-        except (ValueError, IndexError):
-            next_seq = 1
-    else:
-        next_seq = 1
+    seq = counter_doc["seq"]
+    if seq > 99999:
+        raise RuntimeError(
+            f"Application ID sequence limit exceeded for academic year {year_str} (capacity: 99,999)."
+        )
 
-    return f"{prefix}{next_seq:04d}"
+    return f"SE{year_str}{seq:05d}"
 
 
 def create_application(db: Database, current_user: dict, app_in: ApplicationCreate) -> dict:
