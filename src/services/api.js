@@ -4,6 +4,7 @@
 
 import apiClient, { API_BASE_URL, USE_MOCKS, ApiError } from "./apiClient";
 import {
+  resetMockData,
   mockApplicants,
   mockApplications,
   mockRecentActivity,
@@ -19,6 +20,15 @@ import {
 import { countRequiredDocuments, deriveEligibility, deriveWorkflow } from "../utils/workflowUtils";
 
 export const BASE_URL = API_BASE_URL;
+export { resetMockData };
+
+export function shouldUseMock(token) {
+  if (!USE_MOCKS) return false;
+  if (token && token !== "test-auth-token" && token !== "mock-jwt-token") {
+    return false;
+  }
+  return true;
+}
 
 // Simulates network latency for a more realistic demo.
 const delay = (ms = 500) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -121,6 +131,23 @@ function syncApplicationState(applicantId) {
 /* ----------------------------- Auth ----------------------------- */
 // POST `${BASE_URL}/auth/login`
 export async function loginRequest({ email, password, role }) {
+  if (USE_MOCKS) {
+    await delay(600);
+    if (!email || !password) {
+      throw new Error("Email and password are required.");
+    }
+    const applicant = mockApplicants.find(
+      (a) => a.email.toLowerCase() === email.toLowerCase()
+    );
+    return {
+      role,
+      name: role === "admin" ? "Admin User" : applicant?.fullName ?? "Hemanth M.P.",
+      email,
+      applicantId: role === "user" ? applicant?.id ?? "APL-1001" : null,
+      token: "test-auth-token",
+    };
+  }
+
   const data = await apiClient.post("/auth/login", { email, password, role });
   return {
     role: data.role,
@@ -133,6 +160,17 @@ export async function loginRequest({ email, password, role }) {
 
 // POST `${BASE_URL}/auth/register`
 export async function registerRequest(formData) {
+  if (USE_MOCKS) {
+    await delay(700);
+    return {
+      role: "user",
+      name: formData.fullName,
+      email: formData.email,
+      applicantId: "APL-1001",
+      token: "test-auth-token",
+    };
+  }
+
   const data = await apiClient.post("/auth/register", {
     fullName: formData.fullName,
     email: formData.email,
@@ -150,27 +188,125 @@ export async function registerRequest(formData) {
 }
 
 /* --------------------------- Application --------------------------- */
-// Future: GET `${BASE_URL}/applications/{id}`
-export async function getApplication(applicantId) {
-  await delay(400);
-  return syncApplicationState(applicantId);
+// GET `${BASE_URL}/applications/me`
+export async function getApplication(applicantId, token) {
+  if (USE_MOCKS) {
+    await delay(400);
+    return syncApplicationState(applicantId);
+  }
+
+  const headers = token ? { Authorization: `Bearer ${token}` } : {};
+  try {
+    const app = await apiClient.get("/applications/me", { headers });
+    if (!app) return null;
+
+    const progressPercent =
+      app.status === "DRAFT" ? 20 :
+      app.status === "SUBMITTED" ? 30 :
+      app.status === "WAITING_FOR_DOCUMENTS" ? 50 :
+      app.status === "VERIFICATION_IN_PROGRESS" ? 70 :
+      app.status === "EXCEPTION" ? 65 :
+      app.status === "ELIGIBILITY_CHECK" ? 85 :
+      100;
+
+    return {
+      applicationId: app.applicationId,
+      applicantId: app.applicantId,
+      programmeId: app.programmeId,
+      status: app.status,
+      progressPercent,
+      documentsSubmitted: 0,
+      documentsRequired: 6,
+      unreadNotifications: 0,
+      eligibilityStatus:
+        app.status === "ELIGIBLE"
+          ? "ELIGIBLE"
+          : app.status === "INELIGIBLE"
+            ? "INELIGIBLE"
+            : "PENDING",
+      nextAction:
+        app.status === "WAITING_FOR_DOCUMENTS"
+          ? "Upload the remaining required documents."
+          : app.status === "EXCEPTION"
+            ? "Review the document issue shown in your application status."
+            : app.status === "DRAFT"
+              ? "Complete and submit your application."
+              : "No applicant action is currently required.",
+      currentAction: `Application is currently in ${app.status} status.`,
+      fullName: app.fullName,
+      email: app.email,
+      mobile: app.mobile,
+      dob: app.dob,
+      gender: app.gender,
+      nationality: app.nationality,
+      address: app.address,
+      city: app.city,
+      state: app.state,
+      pinCode: app.pinCode,
+      tenthBoard: app.tenthBoard,
+      tenthPercentage: app.tenthPercentage,
+      twelfthBoard: app.twelfthBoard,
+      twelfthPercentage: app.twelfthPercentage,
+      ugDegree: app.ugDegree,
+      university: app.university,
+      graduationYear: app.graduationYear,
+      cgpa: app.cgpa,
+      submittedAt: app.submittedAt,
+      createdAt: app.createdAt,
+      updatedAt: app.updatedAt,
+    };
+  } catch (err) {
+    if (err.status === 404) {
+      return null;
+    }
+    throw err;
+  }
 }
 
-// Future: POST `${BASE_URL}/applications`
-export async function createApplication(applicantId, formData) {
-  await delay(700);
-  return {
-    ...mockApplications[applicantId],
-    ...formData,
-    status: "SUBMITTED",
-    progressPercent: 20,
-  };
+// POST `${BASE_URL}/applications`
+export async function createApplication(applicantId, formData, token) {
+  if (USE_MOCKS) {
+    await delay(700);
+    return {
+      ...mockApplications[applicantId],
+      ...formData,
+      status: "SUBMITTED",
+      progressPercent: 20,
+    };
+  }
+
+  const headers = token ? { Authorization: `Bearer ${token}` } : {};
+  const created = await apiClient.post("/applications", formData, { headers });
+  try {
+    const submitted = await apiClient.post(`/applications/${created.applicationId}/submit`, {}, { headers });
+    return submitted;
+  } catch {
+    return created;
+  }
 }
 
-// Future: PUT `${BASE_URL}/applications/{id}`
-export async function updateApplication(applicantId, partialData) {
-  await delay(500);
-  return { ...mockApplications[applicantId], ...partialData };
+// PUT `${BASE_URL}/applications/{id}`
+export async function updateApplication(applicationId, partialData, token) {
+  if (USE_MOCKS) {
+    await delay(500);
+    return { ...mockApplications[applicationId], ...partialData };
+  }
+
+  const headers = token ? { Authorization: `Bearer ${token}` } : {};
+  return await apiClient.put(`/applications/${applicationId}`, partialData, { headers });
+}
+
+// POST `${BASE_URL}/applications/{id}/submit`
+export async function submitApplication(applicationId, token) {
+  if (USE_MOCKS) {
+    await delay(500);
+    const app = mockApplications[applicationId];
+    if (app) app.status = "SUBMITTED";
+    return app;
+  }
+
+  const headers = token ? { Authorization: `Bearer ${token}` } : {};
+  return await apiClient.post(`/applications/${applicationId}/submit`, {}, { headers });
 }
 
 export async function getRecentActivity() {
@@ -184,10 +320,22 @@ export async function getPrograms() {
 }
 
 /* ----------------------------- Profile ------------------------------ */
-// Future: GET `${BASE_URL}/applicants/{id}`
-export async function getApplicantProfile(applicantId) {
-  await delay(300);
-  return mockApplicants.find((a) => a.id === applicantId) ?? null;
+// GET `${BASE_URL}/auth/me`
+export async function getApplicantProfile(applicantId, token) {
+  if (USE_MOCKS) {
+    await delay(300);
+    return mockApplicants.find((a) => a.id === applicantId) ?? null;
+  }
+
+  const headers = token ? { Authorization: `Bearer ${token}` } : {};
+  const user = await apiClient.get("/auth/me", { headers });
+  return {
+    id: user.applicant_id || user.applicantId || applicantId,
+    fullName: user.full_name || user.fullName || user.name || "Applicant",
+    email: user.email,
+    mobile: user.mobile || "",
+    dob: user.dob || "",
+  };
 }
 
 // Future: PATCH `${BASE_URL}/applicants/{id}`
@@ -219,7 +367,7 @@ const DOC_TYPE_TO_FRONTEND_ID = {
 
 // GET `${BASE_URL}/documents` (uses backend via apiClient; no silent mock fallback)
 export async function getDocuments(applicantId, token) {
-  if (USE_MOCKS) {
+  if (shouldUseMock(token)) {
     await delay(400);
     return mockDocuments[applicantId] ?? [];
   }
@@ -251,7 +399,7 @@ export async function getDocuments(applicantId, token) {
 
 // POST `${BASE_URL}/documents/upload`
 export async function uploadDocument(applicantId, documentId, file, variant, token) {
-  if (USE_MOCKS) {
+  if (shouldUseMock(token)) {
     await delay(900);
     const documents = mockDocuments[applicantId] ?? [];
     const doc = documents.find((d) => d.id === documentId);
@@ -308,7 +456,7 @@ export async function uploadDocument(applicantId, documentId, file, variant, tok
 
 // DELETE `${BASE_URL}/documents/{id}`
 export async function removeDocument(applicantId, documentSlotId, token, backendDocumentId, docContext) {
-  if (USE_MOCKS) {
+  if (shouldUseMock(token)) {
     await delay(400);
     const documents = mockDocuments[applicantId] ?? [];
     const doc = documents.find((d) => d.id === documentSlotId);
@@ -354,7 +502,7 @@ export async function removeDocument(applicantId, documentSlotId, token, backend
 
 // POST `${BASE_URL}/documents/{document_id}/process`
 export async function processDocument(applicantId, documentSlotId, token, backendDocumentId) {
-  if (USE_MOCKS) {
+  if (shouldUseMock(token)) {
     await delay(700);
     const documents = mockDocuments[applicantId] ?? [];
     const doc = documents.find((d) => d.id === documentSlotId);
@@ -409,7 +557,7 @@ export async function processDocument(applicantId, documentSlotId, token, backen
 
 // GET `${BASE_URL}/documents/{document_id}/processing-result`
 export async function getDocumentProcessingResult(applicantId, documentSlotId, token, backendDocumentId) {
-  if (USE_MOCKS) {
+  if (shouldUseMock(token)) {
     await delay(300);
     return {
       documentId: backendDocumentId || documentSlotId,
@@ -434,7 +582,7 @@ export async function getDocumentProcessingResult(applicantId, documentSlotId, t
 
 // GET `${BASE_URL}/documents/{id}/verification`
 export async function getVerificationStatus(applicantId, documentSlotId, token, backendDocumentId) {
-  if (USE_MOCKS) {
+  if (shouldUseMock(token)) {
     await delay(300);
     const documents = mockDocuments[applicantId] ?? [];
     return documents.find((d) => d.id === documentSlotId) ?? null;
@@ -450,7 +598,7 @@ export async function getVerificationStatus(applicantId, documentSlotId, token, 
 
 // POST `${BASE_URL}/documents/{id}/verify`
 export async function verifyDocument(applicantId, documentSlotId, token, backendDocumentId) {
-  if (USE_MOCKS) {
+  if (shouldUseMock(token)) {
     await delay(500);
     const documents = mockDocuments[applicantId] ?? [];
     const doc = documents.find((d) => d.id === documentSlotId);
@@ -477,7 +625,7 @@ export async function verifyDocument(applicantId, documentSlotId, token, backend
 
 // POST `${BASE_URL}/documents/{id}/authoritative-verify`
 export async function authoritativeVerifyDocument(applicantId, documentSlotId, token, backendDocumentId) {
-  if (USE_MOCKS) {
+  if (shouldUseMock(token)) {
     await delay(600);
     return {
       provider: "SyntheticDigiLockerProvider",
@@ -540,23 +688,71 @@ export async function useVerifiedDigiLockerRecord(applicantId, recordId) {
 // fixed rules. It never invents or adjusts a rule; that is exactly
 // what a real backend rule engine would do, just computed here so
 // the demo can't drift out of sync with the Documents page.
-export async function getEligibility(applicantId) {
-  await delay(500);
-  return getSynchronousEligibility(applicantId);
+export async function getEligibility(applicantId, token) {
+  if (USE_MOCKS) {
+    await delay(500);
+    return getSynchronousEligibility(applicantId);
+  }
+
+  // Live backend path: do not derive eligibility in browser code
+  const app = await getApplication(applicantId, token);
+  if (!app) return null;
+
+  if (app.status === "ELIGIBLE") {
+    return {
+      programmeId: app.programmeId,
+      overall: "ELIGIBLE",
+      evaluation: [],
+    };
+  }
+  if (app.status === "INELIGIBLE") {
+    return {
+      programmeId: app.programmeId,
+      overall: "INELIGIBLE",
+      evaluation: [],
+    };
+  }
+
+  return {
+    programmeId: app.programmeId,
+    overall: "DEPENDENCY_PENDING",
+    evaluation: [
+      {
+        label: "Autonomous Eligibility Engine",
+        configured: "Increments 16+ Backend Service",
+        result: "DEPENDENCY_PENDING",
+      },
+    ],
+  };
 }
 
 /* ----------------------------- Integrated Workflow ----------------------------- */
 // Future: GET `${BASE_URL}/applications/{id}/workflow`
 // Returns only observable workflow state/actions/results. No private reasoning.
-export async function getApplicationWorkflow(applicantId) {
-  await delay(350);
-  const application = syncApplicationState(applicantId);
-  if (!application) return null;
+export async function getApplicationWorkflow(applicantId, token) {
+  if (USE_MOCKS) {
+    await delay(350);
+    const application = syncApplicationState(applicantId);
+    if (!application) return null;
+    return deriveWorkflow({
+      application,
+      documents: mockDocuments[applicantId] ?? [],
+      eligibility: getSynchronousEligibility(applicantId),
+      notifications: mockNotifications[applicantId] ?? [],
+    });
+  }
+
+  // Live backend path: do not synthesize eligibility in browser
+  const app = await getApplication(applicantId, token);
+  if (!app) return null;
   return deriveWorkflow({
-    application,
-    documents: mockDocuments[applicantId] ?? [],
-    eligibility: getSynchronousEligibility(applicantId),
-    notifications: mockNotifications[applicantId] ?? [],
+    application: app,
+    documents: [],
+    eligibility: {
+      overall: app.status === "ELIGIBLE" ? "ELIGIBLE" : app.status === "INELIGIBLE" ? "INELIGIBLE" : "PENDING",
+      evaluation: [],
+    },
+    notifications: [],
   });
 }
 
@@ -583,26 +779,47 @@ const STATUS_STAGES = [
   "Admission Processing Complete",
 ];
 
-// Future: GET `${BASE_URL}/applications/{id}/timeline`
-export async function getApplicationTimeline(applicantId) {
-  await delay(400);
-  const application = syncApplicationState(applicantId);
-  if (!application) return null;
+// GET `${BASE_URL}/applications/{id}/timeline`
+export async function getApplicationTimeline(applicantId, token) {
+  if (USE_MOCKS) {
+    await delay(400);
+    const application = syncApplicationState(applicantId);
+    if (!application) return null;
 
-  const currentIndex = STATUS_STAGE_INDEX[application.status] ?? 0;
+    const currentIndex = STATUS_STAGE_INDEX[application.status] ?? 0;
 
+    const stages = STATUS_STAGES.map((label, index) => ({
+      label,
+      state: index < currentIndex ? "COMPLETED" : index === currentIndex ? "CURRENT" : "PENDING",
+    }));
+
+    return {
+      applicationId: application.applicationId,
+      programmeId: application.programmeId,
+      status: application.status,
+      stages,
+      currentAction: application.currentAction,
+      applicantAction: application.nextAction,
+    };
+  }
+
+  // Live backend path
+  const app = await getApplication(applicantId, token);
+  if (!app) return null;
+
+  const currentIndex = STATUS_STAGE_INDEX[app.status] ?? 0;
   const stages = STATUS_STAGES.map((label, index) => ({
     label,
     state: index < currentIndex ? "COMPLETED" : index === currentIndex ? "CURRENT" : "PENDING",
   }));
 
   return {
-    applicationId: application.applicationId,
-    programmeId: application.programmeId,
-    status: application.status,
+    applicationId: app.applicationId,
+    programmeId: app.programmeId,
+    status: app.status,
     stages,
-    currentAction: application.currentAction,
-    applicantAction: application.nextAction,
+    currentAction: app.currentAction,
+    applicantAction: app.nextAction,
   };
 }
 
@@ -654,53 +871,122 @@ export async function getAdminDashboard() {
   };
 }
 
-// Future: GET `${BASE_URL}/admin/applications`
-export async function getAdminApplications() {
-  await delay(400);
-  syncApplicationState("APL-1001");
-  return [...mockAdminApplications];
-}
-
-// Future: GET `${BASE_URL}/admin/applications/{applicationId}`
-export async function getAdminApplicationDetails(applicationId) {
-  await delay(400);
-  syncApplicationState("APL-1001");
-  const application = mockAdminApplications.find((a) => a.applicationId === applicationId);
-  if (!application) return null;
-
-  const programme = mockPrograms.find((p) => p.id === application.programmeId) ?? null;
-  const exceptions = mockExceptions.filter((e) => e.applicationId === applicationId);
-
-  if (application.applicantId === "APL-1001") {
-    const applicant = mockApplicants.find((a) => a.id === "APL-1001");
-    const documents = mockDocuments["APL-1001"] ?? [];
-    const eligibility = await getEligibility("APL-1001");
-    const timeline = await getApplicationTimeline("APL-1001");
-    const workflow = deriveWorkflow({
-      application: mockApplications["APL-1001"],
-      documents,
-      eligibility,
-      notifications: mockNotifications["APL-1001"] ?? [],
-    });
-    return { ...application, applicant, programme, documents, eligibility, timeline, workflow, exceptions };
+// GET `${BASE_URL}/applications`
+export async function getAdminApplications(token) {
+  if (USE_MOCKS) {
+    await delay(400);
+    syncApplicationState("APL-1001");
+    return [...mockAdminApplications];
   }
 
-  const currentIndex = STATUS_STAGE_INDEX[application.status] ?? 0;
+  const headers = token ? { Authorization: `Bearer ${token}` } : {};
+  const data = await apiClient.get("/applications", { headers });
+  return (data || []).map((app) => ({
+    applicationId: app.applicationId,
+    applicantId: app.applicantId,
+    applicantName: app.applicantName || app.fullName || "Applicant",
+    email: app.email,
+    programmeId: app.programmeId,
+    submittedAt: app.submittedAt ? new Date(app.submittedAt).toLocaleDateString("en-IN", {
+      day: "2-digit",
+      month: "short",
+      year: "numeric",
+    }) : "-",
+    documentStatus: app.documentStatus || "N/A",
+    eligibilityStatus: app.eligibilityStatus || "PENDING",
+    status: app.status,
+  }));
+}
+
+// GET `${BASE_URL}/applications/{applicationId}`
+export async function getAdminApplicationDetails(applicationId, token) {
+  if (USE_MOCKS) {
+    await delay(400);
+    syncApplicationState("APL-1001");
+    const application = mockAdminApplications.find((a) => a.applicationId === applicationId);
+    if (!application) return null;
+
+    const programme = mockPrograms.find((p) => p.id === application.programmeId) ?? null;
+    const exceptions = mockExceptions.filter((e) => e.applicationId === applicationId);
+
+    if (application.applicantId === "APL-1001") {
+      const applicant = mockApplicants.find((a) => a.id === "APL-1001");
+      const documents = mockDocuments["APL-1001"] ?? [];
+      const eligibility = await getEligibility("APL-1001");
+      const timeline = await getApplicationTimeline("APL-1001");
+      const workflow = deriveWorkflow({
+        application: mockApplications["APL-1001"],
+        documents,
+        eligibility,
+        notifications: mockNotifications["APL-1001"] ?? [],
+      });
+      return { ...application, applicant, programme, documents, eligibility, timeline, workflow, exceptions };
+    }
+
+    const currentIndex = STATUS_STAGE_INDEX[application.status] ?? 0;
+    return {
+      ...application,
+      applicant: { fullName: application.applicantName, email: application.email },
+      programme,
+      documents: [],
+      eligibility: { overall: application.eligibilityStatus, evaluation: [] },
+      timeline: {
+        applicationId: application.applicationId,
+        programmeId: application.programmeId,
+        status: application.status,
+        stages: STATUS_STAGES.map((label, index) => ({ label, state: index < currentIndex ? "COMPLETED" : index === currentIndex ? "CURRENT" : "PENDING" })),
+        currentAction: application.currentAction,
+        applicantAction: application.status === "WAITING_FOR_DOCUMENTS" ? "Upload remaining required documents." : "No applicant action currently required.",
+      },
+      exceptions,
+    };
+  }
+
+  // Live backend path
+  const headers = token ? { Authorization: `Bearer ${token}` } : {};
+  const app = await apiClient.get(`/applications/${applicationId}`, { headers });
+  if (!app) return null;
+
+  const programme = mockPrograms.find((p) => p.id === app.programmeId) ?? { id: app.programmeId, name: app.programmeId, fullName: app.programmeId };
+  const currentIndex = STATUS_STAGE_INDEX[app.status] ?? 0;
+
   return {
-    ...application,
-    applicant: { fullName: application.applicantName, email: application.email },
+    applicationId: app.applicationId,
+    applicantId: app.applicantId,
+    applicantName: app.fullName || "Applicant",
+    email: app.email,
+    programmeId: app.programmeId,
     programme,
-    documents: [],
-    eligibility: { overall: application.eligibilityStatus, evaluation: [] },
-    timeline: {
-      applicationId: application.applicationId,
-      programmeId: application.programmeId,
-      status: application.status,
-      stages: STATUS_STAGES.map((label, index) => ({ label, state: index < currentIndex ? "COMPLETED" : index === currentIndex ? "CURRENT" : "PENDING" })),
-      currentAction: application.currentAction,
-      applicantAction: application.status === "WAITING_FOR_DOCUMENTS" ? "Upload remaining required documents." : "No applicant action currently required.",
+    submittedAt: app.submittedAt ? new Date(app.submittedAt).toLocaleDateString("en-IN", {
+      day: "2-digit",
+      month: "short",
+      year: "numeric",
+    }) : "-",
+    status: app.status,
+    eligibilityStatus: app.status === "ELIGIBLE" ? "ELIGIBLE" : app.status === "INELIGIBLE" ? "INELIGIBLE" : "PENDING",
+    eligibility: {
+      overall: app.status === "ELIGIBLE" ? "ELIGIBLE" : app.status === "INELIGIBLE" ? "INELIGIBLE" : "PENDING",
+      evaluation: [],
     },
-    exceptions,
+    academic: {
+      qualification: app.ugDegree || "N/A",
+      institution: app.university || "N/A",
+      result: app.cgpa ? `CGPA: ${app.cgpa}` : app.twelfthPercentage ? `12th: ${app.twelfthPercentage}%` : "N/A",
+    },
+    currentAction: `Application status is ${app.status}.`,
+    documents: [],
+    timeline: {
+      applicationId: app.applicationId,
+      programmeId: app.programmeId,
+      status: app.status,
+      stages: STATUS_STAGES.map((label, index) => ({
+        label,
+        state: index < currentIndex ? "COMPLETED" : index === currentIndex ? "CURRENT" : "PENDING",
+      })),
+      currentAction: `Application status is ${app.status}.`,
+      applicantAction: app.status === "WAITING_FOR_DOCUMENTS" ? "Upload remaining required documents." : "No applicant action currently required.",
+    },
+    exceptions: [],
   };
 }
 
@@ -741,7 +1027,7 @@ export async function updateProgrammeRules(programmeId, updates) {
 /* ----------------------------- Agent Activity & Orchestration ----------------------------- */
 // GET `${BASE_URL}/agents/activity`
 export async function getAgentActivity(filters = {}, token) {
-  if (USE_MOCKS) {
+  if (shouldUseMock(token)) {
     await delay(400);
     return [...mockAgentActivity];
   }
@@ -761,7 +1047,7 @@ export async function getAgentActivity(filters = {}, token) {
 export async function getAgentSystemStatus() {
   try {
     const data = await apiClient.get("/agents/system-status");
-    return { ...data, isLive: true };
+    return { isLive: true, ...data };
   } catch {
     // Backend offline or unreachable
   }
@@ -798,7 +1084,7 @@ export async function getAgentSystemStatus() {
 
 // GET `${BASE_URL}/agents/runs`
 export async function getRecentOrchestrationRuns(token) {
-  if (USE_MOCKS) {
+  if (shouldUseMock(token)) {
     await delay(300);
     return {
       runs: [
@@ -841,6 +1127,96 @@ export async function getRecentOrchestrationRuns(token) {
             },
           ],
         },
+        {
+          runId: "demo-run-002",
+          applicationId: "SE20260002",
+          status: "COMPLETED",
+          outcome: "WAITING_FOR_APPLICANT",
+          currentApplicationStatus: "WAITING_FOR_DOCUMENTS",
+          stepsCompleted: 2,
+          summary: "Model proposed invalid tool call for missing documents; domain guardrail (Rule 2) triggered safe deterministic fallback.",
+          planner: "LLM",
+          fallbackOccurred: true,
+          fallbackCount: 1,
+          startedAt: "2026-10-26T15:10:00Z",
+          completedAt: "2026-10-26T15:10:03Z",
+          isDemoMock: true,
+          steps: [
+            {
+              stepIndex: 1,
+              stage: "ACT",
+              tool: "check_document_completeness",
+              action: "Inspect uploaded documents",
+              resultSummary: "5 of 6 required documents present",
+              status: "COMPLETED",
+              planner: "LLM",
+              fallbackUsed: false,
+              executedAt: "2026-10-26T15:10:01Z",
+            },
+            {
+              stepIndex: 2,
+              stage: "ACT",
+              tool: "update_application_status",
+              action: "Transition to WAITING_FOR_DOCUMENTS via deterministic fallback",
+              resultSummary: "Fallback updated status safely after out-of-policy model proposal was rejected.",
+              status: "COMPLETED",
+              planner: "FALLBACK",
+              fallbackUsed: true,
+              fallbackReason: "Model proposed request_missing_document before status transition; rejected by Rule 2 guardrail.",
+              executedAt: "2026-10-26T15:10:03Z",
+            },
+          ],
+        },
+        {
+          runId: "demo-run-003",
+          applicationId: "SE20260003",
+          status: "COMPLETED",
+          outcome: "DEPENDENCY_PENDING",
+          currentApplicationStatus: "ELIGIBILITY_CHECK",
+          stepsCompleted: 3,
+          summary: "Verification completed; academic eligibility check paused awaiting Increment 16 engine.",
+          planner: "DETERMINISTIC",
+          fallbackOccurred: false,
+          fallbackCount: 0,
+          startedAt: "2026-10-26T16:00:00Z",
+          completedAt: "2026-10-26T16:00:04Z",
+          isDemoMock: true,
+          steps: [
+            {
+              stepIndex: 1,
+              stage: "ACT",
+              tool: "check_document_completeness",
+              action: "Verify all 6 documents present",
+              resultSummary: "6 of 6 required documents present. Complete.",
+              status: "COMPLETED",
+              planner: "DETERMINISTIC",
+              fallbackUsed: false,
+              executedAt: "2026-10-26T16:00:01Z",
+            },
+            {
+              stepIndex: 2,
+              stage: "ACT",
+              tool: "verify_document",
+              action: "Validate degree certificate extractions",
+              resultSummary: "Layer 2 validation completed: VALIDATED",
+              status: "COMPLETED",
+              planner: "DETERMINISTIC",
+              fallbackUsed: false,
+              executedAt: "2026-10-26T16:00:03Z",
+            },
+            {
+              stepIndex: 3,
+              stage: "ACT",
+              tool: "check_eligibility",
+              action: "Evaluate candidate against programme requirements",
+              resultSummary: "Deterministic eligibility evaluation service is pending backend implementation in Increment 16.",
+              status: "DEPENDENCY_PENDING",
+              planner: "DETERMINISTIC",
+              fallbackUsed: false,
+              executedAt: "2026-10-26T16:00:04Z",
+            },
+          ],
+        },
       ],
       isLive: false,
       error: null,
@@ -864,7 +1240,16 @@ export async function triggerAgentOrchestration(applicationId, token) {
 
 // Backend Admin Login (for live evaluator connection)
 export async function backendAdminLogin({ email, password }) {
-  return loginRequest({ email, password, role: "admin" });
+  try {
+    return await apiClient.post("/auth/login", { email, password, role: "admin" });
+  } catch (err) {
+    if (err.status === 0 || (err.message && err.message.includes("connection"))) {
+      throw new Error(
+        `Unable to connect to live backend at ${BASE_URL}. Ensure the FastAPI server is running on port 8000.`
+      );
+    }
+    throw err;
+  }
 }
 
 /* ------------------------------- Analytics ------------------------------- */

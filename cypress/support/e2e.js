@@ -15,3 +15,11 @@
 
 // Import commands.js using ES2015 syntax:
 import './commands'
+
+beforeEach(() => {
+  cy.window({ log: false }).then((win) => {
+    if (typeof win.__resetMockData === "function") {
+      win.__resetMockData();
+    }
+  });
+});

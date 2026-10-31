@@ -1,9 +1,18 @@
 const AUTH_KEY = "smartenroll_auth";
 
-export const API_BASE_URL =
-  import.meta.env.VITE_API_BASE_URL || "http://localhost:8000/api/v1";
+const env =
+  typeof import.meta !== "undefined" && import.meta && import.meta.env
+    ? import.meta.env
+    : typeof process !== "undefined" && process && process.env
+    ? process.env
+    : {};
 
-export const USE_MOCKS = import.meta.env.VITE_USE_MOCKS === "true";
+export const API_BASE_URL =
+  env.VITE_API_BASE_URL || "http://localhost:8000/api/v1";
+
+export const USE_MOCKS =
+  env.VITE_USE_MOCKS === "true" ||
+  (typeof window !== "undefined" && window.__USE_MOCKS__ === true);
 
 if (USE_MOCKS) {
   console.warn(
