@@ -1,7 +1,7 @@
 from contextlib import asynccontextmanager
 import logging
 
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api import agents, applications, auth, documents
@@ -9,6 +9,7 @@ from app.api.deps import RequireRole
 from app.core.config import settings
 from app.core.database import close_mongo_connection, connect_to_mongo, get_db
 from app.core.logging_config import RequestIdMiddleware, SensitiveDataRedactionFilter
+from app.core.rate_limit import enforce_rate_limit, get_client_ip
 from app.core.security import validate_secret_key
 
 
@@ -100,6 +101,15 @@ async def health_check():
 
 
 @app.get("/api/v1/db-health", tags=["Health"])
-async def db_health(db=Depends(get_db)):
-    db.command("ping")
-    return {"status": "ok"}
+async def db_health(request: Request, db=Depends(get_db)):
+    ip = get_client_ip(request)
+    enforce_rate_limit(f"db_health:{ip}", max_requests=30, window_seconds=60, action_description="health check requests")
+    try:
+        db.command("ping")
+        return {"status": "ok"}
+    except Exception as exc:
+        logging.getLogger(__name__).error(f"Database health check failed: {exc}")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Database service unavailable",
+        )

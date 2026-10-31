@@ -251,6 +251,31 @@ def test_db_health_sanitized():
         assert res.json() == {"status": "ok"}
 
 
+def test_rate_limit_db_health():
+    """GET /api/v1/db-health is throttled after 30 requests/min per IP."""
+    limiter.reset()
+    with TestClient(app) as client:
+        for _ in range(30):
+            res = client.get("/api/v1/db-health")
+            assert res.status_code == 200
+
+        # 31st request throttled
+        res = client.get("/api/v1/db-health")
+        assert res.status_code == 429
+        assert "Retry-After" in res.headers
+        assert "health check requests" in res.json()["detail"]
+
+
+def test_db_health_failure_returns_503():
+    """GET /api/v1/db-health returns 503 when database ping fails."""
+    with TestClient(app) as client:
+        with patch("pymongo.database.Database.command") as mock_ping:
+            mock_ping.side_effect = Exception("MongoDB connection timeout")
+            res = client.get("/api/v1/db-health")
+            assert res.status_code == 503
+            assert "Database service unavailable" in res.json()["detail"]
+
+
 def test_request_id_middleware():
     """Verify X-Request-ID is attached and echoed back in response headers."""
     with TestClient(app) as client:

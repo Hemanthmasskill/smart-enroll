@@ -570,6 +570,45 @@ def test_eligible_or_ineligible_requires_deterministic_result(admin_auth, applic
     assert clean_db["applications"].find_one({"applicationId": app_id})["status"] == "ELIGIBILITY_CHECK"
 
 
+# 5c. Transition to ELIGIBILITY_CHECK enforces document-verification evidence.
+def test_status_transition_enforces_document_verification_evidence(admin_auth, applicant_auth, clean_db):
+    app_id = applicant_auth["application"]["applicationId"]
+    user_id = applicant_auth["application"]["userId"]
+
+    # Set up application in VERIFICATION_IN_PROGRESS
+    clean_db["applications"].update_one(
+        {"applicationId": app_id},
+        {"$set": {"status": "VERIFICATION_IN_PROGRESS"}},
+    )
+
+    # Insert a document with validationStatus == "MISMATCH"
+    clean_db["documents"].delete_many({"applicationId": app_id})
+    clean_db["documents"].insert_one({
+        "applicationId": app_id,
+        "userId": user_id,
+        "documentType": "10TH_MARKSHEET",
+        "status": "UPLOADED",
+        "validationStatus": "MISMATCH",
+    })
+
+    # Transition to ELIGIBILITY_CHECK must fail due to MISMATCH
+    res_mismatch = tool_update_application_status(clean_db, admin_auth["user"], app_id, "ELIGIBILITY_CHECK")
+    assert res_mismatch.status == ToolStatus.FAILED.value
+    assert "data conflicts or manual review flags" in res_mismatch.message
+
+    # Update document to validationStatus == "VALIDATED"
+    clean_db["documents"].update_one(
+        {"applicationId": app_id},
+        {"$set": {"validationStatus": "VALIDATED"}},
+    )
+
+    # Now transition to ELIGIBILITY_CHECK must succeed
+    res_valid = tool_update_application_status(clean_db, admin_auth["user"], app_id, "ELIGIBILITY_CHECK")
+    assert res_valid.status == ToolStatus.COMPLETED.value
+    assert clean_db["applications"].find_one({"applicationId": app_id})["status"] == "ELIGIBILITY_CHECK"
+
+
+
 # 6. PROCESSING_COMPLETE cannot be set without required workflow-completion evidence.
 def test_processing_complete_requires_workflow_completion_evidence(admin_auth, applicant_auth, clean_db):
     app_id = applicant_auth["application"]["applicationId"]

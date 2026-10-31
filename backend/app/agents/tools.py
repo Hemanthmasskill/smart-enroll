@@ -499,7 +499,44 @@ def tool_update_application_status(
             message=f"Invalid status transition from '{current_status}' to '{status_clean}'.",
         )
 
-    # 4. Enforce deterministic eligibility gate for terminal eligibility states
+    # 4. Enforce document-verification evidence for ELIGIBILITY_CHECK
+    if status_clean == "ELIGIBILITY_CHECK":
+        docs = list(db["documents"].find({"applicationId": app_id}))
+        if docs:
+            flagged = [
+                d for d in docs
+                if d.get("validationStatus") in ("MISMATCH", "MANUAL_REVIEW")
+                or d.get("status") in ("MISMATCH", "MANUAL_REVIEW")
+            ]
+            if flagged:
+                return ToolExecutionResult(
+                    tool=ToolName.UPDATE_APPLICATION_STATUS.value,
+                    status=ToolStatus.FAILED.value,
+                    data={
+                        "applicationId": app_id,
+                        "currentStatus": current_status,
+                        "targetStatus": status_clean,
+                    },
+                    message="Cannot transition to 'ELIGIBILITY_CHECK': document verification detected data conflicts or manual review flags.",
+                )
+
+            unvalidated = [
+                d for d in docs
+                if d.get("status") != "NOT_UPLOADED" and d.get("validationStatus") != "VALIDATED"
+            ]
+            if unvalidated:
+                return ToolExecutionResult(
+                    tool=ToolName.UPDATE_APPLICATION_STATUS.value,
+                    status=ToolStatus.FAILED.value,
+                    data={
+                        "applicationId": app_id,
+                        "currentStatus": current_status,
+                        "targetStatus": status_clean,
+                    },
+                    message="Cannot transition to 'ELIGIBILITY_CHECK': not all uploaded documents have verified validation evidence.",
+                )
+
+    # 5. Enforce deterministic eligibility gate for terminal eligibility states
     if status_clean in ("ELIGIBLE", "INELIGIBLE"):
         eligibility_result = app.get("eligibilityResult")
         if not eligibility_result or not isinstance(eligibility_result, dict) or eligibility_result.get("status") != status_clean:
