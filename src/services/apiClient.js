@@ -10,9 +10,7 @@ const env =
 export const API_BASE_URL =
   env.VITE_API_BASE_URL || "http://localhost:8000/api/v1";
 
-export const USE_MOCKS =
-  env.VITE_USE_MOCKS === "true" ||
-  (typeof window !== "undefined" && window.__USE_MOCKS__ === true);
+export const USE_MOCKS = env.VITE_USE_MOCKS === "true";
 
 if (USE_MOCKS) {
   console.warn(

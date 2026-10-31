@@ -277,12 +277,8 @@ export async function createApplication(applicantId, formData, token) {
 
   const headers = token ? { Authorization: `Bearer ${token}` } : {};
   const created = await apiClient.post("/applications", formData, { headers });
-  try {
-    const submitted = await apiClient.post(`/applications/${created.applicationId}/submit`, {}, { headers });
-    return submitted;
-  } catch {
-    return created;
-  }
+  const submitted = await apiClient.post(`/applications/${created.applicationId}/submit`, {}, { headers });
+  return submitted;
 }
 
 // PUT `${BASE_URL}/applications/{id}`
