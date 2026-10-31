@@ -93,6 +93,22 @@ class Settings(BaseSettings):
                     f"Insecure placeholder SECRET_KEY is not allowed when ENV is '{self.ENV}'."
                 )
 
+        # Enforce upload scanner configuration safety
+        scanner = (self.UPLOAD_SCANNER or "").strip().lower()
+        valid_scanners = {"noop", "clamav"}
+        if not scanner:
+            raise ValueError(
+                f"UPLOAD_SCANNER cannot be missing or empty. Valid options: {', '.join(sorted(valid_scanners))}."
+            )
+        if scanner not in valid_scanners:
+            raise ValueError(
+                f"Unrecognized UPLOAD_SCANNER '{self.UPLOAD_SCANNER}'. Valid options: {', '.join(sorted(valid_scanners))}."
+            )
+        if env in ("staging", "production") and scanner == "noop":
+            raise ValueError(
+                f"UPLOAD_SCANNER 'noop' is strictly forbidden when ENV is '{self.ENV}'. A real scanner (e.g. 'clamav') is required."
+            )
+
         return self
 
     @property

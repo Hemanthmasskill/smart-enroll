@@ -223,3 +223,46 @@ def test_application_mutation_forbidden_after_submission(setup_two_applicants, t
     res = client.post(f"/api/v1/applications/{app_b_id}/submit", headers=headers_b)
     assert res.status_code == 409
     assert "Application is already submitted" in res.json().get("detail", "")
+
+
+def test_upload_scanner_configuration_safety():
+    """
+    Verify UPLOAD_SCANNER configuration safety:
+    - noop is allowed only in development and test.
+    - staging and production require a real scanner (e.g. clamav) and refuse to start on missing or unrecognized settings.
+    """
+    from app.core.config import Settings
+    from app.services.scanner import get_upload_scanner, validate_upload_scanner
+
+    strong_secret = "a-very-strong-production-secret-key-at-least-32-chars!"
+
+    # 1. Development allows noop
+    s_dev = Settings(ENV="development", SECRET_KEY="any-secret", UPLOAD_SCANNER="noop")
+    assert s_dev.UPLOAD_SCANNER == "noop"
+
+    # 2. Test environment allows noop
+    s_test = Settings(ENV="test", SECRET_KEY=strong_secret, UPLOAD_SCANNER="noop")
+    assert s_test.UPLOAD_SCANNER == "noop"
+
+    # 3. Staging forbids noop
+    with pytest.raises(ValueError, match="UPLOAD_SCANNER 'noop' is strictly forbidden"):
+        Settings(ENV="staging", SECRET_KEY=strong_secret, UPLOAD_SCANNER="noop")
+
+    # 4. Production forbids noop
+    with pytest.raises(ValueError, match="UPLOAD_SCANNER 'noop' is strictly forbidden"):
+        Settings(ENV="production", SECRET_KEY=strong_secret, UPLOAD_SCANNER="noop")
+
+    # 5. Production allows clamav
+    s_prod_clamav = Settings(ENV="production", SECRET_KEY=strong_secret, UPLOAD_SCANNER="clamav")
+    assert s_prod_clamav.UPLOAD_SCANNER == "clamav"
+
+    # 6. Production forbids missing/empty scanner
+    with pytest.raises(ValueError, match="UPLOAD_SCANNER cannot be missing or empty"):
+        Settings(ENV="production", SECRET_KEY=strong_secret, UPLOAD_SCANNER="")
+
+    # 7. Any environment forbids unrecognized scanner
+    with pytest.raises(ValueError, match="Unrecognized UPLOAD_SCANNER 'unknown_scanner'"):
+        Settings(ENV="development", SECRET_KEY="any-secret", UPLOAD_SCANNER="unknown_scanner")
+
+    with pytest.raises(ValueError, match="Unrecognized UPLOAD_SCANNER 'bogus_engine'"):
+        Settings(ENV="production", SECRET_KEY=strong_secret, UPLOAD_SCANNER="bogus_engine")

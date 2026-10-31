@@ -11,11 +11,13 @@ from app.core.database import close_mongo_connection, connect_to_mongo, get_db
 from app.core.logging_config import RequestIdMiddleware, SensitiveDataRedactionFilter
 from app.core.rate_limit import enforce_rate_limit, get_client_ip
 from app.core.security import validate_secret_key
+from app.services.scanner import validate_upload_scanner
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     validate_secret_key()
+    validate_upload_scanner()
     connect_to_mongo()
     yield
     from app.agents.providers import close_llm_provider

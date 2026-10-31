@@ -60,13 +60,33 @@ class ClamAVUploadScanner(BaseUploadScanner):
             return False, f"Scan error: {str(e)}"
 
 
+def validate_upload_scanner() -> None:
+    """
+    Validate that UPLOAD_SCANNER is properly configured and fail safe on startup.
+    """
+    from app.core.config import settings
+
+    env = settings.ENV.lower()
+    scanner = (getattr(settings, "UPLOAD_SCANNER", "") or "").strip().lower()
+    if not scanner:
+        raise ValueError(f"UPLOAD_SCANNER is missing. Configured ENV is '{settings.ENV}'.")
+    if scanner not in ("noop", "clamav"):
+        raise ValueError(f"Unrecognized UPLOAD_SCANNER '{settings.UPLOAD_SCANNER}'. Valid options: noop, clamav.")
+    if env in ("staging", "production") and scanner == "noop":
+        raise ValueError(f"UPLOAD_SCANNER 'noop' is strictly forbidden in {settings.ENV}. A real scanner is required.")
+
+
 def get_upload_scanner() -> BaseUploadScanner:
     """
     Factory resolving configured upload scanner instance.
     """
     from app.core.config import settings
 
-    scanner_type = getattr(settings, "UPLOAD_SCANNER", "noop").strip().lower()
+    scanner_type = (getattr(settings, "UPLOAD_SCANNER", "noop") or "").strip().lower()
     if scanner_type == "clamav":
         return ClamAVUploadScanner()
-    return NoopUploadScanner()
+    elif scanner_type == "noop":
+        if settings.ENV.lower() in ("staging", "production"):
+            raise ValueError(f"UPLOAD_SCANNER 'noop' is strictly forbidden in {settings.ENV}.")
+        return NoopUploadScanner()
+    raise ValueError(f"Unrecognized UPLOAD_SCANNER '{scanner_type}'. Valid options: noop, clamav.")
