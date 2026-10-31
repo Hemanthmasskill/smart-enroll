@@ -15,3 +15,5 @@ __pycache__/
 backend/storage/
 storage/
 .pytest_cache/
+.coverage
+.coverage.*

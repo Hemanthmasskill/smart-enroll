@@ -703,7 +703,7 @@ def test_eligibility_check_gate_rejects_failed_document(admin_auth, applicant_au
 
     res = tool_update_application_status(clean_db, admin_auth["user"], app_id, "ELIGIBILITY_CHECK")
     assert res.status == ToolStatus.FAILED.value
-    assert "failed processing or validation" in res.message
+    assert "failed" in res.message.lower()
 
 
 def test_eligibility_check_gate_rejects_unprocessed_document(admin_auth, applicant_auth, clean_db):
@@ -726,7 +726,37 @@ def test_eligibility_check_gate_rejects_unprocessed_document(admin_auth, applica
 
     res = tool_update_application_status(clean_db, admin_auth["user"], app_id, "ELIGIBILITY_CHECK")
     assert res.status == ToolStatus.FAILED.value
-    assert "not all documents have completed processing" in res.message
+    assert "processingStatus" in res.message
+
+
+def test_eligibility_check_gate_rejects_document_missing_processing_status(admin_auth, applicant_auth, clean_db):
+    """
+    Regression test: a document with status='VALIDATED' and validationStatus='VALIDATED'
+    but NO processingStatus field must make transition to ELIGIBILITY_CHECK fail.
+    """
+    app_id = applicant_auth["application"]["applicationId"]
+    user_id = applicant_auth["application"]["userId"]
+    clean_db["applications"].update_one(
+        {"applicationId": app_id},
+        {"$set": {"status": "VERIFICATION_IN_PROGRESS"}},
+    )
+    clean_db["documents"].delete_many({"applicationId": app_id})
+    for dtype in REQUIRED_DOCUMENT_TYPES:
+        doc = {
+            "applicationId": app_id,
+            "userId": user_id,
+            "documentType": dtype,
+            "status": "VALIDATED",
+            "validationStatus": "VALIDATED",
+        }
+        if dtype != "GOVERNMENT_ID":
+            doc["processingStatus"] = "COMPLETED"
+        # GOVERNMENT_ID has NO processingStatus field
+        clean_db["documents"].insert_one(doc)
+
+    res = tool_update_application_status(clean_db, admin_auth["user"], app_id, "ELIGIBILITY_CHECK")
+    assert res.status == ToolStatus.FAILED.value
+    assert "processingStatus" in res.message
 
 
 

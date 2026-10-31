@@ -519,13 +519,15 @@ def tool_update_application_status(
                 message=f"Cannot transition to 'ELIGIBILITY_CHECK': missing {len(missing_types)} required document type(s): {', '.join(sorted(missing_types))}.",
             )
 
-        # 4b. None can have MISMATCH or MANUAL_REVIEW flags
-        flagged = [
+        # 4b. No MISMATCH, MANUAL_REVIEW, FAILED or REJECTED state in status, validationStatus, or processingStatus
+        disallowed_states = {"MISMATCH", "MANUAL_REVIEW", "FAILED", "REJECTED", "ERROR"}
+        flagged_or_failed = [
             d for d in docs
-            if d.get("validationStatus") in ("MISMATCH", "MANUAL_REVIEW")
-            or d.get("status") in ("MISMATCH", "MANUAL_REVIEW")
+            if d.get("status") in disallowed_states
+            or d.get("validationStatus") in disallowed_states
+            or d.get("processingStatus") in disallowed_states
         ]
-        if flagged:
+        if flagged_or_failed:
             return ToolExecutionResult(
                 tool=ToolName.UPDATE_APPLICATION_STATUS.value,
                 status=ToolStatus.FAILED.value,
@@ -534,17 +536,15 @@ def tool_update_application_status(
                     "currentStatus": current_status,
                     "targetStatus": status_clean,
                 },
-                message="Cannot transition to 'ELIGIBILITY_CHECK': document verification detected data conflicts or manual review flags.",
+                message="Cannot transition to 'ELIGIBILITY_CHECK': document verification detected data conflicts, manual review flags, or failed states.",
             )
 
-        # 4c. None can be in a failed state
-        failed = [
+        # 4c. Each document must have a processingStatus field present and equal to 'COMPLETED'
+        missing_or_incomplete_processing = [
             d for d in docs
-            if d.get("processingStatus") == "FAILED"
-            or d.get("status") in ("FAILED", "REJECTED")
-            or d.get("validationStatus") in ("FAILED", "ERROR")
+            if d.get("processingStatus") != "COMPLETED"
         ]
-        if failed:
+        if missing_or_incomplete_processing:
             return ToolExecutionResult(
                 tool=ToolName.UPDATE_APPLICATION_STATUS.value,
                 status=ToolStatus.FAILED.value,
@@ -553,29 +553,10 @@ def tool_update_application_status(
                     "currentStatus": current_status,
                     "targetStatus": status_clean,
                 },
-                message="Cannot transition to 'ELIGIBILITY_CHECK': one or more documents failed processing or validation.",
+                message="Cannot transition to 'ELIGIBILITY_CHECK': every required document must have a 'processingStatus' field present and equal to 'COMPLETED'.",
             )
 
-        # 4d. Each document must have completed processing
-        unprocessed = [
-            d for d in docs
-            if d.get("processingStatus") in ("PENDING", "PROCESSING", "NOT_STARTED")
-            or d.get("status") in ("NOT_UPLOADED", "UPLOADED", "PROCESSING", "PENDING")
-            or (d.get("processingStatus") is not None and d.get("processingStatus") != "COMPLETED")
-        ]
-        if unprocessed:
-            return ToolExecutionResult(
-                tool=ToolName.UPDATE_APPLICATION_STATUS.value,
-                status=ToolStatus.FAILED.value,
-                data={
-                    "applicationId": app_id,
-                    "currentStatus": current_status,
-                    "targetStatus": status_clean,
-                },
-                message="Cannot transition to 'ELIGIBILITY_CHECK': not all documents have completed processing.",
-            )
-
-        # 4e. Each document must be VALIDATED
+        # 4d. Each document must have validationStatus == 'VALIDATED'
         unvalidated = [
             d for d in docs
             if d.get("validationStatus") != "VALIDATED"
