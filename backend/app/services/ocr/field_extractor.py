@@ -46,7 +46,20 @@ PERCENTAGE_PATTERNS = [
 ]
 
 CGPA_PATTERNS = [
-    re.compile(r"(?:cgpa|cumulative\s*grade\s*point\s*average|ogpa|final\s*cgpa)\s*[:\-–]?\s*(\d{1,2}(?:\.\d{1,2})?)(?:\s*(?:\/|\s*out\s*of\s*)\s*10(?:\.0)?)?", re.I),
+    re.compile(
+        r"(?:cgpa|cumulative\s*grade\s*point\s*average|ogpa|final\s*cgpa)\s*[:\-–]?\s*"
+        r"(\d{1,2}(?:\.\d{1,2})?)"
+        r"(?:\s*(?:\/|\s*out\s*of\s*)\s*(\d{1,2}(?:\.\d{1,2})?))?",
+        re.I,
+    ),
+    re.compile(
+        r"\b(\d{1,2}(?:\.\d{1,2})?)\s*(?:\/|\s*out\s*of\s*)\s*(\d{1,2}(?:\.\d{1,2})?)\s*(?:cgpa|grade\s*point)\b",
+        re.I,
+    ),
+]
+
+CGPA_SCALE_PATTERNS = [
+    re.compile(r"(?:cgpa\s*scale|grade\s*point\s*scale|grade\s*scale|scale)\s*[:\-–]?\s*(?:out\s*of\s*)?(\d{1,2}(?:\.\d{1,2})?)", re.I),
 ]
 
 CERTIFICATE_NO_PATTERNS = [
@@ -281,19 +294,45 @@ def extract_fields_from_text(text: str, document_type: str | None = None) -> Ext
                 evidence=f"Derived from marks {obt} / {max_m}",
             )
 
-    # 8. CGPA
+    # 8. CGPA and CGPA Scale
     for pattern in CGPA_PATTERNS:
         m = pattern.search(text)
         if m:
             raw = m.group(1).strip()
             val = normalize_numeric_string(raw)
-            if val is not None and 0.0 <= val <= 10.0:
+            if val is not None:
                 fields.cgpa = ExtractedField(
                     rawValue=raw,
                     normalizedValue=val,
                     confidence=0.88,
                     evidence=m.group(0).strip()[:60],
                 )
+            if len(m.groups()) >= 2 and m.group(2):
+                raw_scale = m.group(2).strip()
+                val_scale = normalize_numeric_string(raw_scale)
+                if val_scale is not None:
+                    fields.cgpaScale = ExtractedField(
+                        rawValue=raw_scale,
+                        normalizedValue=val_scale,
+                        confidence=0.88,
+                        evidence=m.group(0).strip()[:60],
+                    )
+            break
+
+    # If cgpaScale not captured in CGPA line, check standalone scale patterns
+    if not fields.cgpaScale:
+        for pattern in CGPA_SCALE_PATTERNS:
+            m = pattern.search(text)
+            if m:
+                raw_scale = m.group(1).strip()
+                val_scale = normalize_numeric_string(raw_scale)
+                if val_scale is not None:
+                    fields.cgpaScale = ExtractedField(
+                        rawValue=raw_scale,
+                        normalizedValue=val_scale,
+                        confidence=0.85,
+                        evidence=m.group(0).strip()[:60],
+                    )
                 break
 
     # 9. Certificate Number

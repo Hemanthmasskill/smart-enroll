@@ -235,8 +235,35 @@ def test_image_processing_with_ocr_adapter():
     assert res.fields.candidateName.normalizedValue == "Ananya Krishnan"
     assert res.fields.registrationNumber.normalizedValue == "312219205001"
     assert res.fields.cgpa.normalizedValue == 8.75
+    assert res.fields.cgpaScale.normalizedValue == 10.0
     assert res.fields.passingYear.normalizedValue == 2023
     assert res.overallConfidence > 0.70
+
+
+def test_cgpa_scale_extraction_from_text():
+    """Verify field extractor captures both CGPA and CGPA scale from various formatting styles."""
+    from app.services.ocr.field_extractor import extract_fields_from_text
+
+    # Scale 4.0
+    fields_4 = extract_fields_from_text("Cumulative Grade Point Average: 3.5 / 4.0\nCandidate: Test")
+    assert fields_4.cgpa is not None
+    assert fields_4.cgpa.normalizedValue == 3.5
+    assert fields_4.cgpaScale is not None
+    assert fields_4.cgpaScale.normalizedValue == 4.0
+
+    # Scale 10.0
+    fields_10 = extract_fields_from_text("Final CGPA: 8.5 out of 10.0\nCourse: BCA")
+    assert fields_10.cgpa is not None
+    assert fields_10.cgpa.normalizedValue == 8.5
+    assert fields_10.cgpaScale is not None
+    assert fields_10.cgpaScale.normalizedValue == 10.0
+
+    # Standalone scale label
+    fields_scale_label = extract_fields_from_text("CGPA: 7.2\nGrade Scale: 10\nUniversity: Madras")
+    assert fields_scale_label.cgpa is not None
+    assert fields_scale_label.cgpa.normalizedValue == 7.2
+    assert fields_scale_label.cgpaScale is not None
+    assert fields_scale_label.cgpaScale.normalizedValue == 10.0
 
 
 def test_ocr_engine_unavailable_graceful_failure():

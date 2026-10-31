@@ -21,6 +21,7 @@ def get_canonical_rule(programme_id: str) -> dict:
 def build_test_documents(
     percentage: float | str | None = 65.0,
     cgpa: float | str | None = None,
+    cgpa_scale: float | str | None = 10.0,
     degree_name: str = "B.Tech",
     math_ug: bool = True,
     math_12th: bool = True,
@@ -54,6 +55,8 @@ def build_test_documents(
                 doc["extractedFields"]["percentage"] = {"normalizedValue": percentage}
             if cgpa is not None:
                 doc["extractedFields"]["cgpa"] = {"normalizedValue": cgpa}
+                if cgpa_scale is not None:
+                    doc["extractedFields"]["cgpaScale"] = {"normalizedValue": cgpa_scale}
             if math_ug:
                 doc["extractedFields"]["mathematics"] = {
                     "normalizedValue": True,
@@ -150,20 +153,86 @@ def test_cgpa_conversion_and_factor():
 
 
 def test_invalid_percentage_and_cgpa_rejection():
-    """Verify rejection of invalid percentages (<0, >100, non-numeric) and CGPA (<0, >10)."""
+    """
+    Verify out-of-range, negative, or non-numeric percentages and CGPAs give NEEDS_REVIEW, never FAILED.
+    FAILED is allowed only for a valid value below the threshold.
+    Convert CGPA only for scale 10; unknown or other scales give NEEDS_REVIEW.
+    Tests specifically cover: 3.5/4.0, 150, -1, 10.01, "abc".
+    """
     rules = get_canonical_rule("mca")
     app = {"applicationId": "APP-001"}
 
-    for invalid in [-5.0, 105.0, "not_a_number"]:
-        res = evaluate_eligibility(rules, app, build_test_documents(percentage=invalid, degree_name="BCA"))
-        assert res.status == "INELIGIBLE"
-        pct_rule = next(r for r in res.rules if r.ruleId == "MIN_PERCENTAGE")
-        assert pct_rule.result == "FAILED"
+    # 1. Percentage tests:
+    # 150 (out of range >100) -> NEEDS_REVIEW
+    res_150 = evaluate_eligibility(rules, app, build_test_documents(percentage=150, degree_name="BCA"))
+    assert res_150.status == "NEEDS_REVIEW"
+    pct_rule_150 = next(r for r in res_150.rules if r.ruleId == "MIN_PERCENTAGE")
+    assert pct_rule_150.result == "NEEDS_REVIEW"
 
-    # Invalid CGPA
-    for invalid_cgpa in [-1.0, 11.5]:
-        res = evaluate_eligibility(rules, app, build_test_documents(percentage=None, cgpa=invalid_cgpa, degree_name="BCA"))
-        assert res.status == "INELIGIBLE"
+    # -1 (negative <0) -> NEEDS_REVIEW
+    res_neg1 = evaluate_eligibility(rules, app, build_test_documents(percentage=-1, degree_name="BCA"))
+    assert res_neg1.status == "NEEDS_REVIEW"
+    pct_rule_neg1 = next(r for r in res_neg1.rules if r.ruleId == "MIN_PERCENTAGE")
+    assert pct_rule_neg1.result == "NEEDS_REVIEW"
+
+    # "abc" (non-numeric) -> NEEDS_REVIEW
+    res_abc = evaluate_eligibility(rules, app, build_test_documents(percentage="abc", degree_name="BCA"))
+    assert res_abc.status == "NEEDS_REVIEW"
+    pct_rule_abc = next(r for r in res_abc.rules if r.ruleId == "MIN_PERCENTAGE")
+    assert pct_rule_abc.result == "NEEDS_REVIEW"
+
+    # 2. CGPA tests:
+    # 3.5/4.0 (scale 4.0 - other scale) -> NEEDS_REVIEW
+    res_scale4 = evaluate_eligibility(rules, app, build_test_documents(percentage=None, cgpa=3.5, cgpa_scale=4.0, degree_name="BCA"))
+    assert res_scale4.status == "NEEDS_REVIEW"
+    pct_rule_scale4 = next(r for r in res_scale4.rules if r.ruleId == "MIN_PERCENTAGE")
+    assert pct_rule_scale4.result == "NEEDS_REVIEW"
+    assert "not standard scale 10" in pct_rule_scale4.reason
+
+    # Composite string "3.5/4.0" directly in cgpa field -> NEEDS_REVIEW
+    res_comp_scale4 = evaluate_eligibility(rules, app, build_test_documents(percentage=None, cgpa="3.5/4.0", cgpa_scale=None, degree_name="BCA"))
+    assert res_comp_scale4.status == "NEEDS_REVIEW"
+    pct_rule_comp = next(r for r in res_comp_scale4.rules if r.ruleId == "MIN_PERCENTAGE")
+    assert pct_rule_comp.result == "NEEDS_REVIEW"
+
+    # 10.01 (out of range >10 on scale 10) -> NEEDS_REVIEW
+    res_1001 = evaluate_eligibility(rules, app, build_test_documents(percentage=None, cgpa=10.01, cgpa_scale=10.0, degree_name="BCA"))
+    assert res_1001.status == "NEEDS_REVIEW"
+    pct_rule_1001 = next(r for r in res_1001.rules if r.ruleId == "MIN_PERCENTAGE")
+    assert pct_rule_1001.result == "NEEDS_REVIEW"
+    assert "outside valid 0 to 10 scale" in pct_rule_1001.reason
+
+    # -1 on CGPA -> NEEDS_REVIEW
+    res_cgpa_neg1 = evaluate_eligibility(rules, app, build_test_documents(percentage=None, cgpa=-1, cgpa_scale=10.0, degree_name="BCA"))
+    assert res_cgpa_neg1.status == "NEEDS_REVIEW"
+    pct_rule_cgpa_neg1 = next(r for r in res_cgpa_neg1.rules if r.ruleId == "MIN_PERCENTAGE")
+    assert pct_rule_cgpa_neg1.result == "NEEDS_REVIEW"
+
+    # "abc" on CGPA -> NEEDS_REVIEW
+    res_cgpa_abc = evaluate_eligibility(rules, app, build_test_documents(percentage=None, cgpa="abc", cgpa_scale=10.0, degree_name="BCA"))
+    assert res_cgpa_abc.status == "NEEDS_REVIEW"
+    pct_rule_cgpa_abc = next(r for r in res_cgpa_abc.rules if r.ruleId == "MIN_PERCENTAGE")
+    assert pct_rule_cgpa_abc.result == "NEEDS_REVIEW"
+
+    # Unknown scale (cgpa_scale is None) -> NEEDS_REVIEW
+    res_cgpa_unknown = evaluate_eligibility(rules, app, build_test_documents(percentage=None, cgpa=8.5, cgpa_scale=None, degree_name="BCA"))
+    assert res_cgpa_unknown.status == "NEEDS_REVIEW"
+    pct_rule_unknown = next(r for r in res_cgpa_unknown.rules if r.ruleId == "MIN_PERCENTAGE")
+    assert pct_rule_unknown.result == "NEEDS_REVIEW"
+    assert "unknown grading scale" in pct_rule_unknown.reason
+
+    # 3. FAILED is allowed ONLY for valid value below threshold:
+    # Valid percentage 45% (< 50%) -> FAILED
+    res_fail_pct = evaluate_eligibility(rules, app, build_test_documents(percentage=45.0, degree_name="BCA"))
+    assert res_fail_pct.status == "INELIGIBLE"
+    pct_rule_fail = next(r for r in res_fail_pct.rules if r.ruleId == "MIN_PERCENTAGE")
+    assert pct_rule_fail.result == "FAILED"
+
+    # Valid scale-10 CGPA 4.4 (4.4 * 9.5 = 41.8% < 50%) -> FAILED
+    res_fail_cgpa = evaluate_eligibility(rules, app, build_test_documents(percentage=None, cgpa=4.4, cgpa_scale=10.0, degree_name="BCA"))
+    assert res_fail_cgpa.status == "INELIGIBLE"
+    pct_rule_fail_cgpa = next(r for r in res_fail_cgpa.rules if r.ruleId == "MIN_PERCENTAGE")
+    assert pct_rule_fail_cgpa.result == "FAILED"
 
 
 def test_qualification_normalization_and_mtech_engineering_family():
@@ -422,21 +491,21 @@ def test_cgpa_calculation_edge_cases_and_invalid_data():
     res = evaluate_eligibility(rules_corrupt, app, docs)
     assert res.status == "ELIGIBLE"
 
-    # Non-numeric CGPA string
+    # Non-numeric CGPA string gives NEEDS_REVIEW (never FAILED)
     docs_bad_cgpa = build_test_documents(percentage=None, cgpa="bad_cgpa_string")
     res_bad = evaluate_eligibility(rules_corrupt, app, docs_bad_cgpa)
-    assert res_bad.status == "INELIGIBLE"
+    assert res_bad.status == "NEEDS_REVIEW"
     pct_rule = next(r for r in res_bad.rules if r.ruleId == "MIN_PERCENTAGE")
-    assert pct_rule.result == "FAILED"
+    assert pct_rule.result == "NEEDS_REVIEW"
 
-    # CGPA resulting in > 100 computed percentage
+    # CGPA resulting in > 100 computed percentage gives NEEDS_REVIEW (out of range, never FAILED)
     rules_high_factor = get_canonical_rule("mca")
     rules_high_factor["cgpaToPercentageFactor"] = 20.0
     docs_high_cgpa = build_test_documents(percentage=None, cgpa=8.0)
     res_high = evaluate_eligibility(rules_high_factor, app, docs_high_cgpa)
-    assert res_high.status == "INELIGIBLE"
+    assert res_high.status == "NEEDS_REVIEW"
     pct_rule_high = next(r for r in res_high.rules if r.ruleId == "MIN_PERCENTAGE")
-    assert pct_rule_high.result == "FAILED"
+    assert pct_rule_high.result == "NEEDS_REVIEW"
     assert "outside valid 0 to 100 range" in pct_rule_high.reason
 
 

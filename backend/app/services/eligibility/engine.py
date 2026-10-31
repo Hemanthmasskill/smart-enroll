@@ -403,6 +403,14 @@ def evaluate_eligibility(
 
     raw_percentage = extract_field_value(marks_fields, "percentage")
     raw_cgpa = extract_field_value(marks_fields, "cgpa")
+    raw_cgpa_scale = extract_field_value(marks_fields, "cgpaScale")
+
+    # If raw_cgpa is formatted as "X/Y" (e.g. "3.5/4.0"), split value and scale
+    if raw_cgpa is not None and isinstance(raw_cgpa, str) and "/" in raw_cgpa:
+        parts = raw_cgpa.split("/", 1)
+        raw_cgpa = parts[0].strip()
+        if raw_cgpa_scale is None:
+            raw_cgpa_scale = parts[1].strip()
 
     pct_evidence: list[RuleEvidence] = []
     pct_observed: dict[str, Any] = {}
@@ -414,10 +422,10 @@ def evaluate_eligibility(
             d_observed_pct = Decimal(str(raw_percentage))
             pct_observed["rawPercentage"] = str(d_observed_pct)
 
-            # Reject values outside [0, 100]
+            # Out-of-range (<0 or >100) gives NEEDS_REVIEW, never FAILED
             if d_observed_pct < Decimal("0") or d_observed_pct > Decimal("100"):
-                pct_result = "FAILED"
-                pct_reason = f"Extracted percentage {d_observed_pct}% is invalid (outside 0 to 100)."
+                pct_result = "NEEDS_REVIEW"
+                pct_reason = f"Extracted percentage {d_observed_pct}% is outside valid range (0 to 100); manual review required."
             elif d_observed_pct >= d_min_percentage:
                 pct_result = "PASSED"
                 pct_reason = f"Extracted percentage {d_observed_pct}% meets or exceeds minimum {d_min_percentage}%."
@@ -435,50 +443,70 @@ def evaluate_eligibility(
                     )
                 )
         except (InvalidOperation, ValueError, TypeError):
-            pct_result = "FAILED"
-            pct_reason = f"Extracted percentage '{raw_percentage}' is not a valid decimal number."
+            pct_result = "NEEDS_REVIEW"
+            pct_reason = f"Extracted percentage '{raw_percentage}' is not a valid decimal number; manual review required."
 
     elif raw_cgpa is not None:
-        # Compute percentage = CGPA * cgpaToPercentageFactor (D3)
-        try:
-            d_observed_cgpa = Decimal(str(raw_cgpa))
-            pct_observed["rawCgpa"] = str(d_observed_cgpa)
-            pct_observed["cgpaToPercentageFactor"] = str(d_cgpa_factor)
-
-            # Validate CGPA bounds (0 to 10 standard scale)
-            if d_observed_cgpa < Decimal("0") or d_observed_cgpa > Decimal("10"):
-                pct_result = "FAILED"
-                pct_reason = f"Extracted CGPA {d_observed_cgpa} is outside valid 0 to 10 scale."
-            else:
-                computed_pct = d_observed_cgpa * d_cgpa_factor
-                pct_observed["computedPercentage"] = str(computed_pct)
-
-                if computed_pct < Decimal("0") or computed_pct > Decimal("100"):
-                    pct_result = "FAILED"
-                    pct_reason = f"Computed percentage {computed_pct}% from CGPA {d_observed_cgpa} is outside valid 0 to 100 range."
-                elif computed_pct >= d_min_percentage:
-                    pct_result = "PASSED"
-                    pct_reason = f"Computed percentage {computed_pct}% (CGPA {d_observed_cgpa} × {d_cgpa_factor}) meets or exceeds minimum {d_min_percentage}%."
+        # Check scale first: convert CGPA only for scale 10; unknown or other scales give NEEDS_REVIEW
+        if raw_cgpa_scale is None:
+            pct_result = "NEEDS_REVIEW"
+            pct_reason = f"Extracted CGPA '{raw_cgpa}' has unknown grading scale; manual review required."
+            pct_observed["rawCgpa"] = str(raw_cgpa)
+            pct_observed["cgpaScale"] = None
+        else:
+            try:
+                d_scale = Decimal(str(raw_cgpa_scale))
+                pct_observed["cgpaScale"] = str(d_scale)
+                if d_scale != Decimal("10"):
+                    # Other scale (e.g. 4.0 as in 3.5/4.0) gives NEEDS_REVIEW
+                    pct_result = "NEEDS_REVIEW"
+                    pct_reason = f"Extracted CGPA scale {d_scale} is not standard scale 10; manual review required."
+                    pct_observed["rawCgpa"] = str(raw_cgpa)
                 else:
-                    pct_result = "FAILED"
-                    pct_reason = f"Computed percentage {computed_pct}% (CGPA {d_observed_cgpa} × {d_cgpa_factor}) is below minimum required {d_min_percentage}%."
+                    # Scale 10: evaluate CGPA
+                    try:
+                        d_observed_cgpa = Decimal(str(raw_cgpa))
+                        pct_observed["rawCgpa"] = str(d_observed_cgpa)
+                        pct_observed["cgpaToPercentageFactor"] = str(d_cgpa_factor)
 
-            if marks_doc:
-                pct_evidence.append(
-                    RuleEvidence(
-                        documentId=marks_doc.get("documentId"),
-                        documentType=marks_doc.get("documentType", "UG_MARKSHEET"),
-                        field="cgpa",
-                        value=str(d_observed_cgpa),
-                        metadata={
-                            "computedPercentage": str(d_observed_cgpa * d_cgpa_factor),
-                            "cgpaToPercentageFactor": str(d_cgpa_factor),
-                        },
-                    )
-                )
-        except (InvalidOperation, ValueError, TypeError):
-            pct_result = "FAILED"
-            pct_reason = f"Extracted CGPA '{raw_cgpa}' is not a valid decimal number."
+                        # Out-of-range (<0 or >10) gives NEEDS_REVIEW, never FAILED
+                        if d_observed_cgpa < Decimal("0") or d_observed_cgpa > Decimal("10"):
+                            pct_result = "NEEDS_REVIEW"
+                            pct_reason = f"Extracted CGPA {d_observed_cgpa} is outside valid 0 to 10 scale; manual review required."
+                        else:
+                            computed_pct = d_observed_cgpa * d_cgpa_factor
+                            pct_observed["computedPercentage"] = str(computed_pct)
+
+                            if computed_pct < Decimal("0") or computed_pct > Decimal("100"):
+                                pct_result = "NEEDS_REVIEW"
+                                pct_reason = f"Computed percentage {computed_pct}% from CGPA {d_observed_cgpa} is outside valid 0 to 100 range; manual review required."
+                            elif computed_pct >= d_min_percentage:
+                                pct_result = "PASSED"
+                                pct_reason = f"Computed percentage {computed_pct}% (CGPA {d_observed_cgpa} × {d_cgpa_factor}) meets or exceeds minimum {d_min_percentage}%."
+                            else:
+                                pct_result = "FAILED"
+                                pct_reason = f"Computed percentage {computed_pct}% (CGPA {d_observed_cgpa} × {d_cgpa_factor}) is below minimum required {d_min_percentage}%."
+
+                        if marks_doc:
+                            pct_evidence.append(
+                                RuleEvidence(
+                                    documentId=marks_doc.get("documentId"),
+                                    documentType=marks_doc.get("documentType", "UG_MARKSHEET"),
+                                    field="cgpa",
+                                    value=str(d_observed_cgpa),
+                                    metadata={
+                                        "computedPercentage": str(pct_observed.get("computedPercentage")),
+                                        "cgpaToPercentageFactor": str(d_cgpa_factor),
+                                        "cgpaScale": str(d_scale),
+                                    },
+                                )
+                            )
+                    except (InvalidOperation, ValueError, TypeError):
+                        pct_result = "NEEDS_REVIEW"
+                        pct_reason = f"Extracted CGPA '{raw_cgpa}' is not a valid decimal number; manual review required."
+            except (InvalidOperation, ValueError, TypeError):
+                pct_result = "NEEDS_REVIEW"
+                pct_reason = f"Extracted CGPA scale '{raw_cgpa_scale}' is not a valid decimal number; manual review required."
     else:
         pct_result = "NEEDS_REVIEW"
         pct_reason = "Neither aggregate percentage nor CGPA was found in verified marksheets; manual review required."
