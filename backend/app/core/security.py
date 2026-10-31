@@ -31,11 +31,6 @@ COMMON_PASSWORDS = {
 
 
 def validate_password_strength(password: str) -> None:
-    if password.lower() in {p.lower() for p in COMMON_PASSWORDS}:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Password is too common or easily guessable. Please choose a stronger password.",
-        )
     """
     Enforce enterprise password complexity:
     - 10 to 128 characters
@@ -45,6 +40,11 @@ def validate_password_strength(password: str) -> None:
     - At least one special character
     - Reject common passwords
     """
+    if password.lower() in {p.lower() for p in COMMON_PASSWORDS}:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Password is too common or easily guessable. Please choose a stronger password.",
+        )
     if len(password) < 10:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

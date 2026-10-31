@@ -694,3 +694,22 @@ def test_user_login_field_validation():
             json={"email": "login@example.com", "password": "", "role": "user"},
         )
         assert res.status_code == 422
+
+
+# =====================================================================
+# Docstring Placement Tests (Follow-up Task 9)
+# =====================================================================
+
+def test_docstring_placement_in_auth_and_security():
+    """Verify function docstrings are properly accessible on __doc__ for OpenAPI reflection."""
+    from app.api.auth import register, login
+    from app.core.security import validate_password_strength
+
+    assert register.__doc__ is not None
+    assert "Public registration endpoint" in register.__doc__
+
+    assert login.__doc__ is not None
+    assert "User/Admin login endpoint" in login.__doc__
+
+    assert validate_password_strength.__doc__ is not None
+    assert "Enforce enterprise password complexity" in validate_password_strength.__doc__

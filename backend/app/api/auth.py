@@ -21,13 +21,13 @@ router = APIRouter()
     status_code=status.HTTP_201_CREATED,
 )
 def register(user_in: UserCreate, request: Request, db: Database = Depends(get_db)):
-    ip = get_client_ip(request)
-    enforce_rate_limit(f"register:ip:{ip}", max_requests=3, window_seconds=60, action_description="registration attempts")
     """
     Public registration endpoint.
     Creates a new applicant, generates an access token, and returns
     a flat session response conforming to the frozen frontend contract.
     """
+    ip = get_client_ip(request)
+    enforce_rate_limit(f"register:ip:{ip}", max_requests=3, window_seconds=60, action_description="registration attempts")
     user = create_user(db, user_in)
     token = create_access_token(
         subject=str(user["_id"]),
@@ -52,17 +52,17 @@ def register(user_in: UserCreate, request: Request, db: Database = Depends(get_d
     status_code=status.HTTP_200_OK,
 )
 def login(login_in: UserLogin, request: Request, db: Database = Depends(get_db)):
+    """
+    User/Admin login endpoint.
+    Authenticates against credentials and requested role, generates an
+    access token, and returns a flat session response.
+    """
     ip = get_client_ip(request)
     normalized_email = login_in.email.strip().lower()
     # Independent IP rate limit: max 20 attempts per IP per minute
     enforce_rate_limit(f"login:ip:{ip}", max_requests=20, window_seconds=60, action_description="login attempts from this IP")
     # Independent account rate limit: max 5 attempts per account per minute
     enforce_rate_limit(f"login:account:{normalized_email}", max_requests=5, window_seconds=60, action_description="login attempts for this account")
-    """
-    User/Admin login endpoint.
-    Authenticates against credentials and requested role, generates an
-    access token, and returns a flat session response.
-    """
     user = authenticate_user(db, login_in.email, login_in.password, login_in.role)
     token = create_access_token(
         subject=str(user["_id"]),
