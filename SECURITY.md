@@ -95,3 +95,18 @@ If you discover a security vulnerability in Smart Enroll:
 - **Canonical Format:** Application IDs follow the strict 11-character sequential pattern `SE<YYYY><5-digit sequence>`, for example `SE202600001`.
 - **Atomic Concurrency Guarantee:** IDs are generated atomically using MongoDB `find_one_and_update` on the `counters` collection with `$inc: {seq: 1}`, ensuring gapless and collision-free identifiers under high concurrency.
 - **Exhaustion & Safety:** Supports up to 99,999 sequential applications per academic year; sequence exhaustion raises a hard runtime exception rather than wrapping or colliding.
+
+### 3.7 Academic Eligibility Engine & Stale Protection (Increment 16)
+- **Evaluation Authority & Boundaries:**
+  - **Orchestrated Evaluation:** Triggered deterministically by the agent orchestrator via `tool_check_eligibility` when the application reaches `ELIGIBILITY_CHECK` status.
+  - **Administrative Trigger:** Permitted on-demand for administrators via `POST /api/v1/applications/{id}/eligibility/evaluate`, protected by slowapi rate limiting (30 req/min per user). Applicants are strictly forbidden from calling this endpoint (returns HTTP 403 Forbidden).
+  - **Ownership & Result Inspection:** Reading eligibility via `GET /api/v1/applications/{id}/eligibility` enforces horizontal ownership (`assert_owner`). Applicants may view only their own evaluation; cross-applicant attempts receive HTTP 403 Forbidden. Administrators may view any application.
+- **Stale Result Prevention (Design Decision D9):**
+  - **Canonical SHA-256 Input Hash:** Every evaluation computes a cryptographically strong SHA-256 hash over canonical, sorted representations of programme rules, application fields, and verified document records.
+  - **Verification Gate:** `tool_update_application_status` strictly gates transitions to `ELIGIBLE` and `INELIGIBLE` by requiring:
+    1. A persisted `eligibilityResult` whose evaluated status strictly matches the target status.
+    2. The persisted `inputHash` strictly matches a freshly calculated SHA-256 hash of current database state.
+  - **Tampering & Mutation Invalidation:** If any document is re-uploaded, modified, or replaced after evaluation, the fresh hash differs from the persisted hash. The status update is rejected with a `stale evaluation` error, requiring re-evaluation.
+- **LLM Non-Supremacy:**
+  - Admission decisions are strictly server-side and rule-based. The LLM planner never infers or decides eligibility.
+  - Guardrails reject any model proposal that attempts to set `ELIGIBLE`, `INELIGIBLE`, or `PROCESSING_COMPLETE` without verified deterministic evaluation evidence.
