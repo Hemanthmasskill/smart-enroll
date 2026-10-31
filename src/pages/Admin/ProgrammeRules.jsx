@@ -1,5 +1,6 @@
 import { Fragment, useEffect, useState } from "react";
 import PageHeader from "../../components/PageHeader";
+import PrototypeNotice from "../../components/PrototypeNotice";
 import { getProgrammeRules, updateProgrammeRules } from "../../services/api";
 import "./Admin.css";
 
@@ -51,6 +52,10 @@ export default function ProgrammeRules() {
         title="Programme Rules"
         subtitle="Deterministic, system-owned eligibility configuration for each programme."
       />
+
+      <PrototypeNotice>
+        Programme rules service (Increment 16) is not yet connected to the backend. This screen displays prototype data.
+      </PrototypeNotice>
 
       {feedback && (
         <div className="admin-feedback" role="status" aria-live="polite">{feedback}</div>

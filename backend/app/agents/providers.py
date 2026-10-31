@@ -15,6 +15,7 @@ from abc import ABC, abstractmethod
 import ipaddress
 import logging
 import socket
+import threading
 from typing import Any
 import urllib.parse
 
@@ -98,6 +99,11 @@ def validate_endpoint_url(url: str, allow_local_endpoints: bool = False) -> str:
         raise LLMSSRFValidationError("Invalid URL: missing hostname.")
 
     is_loopback = is_local_endpoint(clean_url)
+    if not is_loopback and parsed.scheme != "https":
+        raise LLMSSRFValidationError(
+            f"Insecure scheme '{parsed.scheme}'. Remote endpoints must use 'https://'."
+        )
+
     if is_loopback:
         if allow_local_endpoints:
             return clean_url
@@ -212,6 +218,7 @@ class OpenAICompatibleProvider(LLMProvider):
         api_base: str = "https://api.openai.com/v1",
         timeout_seconds: float = 15.0,
         temperature: float = 0.0,
+        max_tokens: int = 512,
         allow_local_endpoints: bool = False,
         transport: httpx.BaseTransport | None = None,
     ):
@@ -220,6 +227,7 @@ class OpenAICompatibleProvider(LLMProvider):
         self.api_base = validate_endpoint_url(api_base, allow_local_endpoints=allow_local_endpoints)
         self.timeout_seconds = max(1.0, float(timeout_seconds))
         self.temperature = max(0.0, min(1.0, float(temperature)))
+        self.max_tokens = max(1, int(max_tokens))
         self.allow_local_endpoints = allow_local_endpoints
 
         self._client = httpx.Client(
@@ -253,6 +261,7 @@ class OpenAICompatibleProvider(LLMProvider):
                 {"role": "user", "content": user_prompt},
             ],
             "temperature": self.temperature,
+            "max_tokens": self.max_tokens,
             "response_format": {"type": "json_object"},
         }
 
@@ -297,3 +306,83 @@ class OpenAICompatibleProvider(LLMProvider):
             self._client.close()
         except Exception:
             pass
+
+
+# =====================================================================
+# Cached Singleton Provider Lifecycle
+# =====================================================================
+
+_CACHED_PROVIDER: LLMProvider | None = None
+_CACHED_PROVIDER_CONFIG: dict[str, Any] | None = None
+_PROVIDER_LOCK = threading.Lock()
+
+
+def get_llm_provider() -> LLMProvider | None:
+    """
+    Get or initialize the cached singleton LLMProvider instance based on current settings.
+    Avoids re-instantiating HTTP client and socket connection pools across requests.
+    """
+    global _CACHED_PROVIDER, _CACHED_PROVIDER_CONFIG
+    from app.core.config import settings
+
+    if settings.LLM_PROVIDER not in ("openai_compatible", "openai"):
+        return None
+
+    is_local = is_local_endpoint(settings.LLM_API_BASE)
+    has_valid_credentials = bool(settings.LLM_API_KEY and settings.LLM_API_KEY.strip())
+    can_initialize = (is_local and settings.LLM_ALLOW_LOCAL_ENDPOINTS) or (
+        not is_local and has_valid_credentials
+    )
+    if not can_initialize:
+        return None
+
+    current_config = {
+        "provider": settings.LLM_PROVIDER,
+        "api_key": settings.LLM_API_KEY,
+        "model": settings.LLM_MODEL,
+        "api_base": settings.LLM_API_BASE,
+        "timeout_seconds": settings.LLM_TIMEOUT_SECONDS,
+        "temperature": settings.LLM_TEMPERATURE,
+        "allow_local_endpoints": settings.LLM_ALLOW_LOCAL_ENDPOINTS,
+    }
+
+    with _PROVIDER_LOCK:
+        if _CACHED_PROVIDER is not None and _CACHED_PROVIDER_CONFIG == current_config:
+            return _CACHED_PROVIDER
+
+        if _CACHED_PROVIDER is not None:
+            try:
+                _CACHED_PROVIDER.close()
+            except Exception:
+                pass
+            _CACHED_PROVIDER = None
+            _CACHED_PROVIDER_CONFIG = None
+
+        try:
+            _CACHED_PROVIDER = OpenAICompatibleProvider(
+                api_key=settings.LLM_API_KEY,
+                model=settings.LLM_MODEL,
+                api_base=settings.LLM_API_BASE,
+                timeout_seconds=settings.LLM_TIMEOUT_SECONDS,
+                temperature=settings.LLM_TEMPERATURE,
+                max_tokens=512,
+                allow_local_endpoints=settings.LLM_ALLOW_LOCAL_ENDPOINTS,
+            )
+            _CACHED_PROVIDER_CONFIG = current_config
+            return _CACHED_PROVIDER
+        except (LLMSSRFValidationError, LLMProviderError) as exc:
+            logger.warning("Cannot initialize LLM provider due to validation error: %s", exc)
+            return None
+
+
+def close_llm_provider() -> None:
+    """Close and reset the cached singleton LLMProvider instance."""
+    global _CACHED_PROVIDER, _CACHED_PROVIDER_CONFIG
+    with _PROVIDER_LOCK:
+        if _CACHED_PROVIDER is not None:
+            try:
+                _CACHED_PROVIDER.close()
+            except Exception:
+                pass
+            _CACHED_PROVIDER = None
+            _CACHED_PROVIDER_CONFIG = None

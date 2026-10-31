@@ -9,6 +9,7 @@
     "preview": "vite preview",
     "cy:open": "cypress open",
     "cy:run": "cypress run",
+    "cy:run:real": "cypress run --config-file cypress.config.real.js",
     "test:e2e": "cypress run"
   },
   "dependencies": {

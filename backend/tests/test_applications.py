@@ -34,6 +34,7 @@ def clean_db():
         assert db.name == "smartenroll_test"
         db["users"].delete_many({})
         db["applications"].delete_many({})
+        db["counters"].delete_many({})
         db["users"].create_index("email", unique=True)
         db["applications"].create_index("userId", unique=True, sparse=True)
         db["applications"].create_index("applicationId", unique=True, sparse=True)
@@ -41,6 +42,7 @@ def clean_db():
         assert db.name == "smartenroll_test"
         db["users"].delete_many({})
         db["applications"].delete_many({})
+        db["counters"].delete_many({})
 
 
 def register_applicant(client: TestClient, email: str = "applicant1@example.com", name: str = "Applicant One"):
@@ -417,9 +419,9 @@ def test_already_submitted_application_cannot_be_submitted_again():
         res1 = client.post(f"/api/v1/applications/{app_id}/submit", headers=headers)
         assert res1.status_code == 200
 
-        # Second submit
+        # Second submit: returns 409 Conflict
         res2 = client.post(f"/api/v1/applications/{app_id}/submit", headers=headers)
-        assert res2.status_code == 400
+        assert res2.status_code == 409
         assert "already submitted" in res2.json()["detail"].lower()
 
 
@@ -467,14 +469,194 @@ def test_applicant_cannot_use_admin_listing_endpoint():
 # 10. SEED COMPATIBILITY WITH INCREMENT 9
 # ==============================================================================
 
-def test_seed_and_get_application():
-    with TestClient(app) as client:
-        seed_response = client.post("/api/v1/applications/seed")
-        assert seed_response.status_code == 200
-        assert seed_response.json() == {"status": "Database seeded successfully"}
+def test_seed_and_get_application(monkeypatch):
+    """
+    C1 regression tests:
+    - Disabled by default returns 404
+    - When enabled, unauthenticated call returns 401
+    - When enabled, applicant returns 403
+    - When enabled, admin returns 200 and performs non-destructive seed
+    """
+    from app.core.config import settings
 
+    with TestClient(app) as client:
+        # 1. Disabled by default returns 404
+        res_disabled = client.post("/api/v1/applications/seed")
+        assert res_disabled.status_code == 404
+        assert "disabled" in res_disabled.json().get("detail", "").lower()
+
+        # Enable for dev testing
+        monkeypatch.setattr(settings, "ENABLE_DEV_SEED", True)
+        monkeypatch.setattr(settings, "ENV", "development")
+
+        # 2. Unauthenticated call returns 401
+        res_unauth = client.post("/api/v1/applications/seed")
+        assert res_unauth.status_code == 401
+
+        # 3. Applicant returns 403
+        _, applicant_headers = register_applicant(client)
+        res_applicant = client.post("/api/v1/applications/seed", headers=applicant_headers)
+        assert res_applicant.status_code == 403
+
+        # 4. Admin returns 200
         admin_headers = get_admin_headers()
-        get_response = client.get("/api/v1/applications/APL-1001", headers=admin_headers)
+        seed_response = client.post("/api/v1/applications/seed", headers=admin_headers)
+        assert seed_response.status_code == 200
+        assert seed_response.json()["status"] == "Database seeded successfully"
+
+        # 5. Non-destructive: verify second seed does not delete existing records
+        db = get_db()
+        db["applications"].update_one(
+            {"applicationId": "SE20260001"},
+            {"$set": {"sentinelMarker": "preserved_not_deleted"}},
+        )
+        res_admin_2 = client.post("/api/v1/applications/seed", headers=admin_headers)
+        assert res_admin_2.status_code == 200
+        re_checked = db["applications"].find_one({"applicationId": "SE20260001"})
+        assert re_checked.get("sentinelMarker") == "preserved_not_deleted"
+
+        get_response = client.get("/api/v1/applications/SE20260001", headers=admin_headers)
         assert get_response.status_code == 200
         data = get_response.json()
         assert data["applicantId"] == "APL-1001"
+
+def test_applicant_cannot_access_another_applicant_application_by_applicant_id():
+    """
+    Regression test for H2:
+    Applicant A cannot read, update, or submit Applicant B's application,
+    even if they know/guess Applicant B's applicantId.
+    Applications must be queried by applicationId only, and ownership must
+    be enforced strictly by userId.
+    """
+    with TestClient(app) as client:
+        # Register Applicant B and create application
+        user_b, headers_b = register_applicant(client, email="victim@example.com")
+        create_res_b = client.post(
+            "/api/v1/applications",
+            json=COMPLETE_APPLICATION_PAYLOAD,
+            headers=headers_b,
+        )
+        assert create_res_b.status_code == 201
+        data_b = create_res_b.json()
+        app_b_id = data_b["applicationId"]
+        applicant_b_id = data_b["applicantId"]
+        assert applicant_b_id is not None
+
+        # Register Applicant A (attacker)
+        user_a, headers_a = register_applicant(client, email="attacker@example.com")
+
+        # 1. Attacker tries to read Applicant B's application by applicationId -> 403
+        res_read_app_id = client.get(f"/api/v1/applications/{app_b_id}", headers=headers_a)
+        assert res_read_app_id.status_code == 403
+
+        # 2. Attacker tries to read Applicant B's application by guessing applicantId -> 404
+        # (because lookup is strictly by applicationId)
+        res_read_applicant_id = client.get(f"/api/v1/applications/{applicant_b_id}", headers=headers_a)
+        assert res_read_applicant_id.status_code in (403, 404)
+
+        # 3. Attacker tries to update Applicant B's application by applicationId -> 403
+        res_update_app_id = client.put(
+            f"/api/v1/applications/{app_b_id}",
+            json={"city": "HackedCity"},
+            headers=headers_a,
+        )
+        assert res_update_app_id.status_code == 403
+
+        # 4. Attacker tries to update Applicant B's application by guessing applicantId -> 404
+        res_update_applicant_id = client.put(
+            f"/api/v1/applications/{applicant_b_id}",
+            json={"city": "HackedCity"},
+            headers=headers_a,
+        )
+        assert res_update_applicant_id.status_code in (403, 404)
+
+        # 5. Attacker tries to submit Applicant B's application by applicationId -> 403
+        res_submit_app_id = client.post(
+            f"/api/v1/applications/{app_b_id}/submit",
+            headers=headers_a,
+        )
+        assert res_submit_app_id.status_code == 403
+
+        # 6. Attacker tries to submit Applicant B's application by applicantId -> 404
+        res_submit_applicant_id = client.post(
+            f"/api/v1/applications/{applicant_b_id}/submit",
+            headers=headers_a,
+        )
+        assert res_submit_applicant_id.status_code in (403, 404)
+
+def test_concurrent_application_id_generation_gapless_and_unique():
+    """
+    Regression test for H5 (Task 2.4):
+    20 simultaneous create_application calls produce 20 distinct sequential IDs
+    with no duplicates and no gaps.
+    """
+    import concurrent.futures
+
+    with TestClient(app) as client:
+        # Pre-register 20 distinct applicants
+        applicants = []
+        for i in range(20):
+            user, headers = register_applicant(
+                client,
+                email=f"concurrent_app_{i}@example.com",
+                name=f"Concurrent Applicant {i}",
+            )
+            applicants.append((user, headers))
+
+        def create_app(idx_and_applicant):
+            idx, (user, headers) = idx_and_applicant
+            payload = {"programmeId": "mca"}
+            res = client.post("/api/v1/applications", json=payload, headers=headers)
+            assert res.status_code == 201, f"Failed at {idx}: {res.text}"
+            return res.json()["applicationId"]
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
+            generated_ids = list(executor.map(create_app, enumerate(applicants)))
+
+        # 20 distinct sequential IDs with no duplicates
+        assert len(generated_ids) == 20
+        assert len(set(generated_ids)) == 20
+
+        # Verify all start with SE2026
+        for app_id in generated_ids:
+            assert app_id.startswith("SE2026")
+            assert len(app_id) == 11  # SE (2) + 2026 (4) + 00001 (5) = 11
+
+        # Verify gapless sequence from 1 to 20
+        seq_numbers = sorted(int(app_id[6:]) for app_id in generated_ids)
+        assert seq_numbers == list(range(1, 21)), f"Gaps detected in sequences: {seq_numbers}"
+
+def test_concurrent_application_submission_atomic_conflict():
+    """
+    Regression test for H5 (Task 2.5):
+    Two simultaneous submissions against a draft application using a threading.Barrier
+    must result in exactly one 200 (Success) and one 409 (Conflict).
+    """
+    import threading
+
+    with TestClient(app) as client:
+        _, headers = register_applicant(client, email="race_submit@example.com")
+        create_res = client.post(
+            "/api/v1/applications",
+            json=COMPLETE_APPLICATION_PAYLOAD,
+            headers=headers,
+        )
+        assert create_res.status_code == 201
+        app_id = create_res.json()["applicationId"]
+
+        barrier = threading.Barrier(2)
+        results = []
+
+        def submit_worker():
+            barrier.wait()
+            res = client.post(f"/api/v1/applications/{app_id}/submit", headers=headers)
+            results.append(res.status_code)
+
+        t1 = threading.Thread(target=submit_worker)
+        t2 = threading.Thread(target=submit_worker)
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
+
+        assert sorted(results) == [200, 409], f"Expected [200, 409], got {results}"

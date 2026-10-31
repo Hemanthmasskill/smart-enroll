@@ -2,7 +2,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pymongo.database import Database
 
 from app.agents.tools import list_agent_activity
-from app.api.deps import get_current_user
+from app.api.deps import RequireRole, get_current_user
+from app.core.rate_limit import enforce_rate_limit
 from app.core.database import get_db
 from app.schemas.agent import (
     AgentSystemStatusResponse,
@@ -18,7 +19,7 @@ router = APIRouter()
     response_model=AgentSystemStatusResponse,
     tags=["Agent Orchestration"],
 )
-def get_agent_system_status():
+def get_agent_system_status(current_user: dict = Depends(RequireRole(["admin"]))):
     """
     Retrieve sanitized system status of the agent orchestrator and LLM provider configuration.
     Strictly excludes API keys, secrets, or internal credentials.
@@ -87,7 +88,8 @@ def get_agent_activity_endpoint(
     applicationId: str | None = Query(None, description="Filter by application ID"),
     stage: str | None = Query(None, description="Filter by workflow stage"),
     status: str | None = Query(None, description="Filter by status"),
-    limit: int = Query(100, ge=1, le=500),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=100),
     current_user: dict = Depends(get_current_user),
     db: Database = Depends(get_db),
 ):
@@ -115,7 +117,8 @@ def get_application_agent_activity_endpoint(
     application_id: str,
     stage: str | None = Query(None),
     status: str | None = Query(None),
-    limit: int = Query(100, ge=1, le=500),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=100),
     current_user: dict = Depends(get_current_user),
     db: Database = Depends(get_db),
 ):
@@ -150,6 +153,8 @@ def orchestrate_application_endpoint(
     """
     from app.agents.orchestrator import AgentOrchestrator
 
+    user_id = str(current_user.get("_id") or current_user.get("id"))
+    enforce_rate_limit(f"orchestrate:{user_id}", max_requests=5, window_seconds=60, action_description="orchestration executions")
     orchestrator = AgentOrchestrator(db=db)
     return orchestrator.run(application_id=application_id, triggered_by_user=current_user)
 

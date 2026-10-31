@@ -28,3 +28,17 @@ def enforce_test_database_isolation():
     )
     yield
     close_mongo_connection()
+
+
+@pytest.fixture(autouse=True)
+def manage_rate_limiting_for_tests(monkeypatch, request):
+    """
+    Automatically bypasses rate limiting for non-rate-limit tests to avoid false throttling,
+    while resetting and enabling rate limiting for tests that explicitly target rate limits.
+    """
+    from app.core.rate_limit import limiter
+    limiter.reset()
+    if "rate_limit" not in request.keywords and "test_rate_limit" not in request.node.name:
+        monkeypatch.setattr("app.core.config.settings.RATE_LIMIT_ENABLED", False)
+    else:
+        monkeypatch.setattr("app.core.config.settings.RATE_LIMIT_ENABLED", True)

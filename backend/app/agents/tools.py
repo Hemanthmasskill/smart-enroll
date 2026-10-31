@@ -446,18 +446,15 @@ def tool_update_application_status(
     # 1. Enforce strict role boundary: applicants can never update workflow status
     user_role = current_user.get("role")
     if user_role == "applicant":
-        user_id = str(current_user.get("_id"))
-        applicant_id = current_user.get("applicant_id")
-        app = db["applications"].find_one(
-            {"$or": [{"applicationId": application_id}, {"applicantId": application_id}]}
-        )
+        user_id = str(current_user.get("_id") or current_user.get("id"))
+        app = db["applications"].find_one({"applicationId": application_id})
         if not app:
             return ToolExecutionResult(
                 tool=ToolName.UPDATE_APPLICATION_STATUS.value,
                 status=ToolStatus.FAILED.value,
                 message=f"Application '{application_id}' not found.",
             )
-        if app.get("userId") != user_id and app.get("applicantId") != applicant_id:
+        if app.get("userId") != user_id:
             return ToolExecutionResult(
                 tool=ToolName.UPDATE_APPLICATION_STATUS.value,
                 status=ToolStatus.FAILED.value,
@@ -477,9 +474,7 @@ def tool_update_application_status(
         )
 
     # 2. Retrieve application record
-    app = db["applications"].find_one(
-        {"$or": [{"applicationId": application_id}, {"applicantId": application_id}]}
-    )
+    app = db["applications"].find_one({"applicationId": application_id})
     if not app:
         return ToolExecutionResult(
             tool=ToolName.UPDATE_APPLICATION_STATUS.value,
@@ -504,7 +499,81 @@ def tool_update_application_status(
             message=f"Invalid status transition from '{current_status}' to '{status_clean}'.",
         )
 
-    # 4. Enforce deterministic eligibility gate for terminal eligibility states
+    # 4. Enforce document-verification evidence for ELIGIBILITY_CHECK
+    if status_clean == "ELIGIBILITY_CHECK":
+        docs = list(db["documents"].find({"applicationId": app_id}))
+
+        # 4a. All six required document types must exist
+        existing_types = {d.get("documentType") for d in docs if d.get("documentType")}
+        missing_types = [t for t in REQUIRED_DOCUMENT_TYPES if t not in existing_types]
+        if missing_types:
+            return ToolExecutionResult(
+                tool=ToolName.UPDATE_APPLICATION_STATUS.value,
+                status=ToolStatus.FAILED.value,
+                data={
+                    "applicationId": app_id,
+                    "currentStatus": current_status,
+                    "targetStatus": status_clean,
+                    "missingDocumentTypes": missing_types,
+                },
+                message=f"Cannot transition to 'ELIGIBILITY_CHECK': missing {len(missing_types)} required document type(s): {', '.join(sorted(missing_types))}.",
+            )
+
+        # 4b. No MISMATCH, MANUAL_REVIEW, FAILED or REJECTED state in status, validationStatus, or processingStatus
+        disallowed_states = {"MISMATCH", "MANUAL_REVIEW", "FAILED", "REJECTED", "ERROR"}
+        flagged_or_failed = [
+            d for d in docs
+            if d.get("status") in disallowed_states
+            or d.get("validationStatus") in disallowed_states
+            or d.get("processingStatus") in disallowed_states
+        ]
+        if flagged_or_failed:
+            return ToolExecutionResult(
+                tool=ToolName.UPDATE_APPLICATION_STATUS.value,
+                status=ToolStatus.FAILED.value,
+                data={
+                    "applicationId": app_id,
+                    "currentStatus": current_status,
+                    "targetStatus": status_clean,
+                },
+                message="Cannot transition to 'ELIGIBILITY_CHECK': document verification detected data conflicts or manual review flags, or failed states.",
+            )
+
+        # 4c. Each document must have a processingStatus field present and equal to 'COMPLETED'
+        missing_or_incomplete_processing = [
+            d for d in docs
+            if d.get("processingStatus") != "COMPLETED"
+        ]
+        if missing_or_incomplete_processing:
+            return ToolExecutionResult(
+                tool=ToolName.UPDATE_APPLICATION_STATUS.value,
+                status=ToolStatus.FAILED.value,
+                data={
+                    "applicationId": app_id,
+                    "currentStatus": current_status,
+                    "targetStatus": status_clean,
+                },
+                message="Cannot transition to 'ELIGIBILITY_CHECK': every required document must have a 'processingStatus' field present and equal to 'COMPLETED'.",
+            )
+
+        # 4d. Each document must have validationStatus == 'VALIDATED'
+        unvalidated = [
+            d for d in docs
+            if d.get("validationStatus") != "VALIDATED"
+        ]
+        if unvalidated:
+            return ToolExecutionResult(
+                tool=ToolName.UPDATE_APPLICATION_STATUS.value,
+                status=ToolStatus.FAILED.value,
+                data={
+                    "applicationId": app_id,
+                    "currentStatus": current_status,
+                    "targetStatus": status_clean,
+                },
+                message="Cannot transition to 'ELIGIBILITY_CHECK': not all uploaded documents have verified validation evidence.",
+            )
+
+    # 5. Enforce deterministic eligibility gate for terminal eligibility states
     if status_clean in ("ELIGIBLE", "INELIGIBLE"):
         eligibility_result = app.get("eligibilityResult")
         if not eligibility_result or not isinstance(eligibility_result, dict) or eligibility_result.get("status") != status_clean:
@@ -769,7 +838,11 @@ def execute_tool(
         )
 
     call_params = dict(parameters)
-    if run_id and "run_id" not in call_params:
+    # Strip caller-provided internal keys to prevent injection
+    call_params.pop("db", None)
+    call_params.pop("current_user", None)
+    call_params.pop("run_id", None)
+    if run_id:
         call_params["run_id"] = run_id
 
     try:

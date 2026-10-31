@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import PageHeader from "../../components/PageHeader";
+import PrototypeNotice from "../../components/PrototypeNotice";
 import StatCard from "../../components/StatCard";
 import { getAdminAnalytics } from "../../services/api";
 import { getStatusLabel } from "../../utils/statusUtils";
@@ -40,6 +41,10 @@ export default function Analytics() {
         title="Admission Analytics"
         subtitle="Prototype analytics computed from the current demo dataset."
       />
+
+      <PrototypeNotice>
+        Analytics service (Increment 19) is not yet connected to the backend. This screen displays prototype data.
+      </PrototypeNotice>
 
       <div className="admin-stat-grid">
         <StatCard label="Total Applications" value={data.total} />

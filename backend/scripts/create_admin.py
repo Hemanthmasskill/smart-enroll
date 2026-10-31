@@ -13,7 +13,8 @@ from pymongo import MongoClient
 from pymongo.errors import DuplicateKeyError
 
 from app.core.config import settings
-from app.core.security import get_password_hash
+from app.core.security import get_password_hash, validate_password_strength
+from fastapi import HTTPException
 
 
 def create_admin(email: str, full_name: str, password: str) -> bool:
@@ -31,6 +32,12 @@ def create_admin(email: str, full_name: str, password: str) -> bool:
         return False
     if not password:
         print("Error: Password cannot be empty.", file=sys.stderr)
+        return False
+
+    try:
+        validate_password_strength(password)
+    except HTTPException as e:
+        print(f"Error: Password does not meet security requirements: {e.detail}", file=sys.stderr)
         return False
 
     client = MongoClient(settings.MONGODB_URI)
@@ -53,7 +60,10 @@ def create_admin(email: str, full_name: str, password: str) -> bool:
         "full_name": full_name.strip(),
         "role": "admin",
         "applicant_id": None,
+        "tokenVersion": 1,
+        "is_active": True,
         "created_at": datetime.now(timezone.utc).isoformat(),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
     }
 
     try:
@@ -106,16 +116,21 @@ def main():
             print("\nAborted.")
             sys.exit(1)
 
-    try:
-        password = getpass.getpass("Enter admin password: ")
-        confirm_password = getpass.getpass("Confirm admin password: ")
-    except (KeyboardInterrupt, EOFError):
-        print("\nAborted.")
-        sys.exit(1)
+    import os
+    env_password = os.getenv("ADMIN_PASSWORD")
+    if env_password:
+        password = env_password
+    else:
+        try:
+            password = getpass.getpass("Enter admin password: ")
+            confirm_password = getpass.getpass("Confirm admin password: ")
+        except (KeyboardInterrupt, EOFError):
+            print("\nAborted.")
+            sys.exit(1)
 
-    if password != confirm_password:
-        print("Error: Passwords do not match.", file=sys.stderr)
-        sys.exit(1)
+        if password != confirm_password:
+            print("Error: Passwords do not match.", file=sys.stderr)
+            sys.exit(1)
 
     success = create_admin(email=email, full_name=name, password=password)
     if not success:

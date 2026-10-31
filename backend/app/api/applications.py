@@ -1,8 +1,9 @@
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pymongo.database import Database
 
 from app.api.deps import RequireRole, get_current_user
 from app.core.database import get_db
+from app.core.rate_limit import enforce_rate_limit
 from app.schemas.application import (
     ApplicationCreate,
     ApplicationResponse,
@@ -23,14 +24,29 @@ from app.utils.seed_data import MOCK_APPLICATION
 router = APIRouter()
 
 
+from app.core.config import settings
+
+
+def verify_dev_seed_enabled():
+    if not (settings.ENABLE_DEV_SEED and settings.ENV.lower() == "development"):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Dev seed endpoint is disabled",
+        )
+
+
 @router.post("/seed", tags=["Applications"])
-def seed_application(db: Database = Depends(get_db)):
+def seed_application(
+    _: None = Depends(verify_dev_seed_enabled),
+    current_user: dict = Depends(RequireRole(["admin"])),
+    db: Database = Depends(get_db),
+):
     """
     Seed mock application data for development and testing.
-    Idempotent operation.
+    Protected dev-only endpoint: disabled by default, requires admin role, and non-destructive.
     """
-    seed_application_record(db, MOCK_APPLICATION)
-    return {"status": "Database seeded successfully"}
+    seeded_doc = seed_application_record(db, MOCK_APPLICATION)
+    return {"status": "Database seeded successfully", "applicationId": seeded_doc.get("applicationId")}
 
 
 @router.get("/me", response_model=ApplicationResponse, tags=["Applications"])
@@ -60,6 +76,13 @@ def create_new_application(
     Create a new application in DRAFT state for the authenticated applicant.
     Enforces single application per applicant (409 Conflict on duplicate).
     """
+    user_id = str(current_user.get("_id") or current_user.get("id"))
+    enforce_rate_limit(
+        f"app_create:{user_id}",
+        max_requests=10,
+        window_seconds=60,
+        action_description="application creation requests",
+    )
     return create_application(db, current_user, app_in)
 
 
@@ -69,13 +92,15 @@ def create_new_application(
     tags=["Applications"],
 )
 def list_all_applications(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=100),
     current_user: dict = Depends(RequireRole(["admin"])),
     db: Database = Depends(get_db),
 ):
     """
-    Admin-only endpoint: list application summaries.
+    Admin-only endpoint: list application summaries with pagination support.
     """
-    return list_applications(db)
+    return list_applications(db, skip=skip, limit=limit)
 
 
 @router.get(
@@ -111,6 +136,13 @@ def update_draft_application(
     Update editable fields of an application.
     Allowed only for the application owner and only while in DRAFT status.
     """
+    user_id = str(current_user.get("_id") or current_user.get("id"))
+    enforce_rate_limit(
+        f"app_update:{user_id}",
+        max_requests=30,
+        window_seconds=60,
+        action_description="application update requests",
+    )
     return update_application(db, current_user, application_id, app_update)
 
 

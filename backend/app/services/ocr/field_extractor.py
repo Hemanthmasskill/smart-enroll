@@ -3,6 +3,8 @@ import re
 from typing import Any
 from app.schemas.document_processing import ExtractedField, ExtractedFields
 
+MAX_OCR_TEXT_LENGTH = 100_000
+
 
 # Regex patterns for key labels
 NAME_PATTERNS = [
@@ -119,6 +121,9 @@ def extract_fields_from_text(text: str, document_type: str | None = None) -> Ext
     """
     if not text:
         return ExtractedFields()
+
+    # Defense-in-depth: cap input length to prevent catastrophic backtracking (ReDoS)
+    text = text[:MAX_OCR_TEXT_LENGTH]
 
     fields = ExtractedFields()
 

@@ -393,3 +393,56 @@ export const mockAgentActivity = [
   { id: "log-042", timestamp: "08 Sep 2026, 11:02:00 AM", applicationId: "SE20260006", applicantName: "Meera Joseph", stage: "ACT", tool: "update_application_status", action: "Updated application status", result: "Application marked INELIGIBLE", status: "COMPLETED" },
   { id: "log-043", timestamp: "08 Sep 2026, 11:03:00 AM", applicationId: "SE20260006", applicantName: "Meera Joseph", stage: "ACT", tool: "send_notification", action: "Applicant notification generated", result: "Applicant notified of ineligibility outcome", status: "COMPLETED" },
 ];
+
+const INITIAL_DATA = JSON.parse(
+  JSON.stringify({
+    mockApplicants,
+    mockPrograms,
+    mockApplications,
+    mockDocuments,
+    mockDigiLockerRecords,
+    mockRecentActivity,
+    mockEligibilityRules,
+    mockNotifications,
+    mockAdminApplications,
+    mockExceptions,
+    mockAgentActivity,
+  })
+);
+
+export function resetMockData() {
+  const fresh = JSON.parse(JSON.stringify(INITIAL_DATA));
+
+  mockApplicants.length = 0;
+  mockApplicants.push(...fresh.mockApplicants);
+
+  mockPrograms.length = 0;
+  mockPrograms.push(...fresh.mockPrograms);
+
+  Object.keys(mockApplications).forEach((k) => delete mockApplications[k]);
+  Object.assign(mockApplications, fresh.mockApplications);
+
+  Object.keys(mockDocuments).forEach((k) => delete mockDocuments[k]);
+  Object.assign(mockDocuments, fresh.mockDocuments);
+
+  Object.keys(mockDigiLockerRecords).forEach((k) => delete mockDigiLockerRecords[k]);
+  Object.assign(mockDigiLockerRecords, fresh.mockDigiLockerRecords);
+
+  mockRecentActivity.length = 0;
+  mockRecentActivity.push(...fresh.mockRecentActivity);
+
+  Object.keys(mockEligibilityRules).forEach((k) => delete mockEligibilityRules[k]);
+  Object.assign(mockEligibilityRules, fresh.mockEligibilityRules);
+
+  Object.keys(mockNotifications).forEach((k) => delete mockNotifications[k]);
+  Object.assign(mockNotifications, fresh.mockNotifications);
+
+  mockAdminApplications.length = 0;
+  mockAdminApplications.push(...fresh.mockAdminApplications);
+
+  mockExceptions.length = 0;
+  mockExceptions.push(...fresh.mockExceptions);
+
+  mockAgentActivity.length = 0;
+  mockAgentActivity.push(...fresh.mockAgentActivity);
+}

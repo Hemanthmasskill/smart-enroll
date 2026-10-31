@@ -1,3 +1,4 @@
+from app.api.deps import assert_owner
 from datetime import datetime, timezone
 from fastapi import HTTPException, status
 from pymongo import ReturnDocument
@@ -46,30 +47,28 @@ SUBMISSION_REQUIRED_FIELDS = [
 
 def generate_application_id(db: Database) -> str:
     """
-    Generate next application ID following the project convention:
-    SE<current_year><4-digit sequential>, e.g., SE20260001.
+    Generate next application ID atomically using the 'counters' collection.
+    Format: SE<current_year><5-digit sequential>, e.g., SE202600001.
+    Capacity: 99,999 applications per year. Raises RuntimeError if exceeded.
     """
     current_year = datetime.now(timezone.utc).year
-    # Preserve 2026 academic year convention if before or in 2026
     year_str = str(max(current_year, 2026))
-    prefix = f"SE{year_str}"
+    counter_id = f"applications_{year_str}"
 
-    pattern = f"^{prefix}\\d{{4}}$"
-    highest_doc = db["applications"].find_one(
-        {"applicationId": {"$regex": pattern}},
-        sort=[("applicationId", -1)],
+    counter_doc = db["counters"].find_one_and_update(
+        {"_id": counter_id},
+        {"$inc": {"seq": 1}},
+        upsert=True,
+        return_document=ReturnDocument.AFTER,
     )
 
-    if highest_doc and "applicationId" in highest_doc:
-        try:
-            seq = int(highest_doc["applicationId"][len(prefix) :])
-            next_seq = seq + 1
-        except (ValueError, IndexError):
-            next_seq = 1
-    else:
-        next_seq = 1
+    seq = counter_doc["seq"]
+    if seq > 99999:
+        raise RuntimeError(
+            f"Application ID sequence limit exceeded for academic year {year_str} (capacity: 99,999)."
+        )
 
-    return f"{prefix}{next_seq:04d}"
+    return f"SE{year_str}{seq:05d}"
 
 
 def create_application(db: Database, current_user: dict, app_in: ApplicationCreate) -> dict:
@@ -82,11 +81,7 @@ def create_application(db: Database, current_user: dict, app_in: ApplicationCrea
     user_id = str(current_user["_id"])
     applicant_id = current_user.get("applicant_id")
 
-    query = {"$or": [{"userId": user_id}]}
-    if applicant_id:
-        query["$or"].append({"applicantId": applicant_id})
-
-    existing = db["applications"].find_one(query)
+    existing = db["applications"].find_one({"userId": user_id})
     if existing:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -138,13 +133,7 @@ def get_application_for_user(db: Database, current_user: dict) -> dict:
     Retrieve the application belonging to the currently authenticated applicant.
     """
     user_id = str(current_user["_id"])
-    applicant_id = current_user.get("applicant_id")
-
-    query = {"$or": [{"userId": user_id}]}
-    if applicant_id:
-        query["$or"].append({"applicantId": applicant_id})
-
-    app = db["applications"].find_one(query, {"_id": 0})
+    app = db["applications"].find_one({"userId": user_id}, {"_id": 0})
     if not app:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -155,12 +144,12 @@ def get_application_for_user(db: Database, current_user: dict) -> dict:
 
 def get_application_by_id(db: Database, current_user: dict, application_id: str) -> dict:
     """
-    Retrieve an application by applicationId or applicantId.
+    Retrieve an application by applicationId only.
     Admin can retrieve any application.
     Applicant can retrieve ONLY their own application.
     """
     app = db["applications"].find_one(
-        {"$or": [{"applicationId": application_id}, {"applicantId": application_id}]},
+        {"applicationId": application_id},
         {"_id": 0},
     )
     if not app:
@@ -169,27 +158,8 @@ def get_application_by_id(db: Database, current_user: dict, application_id: str)
             detail="Application not found",
         )
 
-    user_role = current_user.get("role")
-    if user_role == "admin":
-        return app
-
-    if user_role == "applicant":
-        user_id = str(current_user["_id"])
-        applicant_id = current_user.get("applicant_id")
-        app_user_id = app.get("userId")
-        app_applicant_id = app.get("applicantId")
-
-        if app_user_id != user_id and app_applicant_id != applicant_id:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Not authorized to access this application",
-            )
-        return app
-
-    raise HTTPException(
-        status_code=status.HTTP_403_FORBIDDEN,
-        detail="Operation not permitted for this role",
-    )
+    assert_owner(app, current_user)
+    return app
 
 
 def update_application(
@@ -199,36 +169,10 @@ def update_application(
     app_update: ApplicationUpdate,
 ) -> dict:
     """
-    Update an existing application in DRAFT status.
+    Update an existing application in DRAFT status atomically.
     Applicant can update ONLY their own application while it is in DRAFT.
     Server-managed fields cannot be updated.
     """
-    app = db["applications"].find_one(
-        {"$or": [{"applicationId": application_id}, {"applicantId": application_id}]}
-    )
-    if not app:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Application not found",
-        )
-
-    user_id = str(current_user["_id"])
-    applicant_id = current_user.get("applicant_id")
-    app_user_id = app.get("userId")
-    app_applicant_id = app.get("applicantId")
-
-    if app_user_id != user_id and app_applicant_id != applicant_id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Not authorized to update this application",
-        )
-
-    if app.get("status") != "DRAFT":
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Cannot edit an application that has already been submitted",
-        )
-
     updates = app_update.model_dump(exclude_unset=True)
     # Strip any protected fields that may have bypassed client validation
     for field in PROTECTED_FIELDS:
@@ -236,54 +180,77 @@ def update_application(
 
     updates["updatedAt"] = datetime.now(timezone.utc).isoformat()
 
+    user_id = str(current_user.get("_id") or current_user.get("id"))
+    is_admin = current_user.get("role") == "admin"
+
+    filter_query = {
+        "applicationId": application_id,
+        "status": "DRAFT",
+    }
+    if not is_admin:
+        filter_query["userId"] = user_id
+
     updated = db["applications"].find_one_and_update(
-        {"_id": app["_id"]},
+        filter_query,
         {"$set": updates},
         return_document=ReturnDocument.AFTER,
         projection={"_id": 0},
     )
+
+    if not updated:
+        existing = db["applications"].find_one({"applicationId": application_id})
+        if not existing:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Application not found",
+            )
+        if not is_admin and existing.get("userId") != user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Forbidden: access denied. Not authorized.",
+            )
+        curr_status = existing.get("status")
+        if curr_status != "DRAFT":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Cannot edit an application that has already been submitted (status: {curr_status})",
+            )
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Concurrent modification conflict. Please retry.",
+        )
+
     return updated
 
 
 def submit_application(db: Database, current_user: dict, application_id: str) -> dict:
     """
-    Submit a draft application.
+    Submit a draft application atomically.
     Enforces:
     - Ownership (applicant owns this application)
     - State is DRAFT
     - Completeness (all required personal, contact, academic fields are present)
     - Valid programme selection
-    Transitions status to SUBMITTED and sets submittedAt.
+    Atomic find_one_and_update ensures exactly one transition to SUBMITTED.
     """
-    app = db["applications"].find_one(
-        {"$or": [{"applicationId": application_id}, {"applicantId": application_id}]}
-    )
+    app = db["applications"].find_one({"applicationId": application_id})
     if not app:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Application not found",
         )
 
-    user_id = str(current_user["_id"])
-    applicant_id = current_user.get("applicant_id")
-    app_user_id = app.get("userId")
-    app_applicant_id = app.get("applicantId")
-
-    if app_user_id != user_id and app_applicant_id != applicant_id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Not authorized to submit this application",
-        )
+    assert_owner(app, current_user)
 
     current_status = app.get("status")
     if current_status == "SUBMITTED":
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
+            status_code=status.HTTP_409_CONFLICT,
             detail="Application is already submitted",
         )
     if current_status != "DRAFT":
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
+            status_code=status.HTTP_409_CONFLICT,
             detail=f"Cannot submit application in status {current_status}",
         )
 
@@ -314,20 +281,66 @@ def submit_application(db: Database, current_user: dict, application_id: str) ->
         "updatedAt": now,
     }
 
+    user_id = str(current_user.get("_id") or current_user.get("id"))
+    is_admin = current_user.get("role") == "admin"
+
+    filter_query = {
+        "applicationId": application_id,
+        "status": "DRAFT",
+    }
+    if not is_admin:
+        filter_query["userId"] = user_id
+
     updated = db["applications"].find_one_and_update(
-        {"_id": app["_id"]},
+        filter_query,
         {"$set": submission_updates},
         return_document=ReturnDocument.AFTER,
         projection={"_id": 0},
     )
+
+    if not updated:
+        existing = db["applications"].find_one({"applicationId": application_id})
+        if not existing:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Application not found",
+            )
+        if not is_admin and existing.get("userId") != user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Forbidden: access denied. Not authorized.",
+            )
+        curr_status = existing.get("status")
+        if curr_status == "SUBMITTED":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Application is already submitted",
+            )
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Cannot submit application: current status is {curr_status}, expected DRAFT.",
+        )
+
     return updated
 
 
-def list_applications(db: Database) -> list[dict]:
+def list_applications(
+    db: Database,
+    skip: int = 0,
+    limit: int = 100,
+) -> list[dict]:
     """
-    List all applications for admin view. Returns authoritative application-domain summary.
+    List all applications for admin view with pagination support.
+    Returns authoritative application-domain summary.
     """
-    cursor = db["applications"].find({}, {"_id": 0}).sort("createdAt", -1)
+    clamped_limit = min(100, max(1, limit))
+    cursor = (
+        db["applications"]
+        .find({}, {"_id": 0})
+        .sort("createdAt", -1)
+        .skip(max(0, skip))
+        .limit(clamped_limit)
+    )
     results = []
     for doc in cursor:
         results.append(
@@ -349,16 +362,23 @@ def list_applications(db: Database) -> list[dict]:
 # Backward compatibility with Increment 9 seed helper
 def get_application(db: Database, applicant_id: str):
     return db["applications"].find_one(
-        {"$or": [{"applicantId": applicant_id}, {"applicationId": applicant_id}]},
+        {"applicationId": applicant_id},
         {"_id": 0},
     )
 
 
 def seed_application_record(db: Database, application_data: dict):
+    """
+    Non-destructive seed operation: inserts mock application record only if absent.
+    Never deletes existing application data.
+    """
     doc = application_data.copy()
     app_id = doc.get("applicationId")
     if app_id:
-        db["applications"].delete_many({"applicationId": app_id})
+        existing = db["applications"].find_one({"applicationId": app_id})
+        if existing:
+            existing.pop("_id", None)
+            return existing
     db["applications"].insert_one(doc)
     doc.pop("_id", None)
     return doc

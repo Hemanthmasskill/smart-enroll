@@ -19,46 +19,55 @@ def connect_to_mongo():
     global client
     client = MongoClient(settings.MONGODB_URI)
     db = client[settings.DATABASE_NAME]
-    db["users"].create_index("email", unique=True)
 
-    # Ensure unique index on applicationId, resolving any legacy duplicate seed records if present
-    try:
-        db["applications"].create_index("applicationId", unique=True, sparse=True)
-    except DuplicateKeyError:
-        seen = set()
-        for doc in db["applications"].find({}, sort=[("_id", -1)]):
-            app_id = doc.get("applicationId")
-            if app_id:
-                if app_id in seen:
-                    db["applications"].delete_one({"_id": doc["_id"]})
-                else:
-                    seen.add(app_id)
-        db["applications"].create_index("applicationId", unique=True, sparse=True)
+    def _create_unique_index(collection_name: str, keys, **kwargs):
+        coll = db[collection_name]
+        try:
+            coll.create_index(keys, unique=True, **kwargs)
+        except DuplicateKeyError as e:
+            logger.critical(
+                "Database initialization failed: cannot create unique index on collection '%s' with keys %s "
+                "because duplicate records exist in the database (%s). Database startup halted non-destructively. "
+                "Run 'python backend/scripts/dedupe_applications.py' to inspect and resolve conflicting records.",
+                collection_name,
+                keys,
+                e,
+            )
+            raise DatabaseInitializationError(
+                f"Cannot create unique index on collection '{collection_name}' with keys {keys} due to duplicate records: {e}. "
+                f"Startup halted without deleting data. Resolve duplicates using 'python backend/scripts/dedupe_applications.py'."
+            ) from e
+        except Exception as e:
+            logger.critical(
+                "Unexpected error creating index on '%s' with keys %s: %s",
+                collection_name,
+                keys,
+                e,
+                exc_info=True,
+            )
+            raise DatabaseInitializationError(f"Failed to create index on '{collection_name}': {e}") from e
 
-    # Ensure unique index on userId (one application per applicant)
+    # 1. users unique indexes
+    _create_unique_index("users", "email")
+    # Clean up legacy sparse-only applicant_id index if present
     try:
-        db["applications"].create_index("userId", unique=True, sparse=True)
-    except DuplicateKeyError:
-        seen = set()
-        for doc in db["applications"].find({"userId": {"$exists": True, "$ne": None}}, sort=[("_id", -1)]):
-            uid = doc.get("userId")
-            if uid:
-                if uid in seen:
-                    db["applications"].delete_one({"_id": doc["_id"]})
-                else:
-                    seen.add(uid)
-        db["applications"].create_index("userId", unique=True, sparse=True)
+        user_indexes = db["users"].index_information()
+        if "applicant_id_1" in user_indexes:
+            idx_info = user_indexes["applicant_id_1"]
+            if idx_info.get("sparse") is True and "partialFilterExpression" not in idx_info:
+                db["users"].drop_index("applicant_id_1")
+    except Exception as e:
+        logger.warning("Could not inspect/drop legacy applicant_id index: %s", e)
 
-    # Ensure unique compound index on (applicationId, documentType) for documents
-    try:
-        db["documents"].create_index([("applicationId", 1), ("documentType", 1)], unique=True)
-    except DuplicateKeyError:
-        pass
+    _create_unique_index("users", "applicant_id", partialFilterExpression={"applicant_id": {"$type": "string"}})
 
-    try:
-        db["documents"].create_index("documentId", unique=True, sparse=True)
-    except DuplicateKeyError:
-        pass
+    # 2. applications unique indexes (strictly non-destructive: fails startup if duplicates exist)
+    _create_unique_index("applications", "applicationId", sparse=True)
+    _create_unique_index("applications", "userId", sparse=True)
+
+    # 3. documents unique indexes (no swallowing of DuplicateKeyError)
+    _create_unique_index("documents", [("applicationId", 1), ("documentType", 1)])
+    _create_unique_index("documents", "documentId", sparse=True)
 
     # Ensure indexes on orchestration_runs
     try:
