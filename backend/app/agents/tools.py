@@ -536,7 +536,7 @@ def tool_update_application_status(
                     "currentStatus": current_status,
                     "targetStatus": status_clean,
                 },
-                message="Cannot transition to 'ELIGIBILITY_CHECK': document verification detected data conflicts, manual review flags, or failed states.",
+                message="Cannot transition to 'ELIGIBILITY_CHECK': document verification detected data conflicts or manual review flags, or failed states.",
             )
 
         # 4c. Each document must have a processingStatus field present and equal to 'COMPLETED'
