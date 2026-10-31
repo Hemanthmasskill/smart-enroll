@@ -7,6 +7,7 @@ Supports automatic Retry-After calculation, trusted proxy resolution,
 bounded/expiring storage to prevent memory exhaustion, and configurable bypass in testing.
 """
 
+import ipaddress
 import threading
 import time
 from fastapi import HTTPException, Request, status
@@ -17,9 +18,14 @@ from app.core.config import settings
 def get_client_ip(request: Request) -> str:
     """
     Extract the real client IP address from the request.
-    If the direct connection peer is in settings.TRUSTED_PROXIES, inspect the
-    X-Forwarded-For header and return the originating client IP.
-    Otherwise, return the direct connection IP without trusting spoofable proxy headers.
+    If the direct connection peer is in settings.TRUSTED_PROXIES:
+      - Inspect the X-Forwarded-For header.
+      - Walk the IP addresses from right to left (most recent proxy backwards).
+      - Validate each address as an IP address.
+      - Skip addresses present in TRUSTED_PROXIES.
+      - Return the first untrusted valid IP address.
+    If all addresses are trusted/invalid or no header exists, fall back to the direct peer address.
+    If the direct connection peer is not trusted, return the direct peer address without inspecting proxy headers.
     """
     if not request.client:
         return "unknown"
@@ -27,16 +33,35 @@ def get_client_ip(request: Request) -> str:
     direct_ip = request.client.host
     trusted = getattr(settings, "TRUSTED_PROXIES", ["127.0.0.1", "::1"])
     if isinstance(trusted, str):
-        trusted_set = {ip.strip() for ip in trusted.split(",") if ip.strip()}
+        raw_trusted_list = [ip.strip() for ip in trusted.split(",") if ip.strip()]
     else:
-        trusted_set = set(trusted or [])
+        raw_trusted_list = list(trusted or [])
 
-    if direct_ip in trusted_set:
+    trusted_set = set()
+    for t_ip in raw_trusted_list:
+        try:
+            trusted_set.add(str(ipaddress.ip_address(t_ip)))
+        except ValueError:
+            trusted_set.add(t_ip)
+
+    try:
+        norm_direct = str(ipaddress.ip_address(direct_ip))
+    except ValueError:
+        norm_direct = direct_ip
+
+    if norm_direct in trusted_set:
         forwarded_for = request.headers.get("X-Forwarded-For")
         if forwarded_for:
-            ips = [ip.strip() for ip in forwarded_for.split(",") if ip.strip()]
-            if ips:
-                return ips[0]
+            raw_ips = [ip.strip() for ip in forwarded_for.split(",") if ip.strip()]
+            for candidate in reversed(raw_ips):
+                try:
+                    parsed_ip = ipaddress.ip_address(candidate)
+                    norm_candidate = str(parsed_ip)
+                    if norm_candidate in trusted_set:
+                        continue
+                    return norm_candidate
+                except ValueError:
+                    continue
 
     return direct_ip
 

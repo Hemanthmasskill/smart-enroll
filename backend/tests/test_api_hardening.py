@@ -393,19 +393,17 @@ def test_rate_limit_independent_ip_and_account(clean_db):
         assert "login attempts from this IP" in res.json()["detail"]
 
 
-def test_trusted_proxy_client_ip_resolution():
+def test_trusted_proxy_client_ip_resolution(monkeypatch):
     """Verify get_client_ip respects TRUSTED_PROXIES and rejects spoofed headers from untrusted clients."""
     from fastapi import Request
 
-    class DummyClient:
-        def __init__(self, host):
-            self.host = host
+    monkeypatch.setattr(settings, "TRUSTED_PROXIES", ["127.0.0.1", "::1"])
 
-    # Trusted proxy scenario: peer is 127.0.0.1
+    # Trusted proxy scenario: peer is 127.0.0.1, client is 203.0.113.50
     scope_trusted = {
         "type": "http",
         "client": ("127.0.0.1", 12345),
-        "headers": [(b"x-forwarded-for", b"203.0.113.50, 10.0.0.1")],
+        "headers": [(b"x-forwarded-for", b"203.0.113.50")],
     }
     req_trusted = Request(scope_trusted)
     assert get_client_ip(req_trusted) == "203.0.113.50"
@@ -417,8 +415,43 @@ def test_trusted_proxy_client_ip_resolution():
         "headers": [(b"x-forwarded-for", b"1.1.1.1")],
     }
     req_untrusted = Request(scope_untrusted)
-    # Must ignore spoofed header and return peer IP
+    # Must ignore spoofed header and return direct peer IP
     assert get_client_ip(req_untrusted) == "198.51.100.5"
+
+
+def test_get_client_ip_spoofed_leading_address_walks_from_right(monkeypatch):
+    """
+    Test a spoofed leading address followed by the real client and a trusted proxy.
+    X-Forwarded-For: 8.8.8.8, 198.51.100.5, 10.0.0.1
+    Walking from the right skips trusted proxy 10.0.0.1, validates and returns real client 198.51.100.5,
+    and ignores spoofed leading IP 8.8.8.8.
+    """
+    from fastapi import Request
+
+    monkeypatch.setattr(settings, "TRUSTED_PROXIES", ["127.0.0.1", "::1", "10.0.0.1"])
+
+    scope = {
+        "type": "http",
+        "client": ("127.0.0.1", 54321),
+        "headers": [(b"x-forwarded-for", b"8.8.8.8, 198.51.100.5, 10.0.0.1")],
+    }
+    req = Request(scope)
+    assert get_client_ip(req) == "198.51.100.5"
+
+
+def test_get_client_ip_fallback_to_peer_when_all_proxies_trusted(monkeypatch):
+    """If all addresses in X-Forwarded-For are trusted proxies, fall back to direct peer IP."""
+    from fastapi import Request
+
+    monkeypatch.setattr(settings, "TRUSTED_PROXIES", ["127.0.0.1", "10.0.0.1", "10.0.0.2"])
+
+    scope = {
+        "type": "http",
+        "client": ("127.0.0.1", 54321),
+        "headers": [(b"x-forwarded-for", b"10.0.0.2, 10.0.0.1")],
+    }
+    req = Request(scope)
+    assert get_client_ip(req) == "127.0.0.1"
 
 
 def test_rate_limit_sliding_window_bounded_and_pruning():
