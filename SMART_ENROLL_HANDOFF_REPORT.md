@@ -20,10 +20,11 @@ The system is architected as an academically credible, modular monolith comprisi
 ### Implementation & Verification Status (October 31, 2026):
 - **Increments 1 through 15:** Fully implemented, verified, and hardened.
 - **Pull Request #5:** Formally merged into `main` at commit `4991b8e810bdc97858bfecf992efaf1b5c69713c`, resolving agent dashboard status alignment and role-based activity restrictions.
-- **Comprehensive Audit Remediation (Phases 0–7):** Successfully resolved all 20 audit findings across Critical (C1–C3), High (H1–H6), and Medium (M1–M11) categories on branch `hardening/audit-fixes`.
-- **Backend Test Suite:** **308 passing Pytest tests, 2 skipped, 1 warning** across 9 test suites (100% pass rate).
-- **Frontend E2E Suite:** **58 passing Cypress tests** across all 12 spec files (100% pass rate in ~2.5 minutes).
-- **Frontend Production Build:** Compiles in <1 second with 0 errors (104 modules transformed).
+- **Comprehensive Audit Remediation (Phases 0–7 & Follow-Up Hardening):** Successfully resolved all 20 audit findings across Critical (C1–C3), High (H1–H6), and Medium (M1–M11) categories, plus all post-audit follow-up corrections on branch `hardening/audit-fixes`.
+- **Backend Test Suite:** **335 passing Pytest tests, 2 skipped, 1 warning in 49.08s** across 10 test suites (100% pass rate).
+- **Frontend E2E Mock Suite:** **58 passing Cypress tests** across all 12 spec files in 02:35 (100% pass rate, exit code 0).
+- **Frontend E2E Real-Backend Suite:** **5 passing zero-intercept Cypress tests** against live FastAPI and isolated MongoDB in 16s (100% pass rate, exit code 0).
+- **Frontend Production Build:** Compiles in <1 second with 0 errors (106 modules transformed in 861ms).
 - **Roadmap Truthfulness:** Increments 16–21 are honestly recorded as `DEPENDENCY_PENDING`. Unimplemented features are not represented as live production integrations: DigiLocker is clearly disclosed as a simulated provider; analytics, exceptions, eligibility, and notifications screens display prominent Prototype Notices while backend engines await development.
 
 ---
@@ -123,10 +124,10 @@ f216db4 chore(M6): update .gitignore for storage and cache files
    `init_db` creates collections and indexes idempotently without `drop()` calls or data loss risks. Unique partial indexes enforce single active/recovering runs per application.
 6. **Untrusted LLM Planning with Zero-PII Sanitization:**
    Observations sent to external LLMs redact names, emails, phones, raw OCR text, and file contents. Models cannot execute arbitrary tools or forge terminal outcomes; all proposals must pass server-side domain guardrails (Rules 1–4) with automatic deterministic fallback.
-7. **SSRF Protection:**
-   All LLM provider endpoints undergo socket-level IP resolution checks blocking private, link-local, broadcast, and metadata addresses. Loopback is permitted only when explicitly opted into for local Ollama testing.
-8. **Malware Scanning Hook & OCR DoS Protection:**
-   Pluggable upload scanner interface (`BaseUploadScanner`) supporting no-op and ClamAV scanners. OCR extraction caps text length at 100,000 characters to prevent regex DoS.
+7. **SSRF Pre-Flight Validation & Accepted DNS Rebinding Risk:**
+   All LLM provider endpoints undergo pre-flight URL schema and DNS IP resolution checks blocking private, link-local, broadcast, and metadata addresses before HTTP client instantiation. Loopback is permitted only when explicitly opted into for local Ollama testing (`LLM_ALLOW_LOCAL_ENDPOINTS=true`). As documented in `SECURITY.md`, standard HTTP transports perform runtime socket DNS resolution; this TOCTOU DNS rebinding gap is documented as an accepted architectural risk backed by network-layer egress firewall filtering.
+8. **Malware Scanning Hook & Production Fail-Safe:**
+   Pluggable upload scanner interface (`BaseUploadScanner`) supporting no-op and ClamAV scanners. `UPLOAD_SCANNER="noop"` is strictly restricted to development and test environments; staging and production require a verified operational scanner (e.g., ClamAV) and fail safe on startup if missing or misconfigured. OCR extraction caps text length at 100,000 characters to prevent regex DoS.
 
 ---
 
@@ -205,9 +206,9 @@ All findings identified during the October 31, 2026 comprehensive security and a
 
 ## 6. Test Evidence and Verification Baseline
 
-### 6.1 Backend Pytest Suite (308 Tests)
-Command: `backend\.venv\Scripts\python -m pytest backend/tests -v`
-Result: **308 passed, 2 skipped, 1 warning in 43.15s** (100% pass rate).
+### 6.1 Backend Pytest Suite (335 Tests)
+Command: `backend\.venv\Scripts\python -m pytest backend/tests -q -rs`
+Result: **335 passed, 2 skipped, 1 warning in 49.08s** (100% pass rate).
 
 | Test Suite File | Passed Count | Focus & Coverage |
 | :--- | :---: | :--- |
@@ -216,31 +217,44 @@ Result: **308 passed, 2 skipped, 1 warning in 43.15s** (100% pass rate).
 | `test_documents.py` | 34 | 6 logical slots, variants, 10MB bounds, magic-byte MIME, traversal checks, ownership. |
 | `test_document_processing.py` | 27 | OCR extraction, PyMuPDF native text, Tesseract rasterization, confidence, concurrency. |
 | `test_document_verification.py` | 52 | Name matching, calendar DOB parsing, CGPA tolerance, cross-doc checks, synthetic DigiLocker. |
-| `test_agent_orchestration.py` | 60 | Loop lifecycle, CAS recovery, thread barrier concurrency, fencing tokens, status alignment. |
+| `test_agent_orchestration.py` | 66 | Loop lifecycle, CAS recovery, thread barrier concurrency, fencing tokens, status alignment, strict ELIGIBILITY_CHECK document completion gate. |
 | `test_agent_llm_planner.py` | 81 | Provider abstraction, SSRF validation, Rules 1–4 guardrails, fallback, schema enforcement. |
-| `test_audit_unreviewed.py` | 9 | OCR text caps, classifier bounds, numeric comparer, admin script security, scanner hook. |
-| `test_security_audit_regressions.py` | 3 | Unauthenticated 401 routes, cross-applicant 403 isolation, post-submission immutability. |
+| `test_audit_unreviewed.py` | 12 | OCR text caps, classifier bounds, numeric comparer, admin script security, scanner hook, retention cleanup default dry-run and traversal rejection. |
+| `test_security_audit_regressions.py` | 4 | Unauthenticated 401 routes, cross-applicant 403 isolation, post-submission immutability, upload scanner configuration safety. |
+| `test_api_hardening.py` | 24 | Sliding window rate limiter, trusted proxy client IP walking from right, db-health admin protection, mandatory JWT claims, production config safety. |
+| `test_live_ollama_integration.py` | 2 skipped | Live Ollama tests safely skipped unless explicitly opted in via `SMART_ENROLL_RUN_LIVE_LLM_TESTS=1`. |
 
-### 6.2 Frontend Cypress E2E Suite (58 Tests)
-Command: `npx cypress run` (against Vite dev server on `http://localhost:5173`)
-Result: **58 passed across all 12 spec files in 2m 33s** (100% pass rate, 0 failed, 0 skipped).
+### 6.2 Frontend Cypress E2E Suite (Mock Mode — 58 Tests)
+Command: `Remove-Item Env:\ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue; npx cypress run` (against Vite dev server on `http://localhost:5173`)
+Result: **58 passed across all 12 spec files in 02:35** (100% pass rate, 0 failed, 0 skipped, exit code 0).
 
-- `01-auth.cy.js`: 4 passed (Login, registration, error validation)
-- `02-application-form.cy.js`: 4 passed (5-step form completion, validation)
-- `03-documents.cy.js`: 5 passed (Upload, deletion, verification panel, intercepted tokens)
-- `04-verification.cy.js`: 3 passed (Layer 2 & Layer 3 verification flows)
-- `05-digilocker.cy.js`: 3 passed (Simulated DigiLocker connection and record import)
-- `06-status.cy.js`: 3 passed (Status derivation, timeline display)
-- `07-admin.cy.js`: 4 passed (Dashboard overview, application filtering)
-- `08-programme-rules.cy.js`: 4 passed (Programme criteria display, prototype notice)
-- `09-exceptions.cy.js`: 4 passed (Exception list, prototype notice)
-- `10-agent-activity.cy.js`: 15 passed (System status contracts, role-based activity access, legacy run compatibility)
-- `11-analytics.cy.js`: 5 passed (Analytics cards, prototype notice)
-- `12-notifications.cy.js`: 4 passed (Notification panel, prototype notice)
+- `01-auth.cy.js`: 3 passed (Landing page, applicant login/logout, admin login/logout)
+- `02-applicant.cy.js`: 3 passed (Demo state dashboard, 5-step form completion, profile update)
+- `03-documents.cy.js`: 18 passed (Upload, deletion, 6 logical document slots, verification panel, intercepted tokens)
+- `04-digilocker.cy.js`: 1 passed (Simulated DigiLocker connection and record import)
+- `05-eligibility-status.cy.js`: 2 passed (Status derivation, timeline display)
+- `06-notifications.cy.js`: 1 passed (Notification panel display, prototype notice)
+- `07-admin.cy.js`: 3 passed (Dashboard overview, application filtering)
+- `08-role-protection.cy.js`: 4 passed (Unauthenticated redirection, applicant vs admin route guards)
+- `09-programme-rules.cy.js`: 3 passed (Programme criteria display, prototype notice)
+- `10-agent-activity.cy.js`: 12 passed (System status contracts, role-based activity access, legacy run compatibility)
+- `11-analytics.cy.js`: 3 passed (Analytics cards, prototype notice)
+- `12-increment7-integration.cy.js`: 5 passed (End-to-end integration workflows)
 
-### 6.3 Frontend Production Build
+### 6.3 Frontend Cypress E2E Suite (Real Backend — 5 Tests, Zero Intercepts)
+Command: `Remove-Item Env:\ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue; npm run cy:run:real` (against live FastAPI on `:8000` and isolated MongoDB `smartenroll_e2e_real`)
+Result: **5 passed in 16s with zero mock intercepts** (100% pass rate, 0 failed, 0 skipped, exit code 0).
+
+- `real-backend.cy.js`:
+  1. Registers a new applicant through the real browser UI and backend.
+  2. Logs in using real backend authentication through the browser.
+  3. Creates, submits, and views an admission application through the real backend.
+  4. Uploads and lists a document through the real backend.
+  5. Admin logs in and views applications & agent activity from real backend.
+
+### 6.4 Frontend Production Build
 Command: `npm run build`
-Result: **Built in ~800ms with 0 errors** (104 modules transformed).
+Result: **Built in 861ms with 0 errors** (106 modules transformed).
 
 ---
 
