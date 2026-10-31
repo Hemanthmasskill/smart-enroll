@@ -211,7 +211,7 @@ def test_cleanup_abandoned_drafts(test_db, tmp_path, monkeypatch):
     test_db["documents"].insert_one({
         "applicationId": "SE_ABANDONED_001",
         "documentType": "10TH_MARKSHEET",
-        "storedFilename": "doc_old_draft.pdf",
+        "storedFileName": "doc_old_draft.pdf",
     })
 
     # 2. Recent draft (should NOT be deleted)
@@ -232,7 +232,7 @@ def test_cleanup_abandoned_drafts(test_db, tmp_path, monkeypatch):
 
     summary = cleanup_abandoned_drafts(
         retention_days=30,
-        dry_run=False,
+        apply=True,
         db_name=settings.TEST_DATABASE_NAME,
     )
 
@@ -248,3 +248,134 @@ def test_cleanup_abandoned_drafts(test_db, tmp_path, monkeypatch):
 
     # Clean up test records
     test_db["applications"].delete_many({"applicationId": {"$in": ["SE_RECENT_002", "SE_SUBMITTED_003"]}})
+
+
+def test_cleanup_abandoned_drafts_dry_run_default_removes_nothing(test_db, tmp_path, monkeypatch):
+    """
+    Verify cleanup script defaults to dry-run (apply=False) and deletes zero database records or physical files.
+    """
+    monkeypatch.setattr(settings, "STORAGE_DIR", str(tmp_path))
+
+    old_date = (datetime.now(timezone.utc) - timedelta(days=45)).isoformat()
+    old_file = tmp_path / "doc_dry_run.pdf"
+    old_file.write_bytes(b"important content that must not be deleted in dry run")
+
+    test_db["applications"].insert_one({
+        "applicationId": "SE_DRYRUN_001",
+        "status": "DRAFT",
+        "updatedAt": old_date,
+        "createdAt": old_date,
+    })
+    test_db["documents"].insert_one({
+        "applicationId": "SE_DRYRUN_001",
+        "documentType": "10TH_MARKSHEET",
+        "storedFileName": "doc_dry_run.pdf",
+    })
+
+    # Run without apply argument -> dry_run default
+    summary = cleanup_abandoned_drafts(
+        retention_days=30,
+        db_name=settings.TEST_DATABASE_NAME,
+    )
+
+    assert summary["dry_run"] is True
+    assert summary["applied"] is False
+    assert summary["abandoned_applications_cleaned"] == 1
+    assert summary["documents_cleaned"] == 1
+    assert summary["files_deleted"] == 1
+
+    # Files and database records MUST still exist
+    assert old_file.exists()
+    assert test_db["applications"].find_one({"applicationId": "SE_DRYRUN_001"}) is not None
+    assert test_db["documents"].find_one({"applicationId": "SE_DRYRUN_001"}) is not None
+
+    # Cleanup
+    test_db["applications"].delete_many({"applicationId": "SE_DRYRUN_001"})
+    test_db["documents"].delete_many({"applicationId": "SE_DRYRUN_001"})
+    if old_file.exists():
+        old_file.unlink()
+
+
+def test_cleanup_abandoned_drafts_apply_removes_record_and_file(test_db, tmp_path, monkeypatch):
+    """
+    Verify --apply (apply=True) permanently removes both the MongoDB document/application records and physical file.
+    """
+    monkeypatch.setattr(settings, "STORAGE_DIR", str(tmp_path))
+
+    old_date = (datetime.now(timezone.utc) - timedelta(days=60)).isoformat()
+    old_file = tmp_path / "doc_apply_test.pdf"
+    old_file.write_bytes(b"content to be permanently deleted")
+
+    test_db["applications"].insert_one({
+        "applicationId": "SE_APPLY_001",
+        "status": "DRAFT",
+        "updatedAt": old_date,
+        "createdAt": old_date,
+    })
+    test_db["documents"].insert_one({
+        "applicationId": "SE_APPLY_001",
+        "documentType": "12TH_MARKSHEET",
+        "storedFileName": "doc_apply_test.pdf",
+    })
+
+    summary = cleanup_abandoned_drafts(
+        retention_days=30,
+        apply=True,
+        db_name=settings.TEST_DATABASE_NAME,
+    )
+
+    assert summary["dry_run"] is False
+    assert summary["applied"] is True
+    assert summary["abandoned_applications_cleaned"] == 1
+    assert summary["documents_cleaned"] == 1
+    assert summary["files_deleted"] == 1
+
+    # Verify physical file is gone
+    assert not old_file.exists()
+    # Verify MongoDB records are gone
+    assert test_db["applications"].find_one({"applicationId": "SE_APPLY_001"}) is None
+    assert test_db["documents"].find_one({"applicationId": "SE_APPLY_001"}) is None
+
+
+def test_cleanup_abandoned_drafts_rejects_paths_outside_storage_dir(test_db, tmp_path, monkeypatch):
+    """
+    Verify files with traversal paths resolving outside STORAGE_DIR are strictly rejected and not deleted.
+    """
+    storage_dir = tmp_path / "storage"
+    storage_dir.mkdir()
+    outside_dir = tmp_path / "outside"
+    outside_dir.mkdir()
+    outside_file = outside_dir / "secret.txt"
+    outside_file.write_bytes(b"critical system secret")
+
+    monkeypatch.setattr(settings, "STORAGE_DIR", str(storage_dir))
+
+    old_date = (datetime.now(timezone.utc) - timedelta(days=50)).isoformat()
+    test_db["applications"].insert_one({
+        "applicationId": "SE_TRAVERSAL_001",
+        "status": "DRAFT",
+        "updatedAt": old_date,
+        "createdAt": old_date,
+    })
+    # Path traversal attempt pointing outside storage_dir
+    test_db["documents"].insert_one({
+        "applicationId": "SE_TRAVERSAL_001",
+        "documentType": "GOVERNMENT_ID",
+        "storedFileName": "../outside/secret.txt",
+    })
+
+    summary = cleanup_abandoned_drafts(
+        retention_days=30,
+        apply=True,
+        db_name=settings.TEST_DATABASE_NAME,
+    )
+
+    # The outside file must NOT be deleted
+    assert outside_file.exists()
+    assert outside_file.read_bytes() == b"critical system secret"
+    # The application and document records are cleaned, but 0 files were deleted
+    assert summary["files_deleted"] == 0
+
+    # Cleanup
+    test_db["applications"].delete_many({"applicationId": "SE_TRAVERSAL_001"})
+    test_db["documents"].delete_many({"applicationId": "SE_TRAVERSAL_001"})
