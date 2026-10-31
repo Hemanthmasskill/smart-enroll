@@ -69,6 +69,11 @@ def connect_to_mongo():
     _create_unique_index("documents", [("applicationId", 1), ("documentType", 1)])
     _create_unique_index("documents", "documentId", sparse=True)
 
+    # 4. programme_rules unique index and idempotent seed
+    _create_unique_index("programme_rules", [("programmeId", 1), ("version", 1)])
+    from app.services.programme_rules import seed_programme_rules
+    seed_programme_rules(db)
+
     # Ensure indexes on orchestration_runs
     try:
         db["orchestration_runs"].create_index("runId", unique=True, sparse=True)
