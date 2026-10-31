@@ -111,6 +111,7 @@ class OrchestrationOutcome(str, Enum):
     DEPENDENCY_PENDING = "DEPENDENCY_PENDING"
     FAILED = "FAILED"
     ALREADY_RUNNING = "ALREADY_RUNNING"
+    TIMEOUT = "TIMEOUT"
 
 
 class OrchestrationRunStatus(str, Enum):
@@ -145,7 +146,7 @@ class OrchestrationRunResponse(BaseModel):
     )
     outcome: OrchestrationOutcome | None = Field(
         default=None,
-        description="Business workflow outcome (COMPLETED, WAITING_FOR_APPLICANT, MANUAL_REVIEW_REQUIRED, DEPENDENCY_PENDING, FAILED, ALREADY_RUNNING)",
+        description="Business workflow outcome (COMPLETED, WAITING_FOR_APPLICANT, MANUAL_REVIEW_REQUIRED, DEPENDENCY_PENDING, FAILED, ALREADY_RUNNING, TIMEOUT)",
     )
     currentApplicationStatus: str | None = None
     currentStage: str | None = None

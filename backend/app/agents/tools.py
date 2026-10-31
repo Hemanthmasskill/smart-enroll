@@ -764,7 +764,11 @@ def execute_tool(
         )
 
     call_params = dict(parameters)
-    if run_id and "run_id" not in call_params:
+    # Strip caller-provided internal keys to prevent injection
+    call_params.pop("db", None)
+    call_params.pop("current_user", None)
+    call_params.pop("run_id", None)
+    if run_id:
         call_params["run_id"] = run_id
 
     try:

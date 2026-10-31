@@ -13,6 +13,8 @@ from app.core.database import close_mongo_connection, connect_to_mongo, get_db
 async def lifespan(app: FastAPI):
     connect_to_mongo()
     yield
+    from app.agents.providers import close_llm_provider
+    close_llm_provider()
     close_mongo_connection()
 
 

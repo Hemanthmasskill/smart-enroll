@@ -25,6 +25,7 @@ class Settings(BaseSettings):
     LLM_TEMPERATURE: float = 0.0
     LLM_FALLBACK_TO_DETERMINISTIC: bool = True
     LLM_ALLOW_LOCAL_ENDPOINTS: bool = False
+    ORCHESTRATION_MAX_SECONDS: float = 120.0
 
     @property
     def storage_path(self) -> Path:
