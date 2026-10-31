@@ -1,17 +1,8 @@
 /**
  * Smart Enroll API service layer.
- *
- * Every function here is a placeholder that currently resolves with
- * mock data (see src/data/mockData.js). Each one is written so that,
- * later, only the function body needs to change to call the real
- * FastAPI backend — nothing in the components needs to change.
- *
- * Future base URL:
- *   import apiClient, { API_BASE_URL, USE_MOCKS, ApiError } from "./apiClient";
-
-const BASE_URL = API_BASE_URL;
  */
 
+import apiClient, { API_BASE_URL, USE_MOCKS, ApiError } from "./apiClient";
 import {
   mockApplicants,
   mockApplications,
@@ -27,7 +18,7 @@ import {
 } from "../data/mockData";
 import { countRequiredDocuments, deriveEligibility, deriveWorkflow } from "../utils/workflowUtils";
 
-const BASE_URL = "http://localhost:8000/api/v1";
+export const BASE_URL = API_BASE_URL;
 
 // Simulates network latency for a more realistic demo.
 const delay = (ms = 500) => new Promise((resolve) => setTimeout(resolve, ms));
