@@ -243,35 +243,93 @@ def test_jwt_claims_aud_and_iss():
 # 4. Endpoints & Logging Hardening (Finding H6, M10)
 # =====================================================================
 
-def test_db_health_sanitized():
-    """GET /api/v1/db-health returns sanitized status ok."""
+def test_health_public_unauthenticated():
+    """GET /health remains public and requires no authentication."""
     with TestClient(app) as client:
-        res = client.get("/api/v1/db-health")
+        res = client.get("/health")
         assert res.status_code == 200
-        assert res.json() == {"status": "ok"}
+        assert res.json()["status"] == "online"
 
 
-def test_rate_limit_db_health():
-    """GET /api/v1/db-health is throttled after 30 requests/min per IP."""
+def test_db_health_access_control(clean_db):
+    """
+    Verify GET /api/v1/db-health:
+    - 401 when unauthenticated
+    - 403 when authenticated as applicant
+    - 200 when authenticated as admin
+    """
+    admin_id = clean_db["users"].insert_one({
+        "email": "db_health_admin@example.com",
+        "hashed_password": "hashed_pass_placeholder",
+        "role": "admin",
+        "tokenVersion": 1,
+    }).inserted_id
+    admin_token = create_access_token(subject=str(admin_id), role="admin", token_version=1)
+    admin_headers = {"Authorization": f"Bearer {admin_token}"}
+
+    applicant_id = clean_db["users"].insert_one({
+        "email": "db_health_applicant@example.com",
+        "hashed_password": "hashed_pass_placeholder",
+        "role": "applicant",
+        "tokenVersion": 1,
+    }).inserted_id
+    applicant_token = create_access_token(subject=str(applicant_id), role="applicant", token_version=1)
+    applicant_headers = {"Authorization": f"Bearer {applicant_token}"}
+
+    with TestClient(app) as client:
+        # 1. Unauthenticated -> 401
+        res_unauth = client.get("/api/v1/db-health")
+        assert res_unauth.status_code == 401
+
+        # 2. Applicant role -> 403
+        res_applicant = client.get("/api/v1/db-health", headers=applicant_headers)
+        assert res_applicant.status_code == 403
+
+        # 3. Admin role -> 200
+        res_admin = client.get("/api/v1/db-health", headers=admin_headers)
+        assert res_admin.status_code == 200
+        assert res_admin.json() == {"status": "ok"}
+
+
+def test_rate_limit_db_health(clean_db):
+    """GET /api/v1/db-health is throttled after 30 requests/min per IP for admins."""
+    admin_id = clean_db["users"].insert_one({
+        "email": "rate_limit_admin@example.com",
+        "hashed_password": "hashed_pass_placeholder",
+        "role": "admin",
+        "tokenVersion": 1,
+    }).inserted_id
+    admin_token = create_access_token(subject=str(admin_id), role="admin", token_version=1)
+    admin_headers = {"Authorization": f"Bearer {admin_token}"}
+
     limiter.reset()
     with TestClient(app) as client:
         for _ in range(30):
-            res = client.get("/api/v1/db-health")
+            res = client.get("/api/v1/db-health", headers=admin_headers)
             assert res.status_code == 200
 
         # 31st request throttled
-        res = client.get("/api/v1/db-health")
+        res = client.get("/api/v1/db-health", headers=admin_headers)
         assert res.status_code == 429
         assert "Retry-After" in res.headers
         assert "health check requests" in res.json()["detail"]
 
 
-def test_db_health_failure_returns_503():
-    """GET /api/v1/db-health returns 503 when database ping fails."""
+def test_db_health_failure_returns_503(clean_db):
+    """GET /api/v1/db-health returns 503 when database ping fails for admins."""
+    admin_id = clean_db["users"].insert_one({
+        "email": "ping_fail_admin@example.com",
+        "hashed_password": "hashed_pass_placeholder",
+        "role": "admin",
+        "tokenVersion": 1,
+    }).inserted_id
+    admin_token = create_access_token(subject=str(admin_id), role="admin", token_version=1)
+    admin_headers = {"Authorization": f"Bearer {admin_token}"}
+
     with TestClient(app) as client:
         with patch("pymongo.database.Database.command") as mock_ping:
             mock_ping.side_effect = Exception("MongoDB connection timeout")
-            res = client.get("/api/v1/db-health")
+            res = client.get("/api/v1/db-health", headers=admin_headers)
             assert res.status_code == 503
             assert "Database service unavailable" in res.json()["detail"]
 
@@ -570,7 +628,7 @@ def test_rate_limit_application_create_and_update(clean_db):
 def test_config_env_validation():
     """Verify ENV only accepts development, staging, production, or test."""
     for valid_env in ["development", "staging", "production", "test", "PRODUCTION", "Development "]:
-        cfg = Settings(ENV=valid_env, SECRET_KEY="a" * 32, ENABLE_DEV_SEED=False)
+        cfg = Settings(ENV=valid_env, SECRET_KEY="a" * 32, ENABLE_DEV_SEED=False, UPLOAD_SCANNER="clamav")
         assert cfg.ENV in {"development", "staging", "production", "test"}
 
     for invalid_env in ["local", "prod", "sandbox", "docker", ""]:
@@ -585,14 +643,14 @@ def test_config_secret_key_validation():
     assert dev_cfg.SECRET_KEY == "short-key"
 
     with pytest.raises(ValidationError) as exc:
-        Settings(ENV="production", SECRET_KEY="too-short")
+        Settings(ENV="production", SECRET_KEY="too-short", UPLOAD_SCANNER="clamav")
     assert "at least 32 characters long" in str(exc.value)
 
     with pytest.raises(ValidationError) as exc:
-        Settings(ENV="staging", SECRET_KEY="your-secret-key-change-in-production")
+        Settings(ENV="staging", SECRET_KEY="your-secret-key-change-in-production", UPLOAD_SCANNER="clamav")
     assert "Insecure placeholder SECRET_KEY" in str(exc.value)
 
-    prod_cfg = Settings(ENV="production", SECRET_KEY="super-secret-key-that-is-at-least-32-chars-long!")
+    prod_cfg = Settings(ENV="production", SECRET_KEY="super-secret-key-that-is-at-least-32-chars-long!", UPLOAD_SCANNER="clamav")
     assert len(prod_cfg.SECRET_KEY) >= 32
 
 

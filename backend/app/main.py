@@ -103,7 +103,11 @@ async def health_check():
 
 
 @app.get("/api/v1/db-health", tags=["Health"])
-async def db_health(request: Request, db=Depends(get_db)):
+async def db_health(
+    request: Request,
+    current_user: dict = Depends(RequireRole(["admin"])),
+    db=Depends(get_db),
+):
     ip = get_client_ip(request)
     enforce_rate_limit(f"db_health:{ip}", max_requests=30, window_seconds=60, action_description="health check requests")
     try:
