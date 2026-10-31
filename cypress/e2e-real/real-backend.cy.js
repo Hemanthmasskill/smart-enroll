@@ -146,4 +146,24 @@ describe("Smart Enroll - Real Backend E2E Test Suite (Zero Intercepts)", () => {
     cy.contains("h1, h2", "Agent Activity").should("be.visible");
     cy.contains("OBSERVE → PLAN → ACT → VERIFY → RE-PLAN").should("be.visible");
   });
+
+  it("6. Applicant views deterministic eligibility evaluation status from real backend (Increment 16)", () => {
+    cy.clearLocalStorage();
+    cy.visit("/login");
+
+    cy.contains(".role-toggle button", "User").click();
+    cy.get("#email").type(testUser.email);
+    cy.get("#password").type(testUser.password);
+    cy.get('button[type="submit"]').click();
+
+    cy.url({ timeout: 10000 }).should("include", "/dashboard");
+
+    cy.visit("/eligibility");
+    cy.contains("h1", "Eligibility Status").should("be.visible");
+    cy.contains("MCA").should("be.visible");
+    cy.contains("Prototype boundary").should("be.visible");
+    cy.contains("Increment 16").should("be.visible");
+    cy.contains("Overall Result").should("be.visible");
+    cy.contains("Admission Criteria & Evaluation").should("be.visible");
+  });
 });
