@@ -513,7 +513,71 @@ def test_seed_and_get_application(monkeypatch):
         re_checked = db["applications"].find_one({"applicationId": "SE20260001"})
         assert re_checked.get("sentinelMarker") == "preserved_not_deleted"
 
-        get_response = client.get("/api/v1/applications/APL-1001", headers=admin_headers)
+        get_response = client.get("/api/v1/applications/SE20260001", headers=admin_headers)
         assert get_response.status_code == 200
         data = get_response.json()
         assert data["applicantId"] == "APL-1001"
+
+def test_applicant_cannot_access_another_applicant_application_by_applicant_id():
+    """
+    Regression test for H2:
+    Applicant A cannot read, update, or submit Applicant B's application,
+    even if they know/guess Applicant B's applicantId.
+    Applications must be queried by applicationId only, and ownership must
+    be enforced strictly by userId.
+    """
+    with TestClient(app) as client:
+        # Register Applicant B and create application
+        user_b, headers_b = register_applicant(client, email="victim@example.com")
+        create_res_b = client.post(
+            "/api/v1/applications",
+            json=COMPLETE_APPLICATION_PAYLOAD,
+            headers=headers_b,
+        )
+        assert create_res_b.status_code == 201
+        data_b = create_res_b.json()
+        app_b_id = data_b["applicationId"]
+        applicant_b_id = data_b["applicantId"]
+        assert applicant_b_id is not None
+
+        # Register Applicant A (attacker)
+        user_a, headers_a = register_applicant(client, email="attacker@example.com")
+
+        # 1. Attacker tries to read Applicant B's application by applicationId -> 403
+        res_read_app_id = client.get(f"/api/v1/applications/{app_b_id}", headers=headers_a)
+        assert res_read_app_id.status_code == 403
+
+        # 2. Attacker tries to read Applicant B's application by guessing applicantId -> 404
+        # (because lookup is strictly by applicationId)
+        res_read_applicant_id = client.get(f"/api/v1/applications/{applicant_b_id}", headers=headers_a)
+        assert res_read_applicant_id.status_code in (403, 404)
+
+        # 3. Attacker tries to update Applicant B's application by applicationId -> 403
+        res_update_app_id = client.put(
+            f"/api/v1/applications/{app_b_id}",
+            json={"city": "HackedCity"},
+            headers=headers_a,
+        )
+        assert res_update_app_id.status_code == 403
+
+        # 4. Attacker tries to update Applicant B's application by guessing applicantId -> 404
+        res_update_applicant_id = client.put(
+            f"/api/v1/applications/{applicant_b_id}",
+            json={"city": "HackedCity"},
+            headers=headers_a,
+        )
+        assert res_update_applicant_id.status_code in (403, 404)
+
+        # 5. Attacker tries to submit Applicant B's application by applicationId -> 403
+        res_submit_app_id = client.post(
+            f"/api/v1/applications/{app_b_id}/submit",
+            headers=headers_a,
+        )
+        assert res_submit_app_id.status_code == 403
+
+        # 6. Attacker tries to submit Applicant B's application by applicantId -> 404
+        res_submit_applicant_id = client.post(
+            f"/api/v1/applications/{applicant_b_id}/submit",
+            headers=headers_a,
+        )
+        assert res_submit_applicant_id.status_code in (403, 404)

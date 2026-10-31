@@ -1,3 +1,4 @@
+from app.api.deps import assert_owner
 from datetime import datetime, timezone
 from fastapi import HTTPException, status
 from pymongo import ReturnDocument
@@ -82,11 +83,7 @@ def create_application(db: Database, current_user: dict, app_in: ApplicationCrea
     user_id = str(current_user["_id"])
     applicant_id = current_user.get("applicant_id")
 
-    query = {"$or": [{"userId": user_id}]}
-    if applicant_id:
-        query["$or"].append({"applicantId": applicant_id})
-
-    existing = db["applications"].find_one(query)
+    existing = db["applications"].find_one({"userId": user_id})
     if existing:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -138,13 +135,7 @@ def get_application_for_user(db: Database, current_user: dict) -> dict:
     Retrieve the application belonging to the currently authenticated applicant.
     """
     user_id = str(current_user["_id"])
-    applicant_id = current_user.get("applicant_id")
-
-    query = {"$or": [{"userId": user_id}]}
-    if applicant_id:
-        query["$or"].append({"applicantId": applicant_id})
-
-    app = db["applications"].find_one(query, {"_id": 0})
+    app = db["applications"].find_one({"userId": user_id}, {"_id": 0})
     if not app:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -155,12 +146,12 @@ def get_application_for_user(db: Database, current_user: dict) -> dict:
 
 def get_application_by_id(db: Database, current_user: dict, application_id: str) -> dict:
     """
-    Retrieve an application by applicationId or applicantId.
+    Retrieve an application by applicationId only.
     Admin can retrieve any application.
     Applicant can retrieve ONLY their own application.
     """
     app = db["applications"].find_one(
-        {"$or": [{"applicationId": application_id}, {"applicantId": application_id}]},
+        {"applicationId": application_id},
         {"_id": 0},
     )
     if not app:
@@ -169,27 +160,8 @@ def get_application_by_id(db: Database, current_user: dict, application_id: str)
             detail="Application not found",
         )
 
-    user_role = current_user.get("role")
-    if user_role == "admin":
-        return app
-
-    if user_role == "applicant":
-        user_id = str(current_user["_id"])
-        applicant_id = current_user.get("applicant_id")
-        app_user_id = app.get("userId")
-        app_applicant_id = app.get("applicantId")
-
-        if app_user_id != user_id and app_applicant_id != applicant_id:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Not authorized to access this application",
-            )
-        return app
-
-    raise HTTPException(
-        status_code=status.HTTP_403_FORBIDDEN,
-        detail="Operation not permitted for this role",
-    )
+    assert_owner(app, current_user)
+    return app
 
 
 def update_application(
@@ -203,25 +175,14 @@ def update_application(
     Applicant can update ONLY their own application while it is in DRAFT.
     Server-managed fields cannot be updated.
     """
-    app = db["applications"].find_one(
-        {"$or": [{"applicationId": application_id}, {"applicantId": application_id}]}
-    )
+    app = db["applications"].find_one({"applicationId": application_id})
     if not app:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Application not found",
         )
 
-    user_id = str(current_user["_id"])
-    applicant_id = current_user.get("applicant_id")
-    app_user_id = app.get("userId")
-    app_applicant_id = app.get("applicantId")
-
-    if app_user_id != user_id and app_applicant_id != applicant_id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Not authorized to update this application",
-        )
+    assert_owner(app, current_user)
 
     if app.get("status") != "DRAFT":
         raise HTTPException(
@@ -255,25 +216,14 @@ def submit_application(db: Database, current_user: dict, application_id: str) ->
     - Valid programme selection
     Transitions status to SUBMITTED and sets submittedAt.
     """
-    app = db["applications"].find_one(
-        {"$or": [{"applicationId": application_id}, {"applicantId": application_id}]}
-    )
+    app = db["applications"].find_one({"applicationId": application_id})
     if not app:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Application not found",
         )
 
-    user_id = str(current_user["_id"])
-    applicant_id = current_user.get("applicant_id")
-    app_user_id = app.get("userId")
-    app_applicant_id = app.get("applicantId")
-
-    if app_user_id != user_id and app_applicant_id != applicant_id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Not authorized to submit this application",
-        )
+    assert_owner(app, current_user)
 
     current_status = app.get("status")
     if current_status == "SUBMITTED":
@@ -349,7 +299,7 @@ def list_applications(db: Database) -> list[dict]:
 # Backward compatibility with Increment 9 seed helper
 def get_application(db: Database, applicant_id: str):
     return db["applications"].find_one(
-        {"$or": [{"applicantId": applicant_id}, {"applicationId": applicant_id}]},
+        {"applicationId": applicant_id},
         {"_id": 0},
     )
 

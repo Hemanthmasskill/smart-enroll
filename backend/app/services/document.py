@@ -158,14 +158,8 @@ def resolve_applicant_application(
     db: Database, current_user: dict, requested_app_id: str | None = None
 ) -> dict:
     """Resolve applicant's application server-side and enforce ownership."""
-    user_id = str(current_user["_id"])
-    applicant_id = current_user.get("applicant_id")
-
-    query = {"$or": [{"userId": user_id}]}
-    if applicant_id:
-        query["$or"].append({"applicantId": applicant_id})
-
-    app = db["applications"].find_one(query)
+    user_id = str(current_user.get("_id") or current_user.get("id"))
+    app = db["applications"].find_one({"userId": user_id})
     if not app:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -173,7 +167,7 @@ def resolve_applicant_application(
         )
 
     if requested_app_id:
-        if requested_app_id not in (app.get("applicationId"), app.get("applicantId")):
+        if requested_app_id != app.get("applicationId"):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Not authorized to access documents for this application.",
@@ -402,7 +396,7 @@ def list_documents(
     elif user_role == "admin":
         if requested_app_id:
             app = db["applications"].find_one(
-                {"$or": [{"applicationId": requested_app_id}, {"applicantId": requested_app_id}]}
+                {"applicationId": requested_app_id}
             )
             if not app:
                 raise HTTPException(

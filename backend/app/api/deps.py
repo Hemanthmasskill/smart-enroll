@@ -93,3 +93,17 @@ class RequireRole:
                 detail="Operation not permitted for this role",
             )
         return current_user
+
+def assert_owner(app: dict, current_user: dict) -> None:
+    """
+    Enforce that current_user is either an admin or the strict userId owner of the application.
+    Rejects any mismatch with HTTP 403 Forbidden.
+    """
+    if current_user.get("role") == "admin":
+        return
+    user_id = str(current_user.get("_id") or current_user.get("id"))
+    if app.get("userId") != user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Forbidden: access denied. Not authorized.",
+        )

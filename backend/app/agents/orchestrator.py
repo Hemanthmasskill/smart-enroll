@@ -1,3 +1,4 @@
+from app.api.deps import assert_owner
 """
 Smart Enroll — Autonomous Agent Orchestrator (Increment 15, Task 15.2)
 
@@ -857,15 +858,9 @@ class AgentOrchestrator:
             )
 
         role = triggered_by_user.get("role")
-        user_id = str(triggered_by_user.get("_id"))
-        applicant_id = triggered_by_user.get("applicant_id")
-
+        user_id = str(triggered_by_user.get("_id") or triggered_by_user.get("id"))
         if role == "applicant":
-            if app.get("userId") != user_id and app.get("applicantId") != applicant_id:
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail="Not authorized to orchestrate this application.",
-                )
+            assert_owner(app, triggered_by_user)
         elif role != "admin":
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -1186,13 +1181,12 @@ class AgentOrchestrator:
         app_id = run_doc.get("applicationId")
         if current_user.get("role") == "applicant":
             app = self.db["applications"].find_one({"applicationId": app_id})
-            user_id = str(current_user["_id"])
-            applicant_id = current_user.get("applicant_id")
-            if not app or (app.get("userId") != user_id and app.get("applicantId") != applicant_id):
+            if not app:
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail="Not authorized to access this orchestration run.",
                 )
+            assert_owner(app, current_user)
 
         return OrchestrationRunResponse.model_validate(run_doc)
 
@@ -1204,13 +1198,12 @@ class AgentOrchestrator:
         """Retrieve the latest orchestration run for an application with authorization enforcement."""
         if current_user.get("role") == "applicant":
             app = self.db["applications"].find_one({"applicationId": application_id})
-            user_id = str(current_user["_id"])
-            applicant_id = current_user.get("applicant_id")
-            if not app or (app.get("userId") != user_id and app.get("applicantId") != applicant_id):
+            if not app:
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail="Not authorized to access orchestration for this application.",
                 )
+            assert_owner(app, current_user)
 
         run_doc = self.db["orchestration_runs"].find_one(
             {"applicationId": application_id},

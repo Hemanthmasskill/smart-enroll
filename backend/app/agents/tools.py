@@ -446,18 +446,15 @@ def tool_update_application_status(
     # 1. Enforce strict role boundary: applicants can never update workflow status
     user_role = current_user.get("role")
     if user_role == "applicant":
-        user_id = str(current_user.get("_id"))
-        applicant_id = current_user.get("applicant_id")
-        app = db["applications"].find_one(
-            {"$or": [{"applicationId": application_id}, {"applicantId": application_id}]}
-        )
+        user_id = str(current_user.get("_id") or current_user.get("id"))
+        app = db["applications"].find_one({"applicationId": application_id})
         if not app:
             return ToolExecutionResult(
                 tool=ToolName.UPDATE_APPLICATION_STATUS.value,
                 status=ToolStatus.FAILED.value,
                 message=f"Application '{application_id}' not found.",
             )
-        if app.get("userId") != user_id and app.get("applicantId") != applicant_id:
+        if app.get("userId") != user_id:
             return ToolExecutionResult(
                 tool=ToolName.UPDATE_APPLICATION_STATUS.value,
                 status=ToolStatus.FAILED.value,
@@ -477,9 +474,7 @@ def tool_update_application_status(
         )
 
     # 2. Retrieve application record
-    app = db["applications"].find_one(
-        {"$or": [{"applicationId": application_id}, {"applicantId": application_id}]}
-    )
+    app = db["applications"].find_one({"applicationId": application_id})
     if not app:
         return ToolExecutionResult(
             tool=ToolName.UPDATE_APPLICATION_STATUS.value,
