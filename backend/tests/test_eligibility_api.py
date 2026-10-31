@@ -217,3 +217,32 @@ def test_post_evaluate_eligibility_authorization_and_status_gate(client, clean_d
     )
     assert res_admin_get.status_code == 200
     assert res_admin_get.json()["status"] == "ELIGIBLE"
+
+
+def test_run_id_exact_matching_in_persistence(clean_db):
+    """
+    When run_id is given to run_eligibility_evaluation, activeRunId must match run_id exactly.
+    If activeRunId is different on the application, update must fail with 409 Conflict.
+    """
+    from app.services.eligibility.service import run_eligibility_evaluation
+
+    admin_user = {"id": "admin_1", "role": "admin"}
+    app_id = "APP-LEASE-001"
+
+    clean_db["applications"].insert_one({
+        "applicationId": app_id,
+        "programmeId": "mca",
+        "userId": "usr_1",
+        "status": "ELIGIBILITY_CHECK",
+        "activeRunId": "run_correct_lease",
+    })
+
+    # 1. Matching run_id succeeds
+    res = run_eligibility_evaluation(clean_db, admin_user, app_id, run_id="run_correct_lease")
+    assert res.status == "NEEDS_REVIEW"
+
+    # 2. Mismatched run_id fails with 409 Conflict
+    with pytest.raises(Exception) as exc:
+        run_eligibility_evaluation(clean_db, admin_user, app_id, run_id="run_wrong_lease")
+    assert exc.value.status_code == 409
+    assert "concurrent modification occurred" in exc.value.detail

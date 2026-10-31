@@ -3,6 +3,7 @@ import logging
 import secrets
 from typing import Any
 from fastapi import HTTPException, status
+import pymongo.errors
 from pymongo.database import Database
 
 from app.api.deps import assert_owner
@@ -74,33 +75,10 @@ def run_eligibility_evaluation(
         "status": "ELIGIBILITY_CHECK",
     }
     if run_id:
-        atomic_filter["$or"] = [
-            {"activeRunId": run_id},
-            {"activeRunId": None},
-            {"activeRunId": {"$exists": False}},
-        ]
+        # When a run_id is given, require activeRunId == run_id exactly
+        atomic_filter["activeRunId"] = run_id
 
-    update_res = db["applications"].update_one(
-        atomic_filter,
-        {
-            "$set": {
-                "eligibilityResult": result_dict,
-                "updatedAt": now_iso,
-            }
-        },
-    )
-
-    if update_res.matched_count == 0:
-        logger.warning(
-            "Atomic eligibility persistence failed for application %s (status changed or lease lost).",
-            application_id,
-        )
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Failed to persist eligibility result: application status changed or concurrent modification occurred.",
-        )
-
-    # Append to append-only eligibility_evaluations collection (D8)
+    # Append-only audit record structure (D8)
     user_id = str(current_user.get("_id") or current_user.get("id") or current_user.get("sub") or "orchestrator")
     eval_record = {
         "evaluationId": f"EVAL-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-{secrets.token_hex(4)}",
@@ -118,7 +96,61 @@ def run_eligibility_evaluation(
         "summary": evaluation_result.summary,
         "result": result_dict,
     }
-    db["eligibility_evaluations"].insert_one(eval_record)
+
+    # Atomic Persistence and Audit Consistency (D8):
+    # When deployed on a MongoDB replica set, client session transactions write both the application
+    # update and the audit record in eligibility_evaluations atomically.
+    # On standalone MongoDB instances (e.g. single-node local development or test suites),
+    # multi-document transactions raise ConfigurationError / OperationFailure. In that standalone
+    # environment, the application update is executed first under strict status/runId guards, followed
+    # by audit record insertion. We document this cross-collection atomicity gap for single-node deployments.
+    persisted = False
+    client = getattr(db, "client", None)
+    if client and hasattr(client, "start_session"):
+        try:
+            with client.start_session() as session:
+                with session.start_transaction():
+                    update_res = db["applications"].update_one(
+                        atomic_filter,
+                        {
+                            "$set": {
+                                "eligibilityResult": result_dict,
+                                "updatedAt": now_iso,
+                            }
+                        },
+                        session=session,
+                    )
+                    if update_res.matched_count == 0:
+                        raise HTTPException(
+                            status_code=status.HTTP_409_CONFLICT,
+                            detail="Failed to persist eligibility result: application status changed or concurrent modification occurred.",
+                        )
+                    db["eligibility_evaluations"].insert_one(eval_record, session=session)
+                    persisted = True
+        except (pymongo.errors.ConfigurationError, pymongo.errors.OperationFailure, AttributeError):
+            persisted = False
+
+    if not persisted:
+        update_res = db["applications"].update_one(
+            atomic_filter,
+            {
+                "$set": {
+                    "eligibilityResult": result_dict,
+                    "updatedAt": now_iso,
+                }
+            },
+        )
+        if update_res.matched_count == 0:
+            logger.warning(
+                "Atomic eligibility persistence failed for application %s (status changed or lease lost).",
+                application_id,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Failed to persist eligibility result: application status changed or concurrent modification occurred.",
+            )
+        db["eligibility_evaluations"].insert_one(eval_record)
+
     logger.info(
         "Application %s eligibility evaluated: %s (inputHash: %s).",
         application_id,

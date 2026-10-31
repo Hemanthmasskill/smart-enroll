@@ -151,3 +151,25 @@ def test_get_programme_rules_endpoint_not_found(client, applicant_auth, clean_db
     response = client.get(f"{settings.API_V1_STR}/programmes/nonexistent-program/rules", headers=headers)
     assert response.status_code == 404
     assert "not found" in response.json()["detail"].lower()
+
+
+def test_get_programme_rules_numeric_version_sorting(clean_db):
+    """
+    Verify get_programme_rules compares version numbers numerically rather than lexicographically.
+    For example: version '1.10.0' must rank higher than '1.9.0' and '1.2.0'.
+    """
+    clean_db["programme_rules"].delete_many({})
+
+    for v in ["1.2.0", "1.9.0", "1.10.0"]:
+        clean_db["programme_rules"].insert_one({
+            "programmeId": "mca",
+            "version": v,
+            "minPercentage": 50.0,
+            "requiredDocumentTypes": [],
+            "tag": f"version_{v}",
+        })
+
+    latest = get_programme_rules(clean_db, "mca")
+    assert latest is not None
+    assert latest["version"] == "1.10.0"
+    assert latest["tag"] == "version_1.10.0"

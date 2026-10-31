@@ -1,4 +1,5 @@
 import logging
+import re
 from typing import Any
 from pymongo.database import Database
 
@@ -256,16 +257,30 @@ def seed_programme_rules(db: Database) -> int:
     return count
 
 
+def parse_version_tuple(version_str: str | None) -> tuple[int, ...]:
+    """Parse a version string (e.g. '1.10.0' or '2.1') into numeric components for semantic/numeric sorting."""
+    if not version_str or not isinstance(version_str, str):
+        return (0,)
+    digits = re.findall(r"\d+", version_str)
+    return tuple(int(d) for d in digits) if digits else (0,)
+
+
 def get_programme_rules(db: Database, programme_id: str, version: str | None = None) -> dict[str, Any] | None:
     """
     Retrieve programme rules by programmeId (case-insensitive).
-    If version is provided, returns that specific version; otherwise returns the latest effective version.
+    If version is provided, returns that specific version; otherwise returns the latest version
+    evaluated using numeric semantic version comparison (e.g. 1.10.0 > 1.9.0).
     """
     pid = programme_id.strip().lower()
     query: dict[str, Any] = {"programmeId": pid}
     if version:
         query["version"] = version.strip()
+        return db["programme_rules"].find_one(query, {"_id": 0})
 
-    # Sort by version descending if no specific version requested
-    rule = db["programme_rules"].find_one(query, {"_id": 0}, sort=[("version", -1)])
-    return rule
+    # Retrieve all rule versions for this programme and sort numerically
+    rules = list(db["programme_rules"].find(query, {"_id": 0}))
+    if not rules:
+        return None
+
+    rules.sort(key=lambda r: parse_version_tuple(r.get("version")), reverse=True)
+    return rules[0]
