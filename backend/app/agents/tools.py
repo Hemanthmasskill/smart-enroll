@@ -502,39 +502,95 @@ def tool_update_application_status(
     # 4. Enforce document-verification evidence for ELIGIBILITY_CHECK
     if status_clean == "ELIGIBILITY_CHECK":
         docs = list(db["documents"].find({"applicationId": app_id}))
-        if docs:
-            flagged = [
-                d for d in docs
-                if d.get("validationStatus") in ("MISMATCH", "MANUAL_REVIEW")
-                or d.get("status") in ("MISMATCH", "MANUAL_REVIEW")
-            ]
-            if flagged:
-                return ToolExecutionResult(
-                    tool=ToolName.UPDATE_APPLICATION_STATUS.value,
-                    status=ToolStatus.FAILED.value,
-                    data={
-                        "applicationId": app_id,
-                        "currentStatus": current_status,
-                        "targetStatus": status_clean,
-                    },
-                    message="Cannot transition to 'ELIGIBILITY_CHECK': document verification detected data conflicts or manual review flags.",
-                )
 
-            unvalidated = [
-                d for d in docs
-                if d.get("status") != "NOT_UPLOADED" and d.get("validationStatus") != "VALIDATED"
-            ]
-            if unvalidated:
-                return ToolExecutionResult(
-                    tool=ToolName.UPDATE_APPLICATION_STATUS.value,
-                    status=ToolStatus.FAILED.value,
-                    data={
-                        "applicationId": app_id,
-                        "currentStatus": current_status,
-                        "targetStatus": status_clean,
-                    },
-                    message="Cannot transition to 'ELIGIBILITY_CHECK': not all uploaded documents have verified validation evidence.",
-                )
+        # 4a. All six required document types must exist
+        existing_types = {d.get("documentType") for d in docs if d.get("documentType")}
+        missing_types = [t for t in REQUIRED_DOCUMENT_TYPES if t not in existing_types]
+        if missing_types:
+            return ToolExecutionResult(
+                tool=ToolName.UPDATE_APPLICATION_STATUS.value,
+                status=ToolStatus.FAILED.value,
+                data={
+                    "applicationId": app_id,
+                    "currentStatus": current_status,
+                    "targetStatus": status_clean,
+                    "missingDocumentTypes": missing_types,
+                },
+                message=f"Cannot transition to 'ELIGIBILITY_CHECK': missing {len(missing_types)} required document type(s): {', '.join(sorted(missing_types))}.",
+            )
+
+        # 4b. None can have MISMATCH or MANUAL_REVIEW flags
+        flagged = [
+            d for d in docs
+            if d.get("validationStatus") in ("MISMATCH", "MANUAL_REVIEW")
+            or d.get("status") in ("MISMATCH", "MANUAL_REVIEW")
+        ]
+        if flagged:
+            return ToolExecutionResult(
+                tool=ToolName.UPDATE_APPLICATION_STATUS.value,
+                status=ToolStatus.FAILED.value,
+                data={
+                    "applicationId": app_id,
+                    "currentStatus": current_status,
+                    "targetStatus": status_clean,
+                },
+                message="Cannot transition to 'ELIGIBILITY_CHECK': document verification detected data conflicts or manual review flags.",
+            )
+
+        # 4c. None can be in a failed state
+        failed = [
+            d for d in docs
+            if d.get("processingStatus") == "FAILED"
+            or d.get("status") in ("FAILED", "REJECTED")
+            or d.get("validationStatus") in ("FAILED", "ERROR")
+        ]
+        if failed:
+            return ToolExecutionResult(
+                tool=ToolName.UPDATE_APPLICATION_STATUS.value,
+                status=ToolStatus.FAILED.value,
+                data={
+                    "applicationId": app_id,
+                    "currentStatus": current_status,
+                    "targetStatus": status_clean,
+                },
+                message="Cannot transition to 'ELIGIBILITY_CHECK': one or more documents failed processing or validation.",
+            )
+
+        # 4d. Each document must have completed processing
+        unprocessed = [
+            d for d in docs
+            if d.get("processingStatus") in ("PENDING", "PROCESSING", "NOT_STARTED")
+            or d.get("status") in ("NOT_UPLOADED", "UPLOADED", "PROCESSING", "PENDING")
+            or (d.get("processingStatus") is not None and d.get("processingStatus") != "COMPLETED")
+        ]
+        if unprocessed:
+            return ToolExecutionResult(
+                tool=ToolName.UPDATE_APPLICATION_STATUS.value,
+                status=ToolStatus.FAILED.value,
+                data={
+                    "applicationId": app_id,
+                    "currentStatus": current_status,
+                    "targetStatus": status_clean,
+                },
+                message="Cannot transition to 'ELIGIBILITY_CHECK': not all documents have completed processing.",
+            )
+
+        # 4e. Each document must be VALIDATED
+        unvalidated = [
+            d for d in docs
+            if d.get("validationStatus") != "VALIDATED"
+        ]
+        if unvalidated:
+            return ToolExecutionResult(
+                tool=ToolName.UPDATE_APPLICATION_STATUS.value,
+                status=ToolStatus.FAILED.value,
+                data={
+                    "applicationId": app_id,
+                    "currentStatus": current_status,
+                    "targetStatus": status_clean,
+                },
+                message="Cannot transition to 'ELIGIBILITY_CHECK': not all uploaded documents have verified validation evidence.",
+            )
 
     # 5. Enforce deterministic eligibility gate for terminal eligibility states
     if status_clean in ("ELIGIBLE", "INELIGIBLE"):
