@@ -99,7 +99,7 @@ export default function AgentActivity() {
   // System status & live backend connection
   const [systemStatus, setSystemStatus] = useState(null);
   const [liveToken, setLiveToken] = useState(
-    session?.token && session.token !== "mock-jwt-token" ? session.token : null
+    session?.token || null
   );
   const [liveConnected, setLiveConnected] = useState(false);
   const [showConnectForm, setShowConnectForm] = useState(false);

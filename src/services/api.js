@@ -126,37 +126,79 @@ function syncApplicationState(applicantId) {
 }
 
 /* ----------------------------- Auth ----------------------------- */
-// Future: POST `${BASE_URL}/auth/login`
+// POST `${BASE_URL}/auth/login`
 export async function loginRequest({ email, password, role }) {
-  await delay(600);
-
-  if (!email || !password) {
-    throw new Error("Email and password are required.");
+  let response;
+  try {
+    response = await fetch(`${BASE_URL}/auth/login`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ email, password, role }),
+    });
+  } catch (err) {
+    if (err.name === "TypeError" || (err.message && err.message.includes("fetch"))) {
+      throw new Error(
+        `Unable to connect to backend at ${BASE_URL}. Ensure the FastAPI server is running.`
+      );
+    }
+    throw err;
   }
 
-  const applicant = mockApplicants.find(
-    (a) => a.email.toLowerCase() === email.toLowerCase()
-  );
+  if (!response.ok) {
+    const errJson = await response.json().catch(() => ({}));
+    throw new Error(errJson.detail || "Authentication failed.");
+  }
 
+  const data = await response.json();
   return {
-    role,
-    name: role === "admin" ? "Admin User" : applicant?.fullName ?? "Hemanth M.P.",
-    email,
-    applicantId: role === "user" ? applicant?.id ?? "APL-1001" : null,
-    token: "mock-jwt-token",
+    role: data.role,
+    name: data.name,
+    email: data.email,
+    applicantId: data.applicantId ?? null,
+    token: data.token,
   };
 }
 
-// Future: POST `${BASE_URL}/auth/register`
-export async function registerRequest({ fullName, email }) {
-  await delay(700);
+// POST `${BASE_URL}/auth/register`
+export async function registerRequest(formData) {
+  let response;
+  try {
+    response = await fetch(`${BASE_URL}/auth/register`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        fullName: formData.fullName,
+        email: formData.email,
+        mobile: formData.mobile,
+        dob: formData.dob,
+        password: formData.password,
+      }),
+    });
+  } catch (err) {
+    if (err.name === "TypeError" || (err.message && err.message.includes("fetch"))) {
+      throw new Error(
+        `Unable to connect to backend at ${BASE_URL}. Ensure the FastAPI server is running.`
+      );
+    }
+    throw err;
+  }
 
+  if (!response.ok) {
+    const errJson = await response.json().catch(() => ({}));
+    throw new Error(errJson.detail || "Registration failed.");
+  }
+
+  const data = await response.json();
   return {
-    role: "user",
-    name: fullName,
-    email,
-    applicantId: "APL-1001",
-    token: "mock-jwt-token",
+    role: data.role,
+    name: data.name,
+    email: data.email,
+    applicantId: data.applicantId ?? null,
+    token: data.token,
   };
 }
 
@@ -230,7 +272,7 @@ const DOC_TYPE_TO_FRONTEND_ID = {
 
 // GET `${BASE_URL}/documents` (uses backend when token is present, mock fallback)
 export async function getDocuments(applicantId, token) {
-  if (token && token !== "mock-jwt-token") {
+  if (token && Boolean(token)) {
     try {
       const response = await fetch(`${BASE_URL}/documents`, {
         headers: {
@@ -272,7 +314,7 @@ export async function getDocuments(applicantId, token) {
 
 // POST `${BASE_URL}/documents/upload`
 export async function uploadDocument(applicantId, documentId, file, variant, token) {
-  if (token && token !== "mock-jwt-token") {
+  if (token && Boolean(token)) {
     const formData = new FormData();
     formData.append("file", file);
     const docType = FRONTEND_ID_TO_DOC_TYPE[documentId] || documentId;
@@ -340,7 +382,7 @@ export async function uploadDocument(applicantId, documentId, file, variant, tok
 
 // DELETE `${BASE_URL}/documents/{id}`
 export async function removeDocument(applicantId, documentSlotId, token, backendDocumentId, docContext) {
-  if (token && token !== "mock-jwt-token") {
+  if (token && Boolean(token)) {
     const targetDocId = backendDocumentId || docContext?.documentId;
 
     if (!targetDocId) {
@@ -396,7 +438,7 @@ export async function removeDocument(applicantId, documentSlotId, token, backend
 
 // POST `${BASE_URL}/documents/{document_id}/process`
 export async function processDocument(applicantId, documentSlotId, token, backendDocumentId) {
-  if (token && token !== "mock-jwt-token") {
+  if (token && Boolean(token)) {
     if (!backendDocumentId) {
       throw new Error("Cannot process document: missing backend document identifier.");
     }
@@ -462,7 +504,7 @@ export async function processDocument(applicantId, documentSlotId, token, backen
 
 // GET `${BASE_URL}/documents/{document_id}/processing-result`
 export async function getDocumentProcessingResult(applicantId, documentSlotId, token, backendDocumentId) {
-  if (token && token !== "mock-jwt-token") {
+  if (token && Boolean(token)) {
     if (!backendDocumentId) {
       throw new Error("Cannot retrieve processing result: missing backend document identifier.");
     }
@@ -499,7 +541,7 @@ export async function getDocumentProcessingResult(applicantId, documentSlotId, t
 
 // GET `${BASE_URL}/documents/{id}/verification`
 export async function getVerificationStatus(applicantId, documentSlotId, token, backendDocumentId) {
-  if (token && token !== "mock-jwt-token") {
+  if (token && Boolean(token)) {
     if (!backendDocumentId) {
       throw new Error("Cannot fetch verification status: missing backend document identifier.");
     }
@@ -525,7 +567,7 @@ export async function getVerificationStatus(applicantId, documentSlotId, token, 
 
 // POST `${BASE_URL}/documents/{id}/verify`
 export async function verifyDocument(applicantId, documentSlotId, token, backendDocumentId) {
-  if (token && token !== "mock-jwt-token") {
+  if (token && Boolean(token)) {
     if (!backendDocumentId) {
       throw new Error("Cannot verify document: missing backend document identifier.");
     }
@@ -560,7 +602,7 @@ export async function verifyDocument(applicantId, documentSlotId, token, backend
 
 // POST `${BASE_URL}/documents/{id}/authoritative-verify`
 export async function authoritativeVerifyDocument(applicantId, documentSlotId, token, backendDocumentId) {
-  if (token && token !== "mock-jwt-token") {
+  if (token && Boolean(token)) {
     if (!backendDocumentId) {
       throw new Error("Cannot run authoritative verification: missing backend document identifier.");
     }
@@ -832,7 +874,7 @@ export async function updateProgrammeRules(programmeId, updates) {
 /* ----------------------------- Agent Activity & Orchestration ----------------------------- */
 // GET `${BASE_URL}/admin/agent-activity` or `${BASE_URL}/agents/activity`
 export async function getAgentActivity(filters = {}, token) {
-  if (token && token !== "mock-jwt-token") {
+  if (token && Boolean(token)) {
     const params = new URLSearchParams();
     if (filters.applicationId && filters.applicationId !== "ALL") params.append("applicationId", filters.applicationId);
     if (filters.stage && filters.stage !== "ALL") params.append("stage", filters.stage);
@@ -902,7 +944,7 @@ export async function getAgentSystemStatus() {
 
 // GET `${BASE_URL}/agents/runs`
 export async function getRecentOrchestrationRuns(token) {
-  if (token && token !== "mock-jwt-token") {
+  if (token && Boolean(token)) {
     try {
       const response = await fetch(`${BASE_URL}/agents/runs`, {
         headers: {
@@ -1061,7 +1103,7 @@ export async function getRecentOrchestrationRuns(token) {
 
 // POST `${BASE_URL}/agents/orchestrate/{application_id}`
 export async function triggerAgentOrchestration(applicationId, token) {
-  if (!token || token === "mock-jwt-token") {
+  if (!token || false) {
     throw new Error(
       "A real backend JWT token is required to execute autonomous orchestration. " +
       "Mock credentials cannot authenticate against the FastAPI orchestrator."
@@ -1085,30 +1127,7 @@ export async function triggerAgentOrchestration(applicationId, token) {
 
 // Backend Admin Login (for live evaluator connection)
 export async function backendAdminLogin({ email, password }) {
-  let response;
-  try {
-    response = await fetch(`${BASE_URL}/auth/login`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ email, password, role: "admin" }),
-    });
-  } catch (err) {
-    if (err.name === "TypeError" || (err.message && err.message.includes("fetch"))) {
-      throw new Error(
-        `Unable to connect to live backend at ${BASE_URL}. Ensure the FastAPI server is running on port 8000.`
-      );
-    }
-    throw err;
-  }
-
-  if (!response.ok) {
-    const errJson = await response.json().catch(() => ({}));
-    throw new Error(errJson.detail || "Backend administrator authentication failed.");
-  }
-
-  return await response.json();
+  return loginRequest({ email, password, role: "admin" });
 }
 
 /* ------------------------------- Analytics ------------------------------- */
