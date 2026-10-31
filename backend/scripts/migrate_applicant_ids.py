@@ -77,7 +77,7 @@ def migrate_applicant_ids(apply_changes: bool = False, db=None) -> dict:
     if apply_changes:
         # Ensure unique sparse index on users.applicant_id
         try:
-            db["users"].create_index("applicant_id", unique=True, sparse=True)
+            db["users"].create_index("applicant_id", unique=True, partialFilterExpression={"applicant_id": {"$type": "string"}})
             print("Successfully ensured unique sparse index on users.applicant_id")
         except DuplicateKeyError as e:
             print(f"Error creating unique index on users.applicant_id: {e}", file=sys.stderr)

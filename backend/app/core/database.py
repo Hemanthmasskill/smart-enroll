@@ -49,7 +49,17 @@ def connect_to_mongo():
 
     # 1. users unique indexes
     _create_unique_index("users", "email")
-    _create_unique_index("users", "applicant_id", sparse=True)
+    # Clean up legacy sparse-only applicant_id index if present
+    try:
+        user_indexes = db["users"].index_information()
+        if "applicant_id_1" in user_indexes:
+            idx_info = user_indexes["applicant_id_1"]
+            if idx_info.get("sparse") is True and "partialFilterExpression" not in idx_info:
+                db["users"].drop_index("applicant_id_1")
+    except Exception as e:
+        logger.warning("Could not inspect/drop legacy applicant_id index: %s", e)
+
+    _create_unique_index("users", "applicant_id", partialFilterExpression={"applicant_id": {"$type": "string"}})
 
     # 2. applications unique indexes (strictly non-destructive: fails startup if duplicates exist)
     _create_unique_index("applications", "applicationId", sparse=True)

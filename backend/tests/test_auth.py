@@ -54,7 +54,7 @@ def clean_users_collection():
         assert db.name == "smartenroll_test"
         db["users"].delete_many({})
         db["users"].create_index("email", unique=True)
-        db["users"].create_index("applicant_id", unique=True, sparse=True)
+        db["users"].create_index("applicant_id", unique=True, partialFilterExpression={"applicant_id": {"$type": "string"}})
         yield
         assert db.name == "smartenroll_test"
         db["users"].delete_many({})
