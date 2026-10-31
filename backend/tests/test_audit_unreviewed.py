@@ -296,6 +296,56 @@ def test_cleanup_abandoned_drafts_dry_run_default_removes_nothing(test_db, tmp_p
         old_file.unlink()
 
 
+def test_cleanup_abandoned_drafts_dry_run_false_without_apply_deletes_nothing(test_db, tmp_path, monkeypatch):
+    """
+    Verify calling cleanup_abandoned_drafts with dry_run=False but without apply=True
+    strictly executes as dry-run and deletes zero database records or physical files.
+    apply=True is strictly mandatory for any deletions.
+    """
+    monkeypatch.setattr(settings, "STORAGE_DIR", str(tmp_path))
+
+    old_date = (datetime.now(timezone.utc) - timedelta(days=45)).isoformat()
+    old_file = tmp_path / "doc_dryrun_false_test.pdf"
+    old_file.write_bytes(b"content that must not be deleted without apply=True")
+
+    test_db["applications"].insert_one({
+        "applicationId": "SE_NO_APPLY_001",
+        "status": "DRAFT",
+        "updatedAt": old_date,
+        "createdAt": old_date,
+    })
+    test_db["documents"].insert_one({
+        "applicationId": "SE_NO_APPLY_001",
+        "documentType": "10TH_MARKSHEET",
+        "storedFileName": "doc_dryrun_false_test.pdf",
+    })
+
+    # Explicitly pass dry_run=False, but apply=False
+    summary = cleanup_abandoned_drafts(
+        retention_days=30,
+        dry_run=False,
+        apply=False,
+        db_name=settings.TEST_DATABASE_NAME,
+    )
+
+    assert summary["dry_run"] is True
+    assert summary["applied"] is False
+    assert summary["abandoned_applications_cleaned"] == 1
+    assert summary["documents_cleaned"] == 1
+    assert summary["files_deleted"] == 1
+
+    # Files and database records MUST still exist
+    assert old_file.exists()
+    assert test_db["applications"].find_one({"applicationId": "SE_NO_APPLY_001"}) is not None
+    assert test_db["documents"].find_one({"applicationId": "SE_NO_APPLY_001"}) is not None
+
+    # Cleanup
+    test_db["applications"].delete_many({"applicationId": "SE_NO_APPLY_001"})
+    test_db["documents"].delete_many({"applicationId": "SE_NO_APPLY_001"})
+    if old_file.exists():
+        old_file.unlink()
+
+
 def test_cleanup_abandoned_drafts_apply_removes_record_and_file(test_db, tmp_path, monkeypatch):
     """
     Verify --apply (apply=True) permanently removes both the MongoDB document/application records and physical file.

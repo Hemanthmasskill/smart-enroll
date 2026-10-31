@@ -25,9 +25,12 @@ def cleanup_abandoned_drafts(
     """
     Purge abandoned DRAFT applications and their stored files older than the retention threshold.
     Encryption-at-rest notice: STORAGE_DIR should reside on an encrypted volume (LUKS / BitLocker / EBS KMS).
-    By default, executes as a dry run. Requires apply=True (or --apply via CLI) to execute deletions.
+    By default, executes as a dry run. apply=True is strictly mandatory to execute any deletions.
+    Calling with dry_run=False but without apply=True executes as a dry run and deletes nothing.
     """
-    is_dry_run = False if apply else dry_run
+    # apply=True is strictly mandatory for any database or physical-file deletion.
+    # Calling with dry_run=False but without apply=True must delete nothing.
+    is_dry_run = not apply
     days = retention_days if retention_days is not None else settings.RETENTION_DAYS
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
     cutoff_iso = cutoff.isoformat()
