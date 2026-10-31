@@ -550,3 +550,77 @@ def test_applicant_id_cryptographically_secure_and_unique():
         repeat_res = migrate_applicant_ids(apply_changes=True, db=db)
         assert repeat_res["needs_migration"] == 0
         assert repeat_res["migrated"] == 0
+
+
+# =====================================================================
+# Strict JWT Claim Enforcement (Follow-up Task 5)
+# =====================================================================
+
+def test_jwt_claims_mandatory_iss_aud_tokenversion():
+    """Verify get_current_user strictly rejects tokens missing iss, aud, or tokenVersion."""
+    db = get_db()
+    user_id = ObjectId()
+    db["users"].insert_one({
+        "_id": user_id,
+        "email": "jwt_strict@example.com",
+        "role": "applicant",
+        "full_name": "JWT Strict User",
+        "applicant_id": "APL-1234567890AB",
+        "tokenVersion": 1,
+    })
+
+    base_payload = {
+        "sub": str(user_id),
+        "role": "applicant",
+        "iss": "smart-enroll",
+        "aud": "smart-enroll-api",
+        "tokenVersion": 1,
+        "exp": datetime.now(timezone.utc) + timedelta(hours=1),
+    }
+
+    with TestClient(app) as client:
+        # 1. Valid token passes
+        valid_token = jwt.encode(base_payload, settings.SECRET_KEY, algorithm="HS256")
+        res = client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {valid_token}"})
+        assert res.status_code == 200
+
+        # 2. Missing iss claim
+        no_iss = dict(base_payload)
+        del no_iss["iss"]
+        tok = jwt.encode(no_iss, settings.SECRET_KEY, algorithm="HS256")
+        res = client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {tok}"})
+        assert res.status_code == 401
+
+        # 3. Invalid iss claim
+        bad_iss = dict(base_payload, iss="untrusted-issuer")
+        tok = jwt.encode(bad_iss, settings.SECRET_KEY, algorithm="HS256")
+        res = client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {tok}"})
+        assert res.status_code == 401
+
+        # 4. Missing aud claim
+        no_aud = dict(base_payload)
+        del no_aud["aud"]
+        tok = jwt.encode(no_aud, settings.SECRET_KEY, algorithm="HS256")
+        res = client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {tok}"})
+        assert res.status_code == 401
+
+        # 5. Invalid aud claim
+        bad_aud = dict(base_payload, aud="wrong-audience")
+        tok = jwt.encode(bad_aud, settings.SECRET_KEY, algorithm="HS256")
+        res = client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {tok}"})
+        assert res.status_code == 401
+
+        # 6. Missing tokenVersion claim
+        no_ver = dict(base_payload)
+        del no_ver["tokenVersion"]
+        tok = jwt.encode(no_ver, settings.SECRET_KEY, algorithm="HS256")
+        res = client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {tok}"})
+        assert res.status_code == 401
+        assert "tokenVersion" in res.json()["detail"]
+
+        # 7. Mismatched tokenVersion
+        mismatched_ver = dict(base_payload, tokenVersion=99)
+        tok = jwt.encode(mismatched_ver, settings.SECRET_KEY, algorithm="HS256")
+        res = client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {tok}"})
+        assert res.status_code == 401
+        assert "revoked or invalidated" in res.json()["detail"]

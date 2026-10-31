@@ -56,6 +56,24 @@ If you discover a security vulnerability in Smart Enroll:
 - **Role-Based Access Control (RBAC):** Gated by explicit `RequireRole(["admin"])` and `RequireRole(["applicant"])` dependencies. Unauthenticated calls return HTTP 401; unauthorized roles receive HTTP 403.
 - **Strict Horizontal Ownership:** Every applicant resource (application, documents, OCR extractions, verification results, audit events) is filtered by `userId == str(current_user["_id"])`. Cross-applicant access attempts return HTTP 403 Forbidden.
 
+### 3.3.1 JWT Claim Validation & Token Migration Strategy
+- **Mandatory Claims:** Every access token submitted to `/api/v1` must include all of the following claims:
+  - `iss`: strictly `"smart-enroll"`
+  - `aud`: strictly `"smart-enroll-api"`
+  - `sub`: valid MongoDB ObjectId string referencing the user
+  - `role`: user role (`"applicant"` or `"admin"`)
+  - `exp`: token expiration timestamp
+  - `tokenVersion`: positive integer matching the user's active session version in MongoDB
+- **Rejection Policy:** Any token missing any of the above claims, or carrying a mismatched `iss`, `aud`, or `tokenVersion`, is immediately rejected with HTTP 401 Unauthorized.
+- **Migration Strategy for Existing Sessions:**
+  1. **Automated Client Handling:** The frontend `apiClient` intercepts HTTP 401 responses, purges cached session data from local storage, and prompts the user to re-authenticate at `/login`.
+  2. **Seamless Issuance:** Upon successful authentication (`/api/v1/auth/login` or `/api/v1/auth/register`), the backend generates a modern, fully compliant token equipped with `iss`, `aud`, and the current user's `tokenVersion`.
+  3. **Database Consistency:** Legacy user documents lacking the `tokenVersion` field are automatically treated as `tokenVersion: 1`. Administrators may backfill legacy collections during maintenance using:
+     ```javascript
+     db.users.updateMany({ tokenVersion: { $exists: false } }, { $set: { tokenVersion: 1 } });
+     ```
+  4. **Zero-Downtime Revocation:** Password changes or security incidents increment `tokenVersion` on the target user record, immediately invalidating all legacy and active tokens globally.
+
 ### 3.4 Storage & Encryption at Rest
 - **Storage Directory:** Document files are stored in `STORAGE_DIR` under cryptographically randomized UUID filenames, decoupling logical names from disk paths.
 - **Encryption at Rest:** In production environments, `STORAGE_DIR` **must reside on an encrypted volume** using LUKS / dm-crypt (Linux), BitLocker (Windows), or AWS EBS volume encryption with customer-managed KMS keys.

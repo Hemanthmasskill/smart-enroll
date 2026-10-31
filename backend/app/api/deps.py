@@ -16,8 +16,8 @@ def get_current_user(
 ) -> dict:
     """
     Validate the Bearer token and retrieve the corresponding user from the database.
-    Rejects missing tokens, expired tokens, invalid signatures, malformed tokens,
-    or tokens missing required claims (sub, role, exp) with HTTP 401 Unauthorized.
+    Requires and validates iss ("smart-enroll"), aud ("smart-enroll-api"),
+    sub, role, exp, and tokenVersion claims with HTTP 401 Unauthorized.
     """
     if credentials is None:
         raise HTTPException(
@@ -29,17 +29,33 @@ def get_current_user(
     token = credentials.credentials
 
     try:
-        unverified = jwt.decode(token, options={"verify_signature": False})
-        decode_kwargs = {"algorithms": ["HS256"]}
-        if "aud" in unverified:
-            decode_kwargs["audience"] = "smart-enroll-api"
-        if "iss" in unverified:
-            decode_kwargs["issuer"] = "smart-enroll"
-        payload = jwt.decode(token, settings.SECRET_KEY, **decode_kwargs)
+        payload = jwt.decode(
+            token,
+            settings.SECRET_KEY,
+            algorithms=["HS256"],
+            audience="smart-enroll-api",
+            issuer="smart-enroll",
+            options={
+                "verify_signature": True,
+                "require": ["exp", "iss", "aud", "sub"],
+            },
+        )
     except jwt.ExpiredSignatureError:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Token has expired",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    except jwt.InvalidAudienceError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token audience",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    except jwt.InvalidIssuerError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token issuer",
             headers={"WWW-Authenticate": "Bearer"},
         )
     except jwt.PyJWTError:
@@ -51,13 +67,13 @@ def get_current_user(
 
     sub: str | None = payload.get("sub")
     role: str | None = payload.get("role")
-    exp = payload.get("exp")
+    token_version = payload.get("tokenVersion")
 
-    # Explicitly require sub, role, and exp
-    if not sub or not role or exp is None:
+    # Explicitly require sub, role, and tokenVersion
+    if not sub or not role or token_version is None or not isinstance(token_version, int):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid token claims",
+            detail="Invalid token claims: sub, role, and tokenVersion are required",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
@@ -80,8 +96,7 @@ def get_current_user(
 
     # Token Version Revocation Check
     expected_version = user.get("tokenVersion", 1)
-    token_version = payload.get("tokenVersion")
-    if token_version is not None and token_version != expected_version:
+    if token_version != expected_version:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Token has been revoked or invalidated.",
@@ -109,6 +124,7 @@ class RequireRole:
                 detail="Operation not permitted for this role",
             )
         return current_user
+
 
 def assert_owner(app: dict, current_user: dict) -> None:
     """
