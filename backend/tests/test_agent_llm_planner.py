@@ -2253,3 +2253,84 @@ def test_security_tool_execution_strips_internal_keys(clean_db):
         run_id=server_run_id,
     )
     assert res.status in ("FAILED", "COMPLETED")
+
+
+def test_planner_rejects_ineligible_status_proposal_and_completed_outcome(clean_db):
+    """
+    Increment 16: INELIGIBLE evaluations route to EXCEPTION for administrative confirmation.
+    - Proposing new_status='INELIGIBLE' is rejected.
+    - Proposing terminal_outcome='COMPLETED' for INELIGIBLE is rejected.
+    - Proposing new_status='EXCEPTION' with outcome='MANUAL_REVIEW_REQUIRED' is accepted.
+    """
+    obs_ineligible = make_test_observation(
+        application_id="app-inel-plan-1",
+        current_status="ELIGIBILITY_CHECK",
+        eligibility_result={"status": "INELIGIBLE", "summary": "Marks below threshold"},
+    )
+
+    # 1. Proposal to set new_status='INELIGIBLE' directly must be rejected
+    proposal_inel_status = {
+        "action_type": "TOOL_CALL",
+        "tool": "update_application_status",
+        "parameters": {"application_id": "app-inel-plan-1", "new_status": "INELIGIBLE"},
+        "rationale": "Directly setting INELIGIBLE status.",
+        "stage": "ACT",
+        "is_terminal": False,
+        "terminal_outcome": None,
+    }
+    transport1 = make_mock_transport_for_json(make_openai_response(proposal_inel_status))
+    provider1 = OpenAICompatibleProvider(api_key="sk-test", api_base="https://api.openai.com/v1", transport=transport1)
+    strategy1 = LLMPlanningStrategy(provider=provider1, db=clean_db, fallback_enabled=True)
+    action1, outcome1, _ = strategy1.plan_next_action(obs_ineligible, iteration=1)
+
+    assert action1 is not None
+    assert action1.planner == "FALLBACK"
+    audit1 = clean_db["agent_activity"].find_one({"applicationId": "app-inel-plan-1", "status": "FALLBACK"})
+    assert audit1 is not None
+    assert "ineligible" in audit1["result"].lower()
+    provider1.close()
+
+    # 2. Proposal to report COMPLETED for an INELIGIBLE application must be rejected
+    proposal_completed = {
+        "action_type": "TOOL_CALL",
+        "tool": "update_application_status",
+        "parameters": {"application_id": "app-inel-plan-1", "new_status": "PROCESSING_COMPLETE"},
+        "rationale": "Prematurely completing ineligible application.",
+        "stage": "ACT",
+        "is_terminal": True,
+        "terminal_outcome": "COMPLETED",
+    }
+    transport2 = make_mock_transport_for_json(make_openai_response(proposal_completed))
+    provider2 = OpenAICompatibleProvider(api_key="sk-test", api_base="https://api.openai.com/v1", transport=transport2)
+    strategy2 = LLMPlanningStrategy(provider=provider2, db=clean_db, fallback_enabled=True)
+    action2, outcome2, _ = strategy2.plan_next_action(obs_ineligible, iteration=1)
+
+    assert action2 is not None
+    assert action2.planner == "FALLBACK"
+    provider2.close()
+
+    # 3. Proposal to transition to EXCEPTION with MANUAL_REVIEW_REQUIRED must be accepted
+    proposal_exception = {
+        "action_type": "TOOL_CALL",
+        "tool": "update_application_status",
+        "parameters": {
+            "application_id": "app-inel-plan-1",
+            "new_status": "EXCEPTION",
+            "reason": "Evaluated as INELIGIBLE; awaiting administrative confirmation.",
+        },
+        "rationale": "Routing ineligible application to exception management for confirmation.",
+        "stage": "ACT",
+        "is_terminal": True,
+        "terminal_outcome": "MANUAL_REVIEW_REQUIRED",
+    }
+    transport3 = make_mock_transport_for_json(make_openai_response(proposal_exception))
+    provider3 = OpenAICompatibleProvider(api_key="sk-test", api_base="https://api.openai.com/v1", transport=transport3)
+    strategy3 = LLMPlanningStrategy(provider=provider3, db=clean_db, fallback_enabled=True)
+    action3, outcome3, _ = strategy3.plan_next_action(obs_ineligible, iteration=1)
+
+    assert action3 is not None
+    assert action3.planner == "LLM"
+    assert action3.fallback_used is False
+    assert action3.parameters["new_status"] == "EXCEPTION"
+    assert action3.terminal_outcome == OrchestrationOutcome.MANUAL_REVIEW_REQUIRED
+    provider3.close()

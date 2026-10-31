@@ -34,6 +34,7 @@ def clean_db():
     db["agent_activity"].delete_many({})
     db["orchestration_runs"].delete_many({})
     db["eligibility_evaluations"].delete_many({})
+    db["programme_rules"].delete_many({})
     seed_programme_rules(db)
     yield db
 
@@ -166,10 +167,6 @@ def test_orchestrator_end_to_end_eligible_case_reaches_processing_complete(clien
     orchestrator = AgentOrchestrator(db=clean_db)
     res = orchestrator.run(app_id, ctx["user"])
 
-    print(f"\nDEBUG: outcome={res.outcome}, status={res.currentApplicationStatus}, summary={res.summary}, failure={res.failureReason}")
-    for act in clean_db["agent_activity"].find({"applicationId": app_id}):
-        print(f"ACT: stage={act.get('stage')}, action={act.get('action')}, result={act.get('result')}")
-
     assert res.outcome == OrchestrationOutcome.COMPLETED
     assert res.currentApplicationStatus == "PROCESSING_COMPLETE"
 
@@ -179,10 +176,10 @@ def test_orchestrator_end_to_end_eligible_case_reaches_processing_complete(clien
     assert clean_db["eligibility_evaluations"].count_documents({"applicationId": app_id}) >= 1
 
 
-def test_orchestrator_end_to_end_ineligible_case_reaches_processing_complete(client, clean_db):
+def test_orchestrator_end_to_end_ineligible_case_routes_to_exception(client, clean_db):
     """
     An ineligible applicant (percentage 41.8% < 50% min for MCA) is evaluated deterministically as
-    INELIGIBLE and workflow concludes with PROCESSING_COMPLETE.
+    INELIGIBLE and workflow routes to EXCEPTION state with MANUAL_REVIEW_REQUIRED for admin confirmation.
     """
     ctx = setup_applicant_with_application(client, email="e2e.ineligible@example.com", prog_id="mca", cgpa=4.4)
     app_id = ctx["app_id"]
@@ -191,7 +188,7 @@ def test_orchestrator_end_to_end_ineligible_case_reaches_processing_complete(cli
     docs_to_upload = [
         ("10TH_MARKSHEET", ["Secondary School Certificate", "Candidate Name: Hemanth M.P.", "Date of Birth: 15/05/2000", "Marks: 432 / 500", "Percentage: 86.4%", "State Board of Secondary Education"]),
         ("12TH_MARKSHEET", ["Higher Secondary Certificate", "Candidate Name: Hemanth M.P.", "Date of Birth: 15/05/2000", "Marks: 440 / 500", "Percentage: 88.0%", "Mathematics: 95 / 100", "State Board of Higher Secondary"]),
-        ("UG_MARKSHEET", ["Bachelor of Computer Applications Marksheet", "Candidate Name: Hemanth M.P.", "Date of Birth: 15/05/2000", "CGPA: 4.4", "Graduation Year: 2022", "University: Crescent"]),
+        ("UG_MARKSHEET", ["Bachelor of Computer Applications Marksheet", "Candidate Name: Hemanth M.P.", "Date of Birth: 15/05/2000", "CGPA: 4.4 / 10", "Graduation Year: 2022", "University: Crescent"]),
         ("DEGREE_CERTIFICATE", ["B.S. Abdur Rahman Crescent Institute of Science and Technology", "Degree of Bachelor of Computer Applications", "Candidate Name: Hemanth M.P.", "Conferred: 2022"]),
         ("TRANSFER_CERTIFICATE", ["Transfer Certificate", "Student Name: Hemanth M.P.", "Date of Birth: 15/05/2000", "Conduct: Good"]),
         ("GOVERNMENT_ID", ["Government of India Identity Card", "Name: Hemanth M.P.", "DOB: 15/05/2000", "Gender: Male"]),
@@ -214,12 +211,23 @@ def test_orchestrator_end_to_end_ineligible_case_reaches_processing_complete(cli
     orchestrator = AgentOrchestrator(db=clean_db)
     res = orchestrator.run(app_id, ctx["user"])
 
-    assert res.outcome == OrchestrationOutcome.COMPLETED
-    assert res.currentApplicationStatus == "PROCESSING_COMPLETE"
+    print(f"\nDEBUG NEEDS_REVIEW: res.outcome={res.outcome}, status={res.currentApplicationStatus}, summary={res.summary}")
+    import json
+    app_after = clean_db["applications"].find_one({"applicationId": app_id})
+    print(f"ELIG_RESULT: {json.dumps(app_after.get('eligibilityResult'), indent=2)}")
+    for d in clean_db["documents"].find({"applicationId": app_id}):
+        print(f"DOC: type={d.get('documentType')}, math={d.get('extractedFields', {}).get('mathematics')}, text={d.get('ocrText')}")
+    for act in clean_db["agent_activity"].find({"applicationId": app_id}):
+        print(f"ACT: stage={act.get('stage')}, action={act.get('action')}, result={act.get('result')}")
+
+    assert res.outcome == OrchestrationOutcome.MANUAL_REVIEW_REQUIRED
+    assert res.currentApplicationStatus == "EXCEPTION"
 
     app_after = clean_db["applications"].find_one({"applicationId": app_id})
-    assert app_after["status"] == "PROCESSING_COMPLETE"
+    assert app_after["status"] == "EXCEPTION"
     assert app_after["eligibilityResult"]["status"] == "INELIGIBLE"
+    assert "statusReason" in app_after
+    assert "INELIGIBLE" in app_after["statusReason"]
 
 
 def test_orchestrator_end_to_end_needs_review_case_routes_to_exception(client, clean_db):

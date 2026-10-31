@@ -39,6 +39,7 @@ from app.agents.orchestrator import (
 )
 from app.core.config import settings
 from app.core.database import DatabaseInitializationError, connect_to_mongo, get_db
+from app.services.programme_rules import seed_programme_rules
 from app.main import app
 from app.schemas.agent import (
     OrchestrationOutcome,
@@ -85,6 +86,8 @@ def clean_db():
     db["documents"].delete_many({})
     db["agent_activity"].delete_many({})
     db["orchestration_runs"].delete_many({})
+    db["programme_rules"].delete_many({})
+    seed_programme_rules(db)
     try:
         existing_indexes = db["orchestration_runs"].index_information()
         for idx_name, idx_info in existing_indexes.items():
@@ -918,7 +921,7 @@ def upload_all_six_documents(
     docs_to_upload = [
         ("10TH_MARKSHEET", ["Secondary School Certificate", marksheet_name, "Date of Birth: 15/05/2000", "Marks: 432 / 500", "Percentage: 86.4%", "State Board of Secondary Education"]),
         ("12TH_MARKSHEET", ["Higher Secondary Certificate", "Candidate Name: Hemanth M.P.", "Date of Birth: 15/05/2000", "Marks: 440 / 500", "Percentage: 88.0%", math_line, "State Board of Higher Secondary"]),
-        ("UG_MARKSHEET", ["Bachelor of Computer Applications Marksheet", "Candidate Name: Hemanth M.P.", "Date of Birth: 15/05/2000", "CGPA: 8.5", "Graduation Year: 2022", "University: Crescent"]),
+        ("UG_MARKSHEET", ["Bachelor of Computer Applications Marksheet", "Candidate Name: Hemanth M.P.", "Date of Birth: 15/05/2000", "CGPA: 8.5 / 10", "Graduation Year: 2022", "University: Crescent"]),
         ("DEGREE_CERTIFICATE", ["B.S. Abdur Rahman Crescent Institute of Science and Technology", "Degree of Bachelor of Computer Applications", "Candidate Name: Hemanth M.P.", "Conferred: 2022"]),
         ("TRANSFER_CERTIFICATE", ["Transfer Certificate", "Student Name: Hemanth M.P.", "Date of Birth: 15/05/2000", "Conduct: Good"]),
         ("GOVERNMENT_ID", ["Government of India Identity Card", "Name: Hemanth M.P.", "DOB: 15/05/2000", "Gender: Male"]),
@@ -2936,3 +2939,64 @@ def test_agent_activity_role_based_access_control(api_client, admin_auth, applic
     with pytest.raises(HTTPException) as exc_info:
         list_agent_activity(clean_db, reviewer_user)
     assert exc_info.value.status_code == 403
+
+
+# 8. Increment 16: INELIGIBLE routing to EXCEPTION with administrative confirmation
+def test_ineligible_routes_to_exception_and_rejects_processing_complete(admin_auth, applicant_auth, clean_db):
+    app_id = applicant_auth["application"]["applicationId"]
+    user_id = applicant_auth["application"]["userId"]
+
+    # Seed all six required documents in VALIDATED state
+    clean_db["documents"].delete_many({"applicationId": app_id})
+    for dtype in REQUIRED_DOCUMENT_TYPES:
+        clean_db["documents"].insert_one({
+            "applicationId": app_id,
+            "userId": user_id,
+            "documentType": dtype,
+            "status": "VALIDATED",
+            "processingStatus": "COMPLETED",
+            "validationStatus": "VALIDATED",
+        })
+
+    # Set application in ELIGIBILITY_CHECK with INELIGIBLE evaluation
+    elig_result = {
+        "status": "INELIGIBLE",
+        "summary": "Candidate marks below minimum programme threshold",
+        "overallPassed": False,
+        "criteria": [],
+    }
+    clean_db["applications"].update_one(
+        {"applicationId": app_id},
+        {"$set": {"status": "INELIGIBLE", "eligibilityResult": elig_result}},
+    )
+
+    # 1. Direct tool transition from INELIGIBLE to PROCESSING_COMPLETE must be rejected
+    res_comp = tool_update_application_status(clean_db, admin_auth["user"], app_id, "PROCESSING_COMPLETE")
+    assert res_comp.status == ToolStatus.FAILED.value
+    assert "INELIGIBLE and requires administrative confirmation" in res_comp.message
+
+    # Reset to ELIGIBILITY_CHECK for orchestrator test
+    clean_db["applications"].update_one(
+        {"applicationId": app_id},
+        {"$set": {"status": "ELIGIBILITY_CHECK"}},
+    )
+
+    # 2. Orchestrator observation and planning must route INELIGIBLE to EXCEPTION
+    strat = DeterministicPlanningStrategy()
+    obs = AgentOrchestrator(db=clean_db).observe(app_id)
+    action, outcome, reason = strat.plan_next_action(obs, 1)
+
+    assert action is not None
+    assert action.tool == ToolName.UPDATE_APPLICATION_STATUS
+    assert action.parameters["new_status"] == "EXCEPTION"
+    assert "INELIGIBLE" in action.parameters.get("reason", "")
+    assert action.is_terminal is True
+    assert action.terminal_outcome == OrchestrationOutcome.MANUAL_REVIEW_REQUIRED
+    assert outcome == OrchestrationOutcome.MANUAL_REVIEW_REQUIRED
+
+    # 3. Transition from INELIGIBLE to EXCEPTION via tool
+    clean_db["applications"].update_one({"applicationId": app_id}, {"$set": {"status": "INELIGIBLE"}})
+    res_exc = tool_update_application_status(clean_db, admin_auth["user"], app_id, "EXCEPTION", reason="Requires admin check")
+    assert res_exc.status == ToolStatus.COMPLETED.value
+    assert clean_db["applications"].find_one({"applicationId": app_id})["status"] == "EXCEPTION"
+    assert clean_db["applications"].find_one({"applicationId": app_id})["statusReason"] == "Requires admin check"

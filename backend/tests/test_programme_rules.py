@@ -173,3 +173,6 @@ def test_get_programme_rules_numeric_version_sorting(clean_db):
     assert latest is not None
     assert latest["version"] == "1.10.0"
     assert latest["tag"] == "version_1.10.0"
+
+    clean_db["programme_rules"].delete_many({})
+    seed_programme_rules(clean_db)

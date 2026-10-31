@@ -344,28 +344,42 @@ def compute_expected_action(
                 None,
             )
         elif elig_status == "INELIGIBLE":
+            summary = observation.eligibility_result.get("summary") or "Ineligible based on academic criteria"
+            reason = f"Application evaluated as INELIGIBLE ({summary}); requires administrative confirmation before final rejection."
             return (
                 PlannedAction(
                     tool=ToolName.UPDATE_APPLICATION_STATUS,
-                    parameters={"application_id": app_id, "new_status": "INELIGIBLE"},
-                    rationale="Application determined to be INELIGIBLE based on deterministic rules.",
-                ),
-                None,
-                None,
-            )
-        elif elig_status == "NEEDS_REVIEW":
-            # NEEDS_REVIEW moves the application to EXCEPTION with outcome MANUAL_REVIEW_REQUIRED;
-            # creating the exception record stays DEPENDENCY_PENDING (Increment 17).
-            return (
-                PlannedAction(
-                    tool=ToolName.UPDATE_APPLICATION_STATUS,
-                    parameters={"application_id": app_id, "new_status": "EXCEPTION"},
-                    rationale="Eligibility evaluation requires manual review. Moving application to EXCEPTION.",
+                    parameters={
+                        "application_id": app_id,
+                        "new_status": "EXCEPTION",
+                        "reason": reason,
+                    },
+                    rationale=reason,
                     is_terminal=True,
                     terminal_outcome=OrchestrationOutcome.MANUAL_REVIEW_REQUIRED,
                 ),
                 OrchestrationOutcome.MANUAL_REVIEW_REQUIRED,
-                "Eligibility evaluation requires manual review. Application routed to exception management.",
+                reason,
+            )
+        elif elig_status == "NEEDS_REVIEW":
+            # NEEDS_REVIEW moves the application to EXCEPTION with outcome MANUAL_REVIEW_REQUIRED;
+            # creating the exception record stays DEPENDENCY_PENDING (Increment 17).
+            summary = observation.eligibility_result.get("summary") or "Academic criteria requires manual review"
+            reason = f"Eligibility evaluation requires manual review ({summary}). Routed to exception management."
+            return (
+                PlannedAction(
+                    tool=ToolName.UPDATE_APPLICATION_STATUS,
+                    parameters={
+                        "application_id": app_id,
+                        "new_status": "EXCEPTION",
+                        "reason": reason,
+                    },
+                    rationale=reason,
+                    is_terminal=True,
+                    terminal_outcome=OrchestrationOutcome.MANUAL_REVIEW_REQUIRED,
+                ),
+                OrchestrationOutcome.MANUAL_REVIEW_REQUIRED,
+                reason,
             )
 
     # 6. EXCEPTION state: requires manual administrative intervention
@@ -376,19 +390,19 @@ def compute_expected_action(
             "Application is currently in EXCEPTION state. Awaiting administrative review or exception resolution.",
         )
 
-    # 7. ELIGIBLE or INELIGIBLE state:
-    if status in ("ELIGIBLE", "INELIGIBLE"):
-        if observation.eligibility_result:
+    # 7. ELIGIBLE state:
+    if status == "ELIGIBLE":
+        if observation.eligibility_result and observation.eligibility_result.get("status") == "ELIGIBLE":
             return (
                 PlannedAction(
                     tool=ToolName.UPDATE_APPLICATION_STATUS,
                     parameters={"application_id": app_id, "new_status": "PROCESSING_COMPLETE"},
-                    rationale=f"Eligibility determined as {status}. Concluding workflow processing.",
+                    rationale="Eligibility determined as ELIGIBLE. Concluding workflow processing.",
                     is_terminal=True,
                     terminal_outcome=OrchestrationOutcome.COMPLETED,
                 ),
                 OrchestrationOutcome.COMPLETED,
-                f"Application processing concluded with status {status}.",
+                "Application processing concluded with status ELIGIBLE.",
             )
         else:
             return (
@@ -396,6 +410,28 @@ def compute_expected_action(
                 OrchestrationOutcome.DEPENDENCY_PENDING,
                 "Deterministic eligibility evaluation result pending from Increment 16.",
             )
+
+    # 7b. INELIGIBLE state: route to EXCEPTION for administrative confirmation
+    if status == "INELIGIBLE":
+        summary = ""
+        if observation.eligibility_result:
+            summary = observation.eligibility_result.get("summary") or ""
+        reason = f"Application evaluated as INELIGIBLE{' (' + summary + ')' if summary else ''}; requires administrative confirmation before final rejection."
+        return (
+            PlannedAction(
+                tool=ToolName.UPDATE_APPLICATION_STATUS,
+                parameters={
+                    "application_id": app_id,
+                    "new_status": "EXCEPTION",
+                    "reason": reason,
+                },
+                rationale=reason,
+                is_terminal=True,
+                terminal_outcome=OrchestrationOutcome.MANUAL_REVIEW_REQUIRED,
+            ),
+            OrchestrationOutcome.MANUAL_REVIEW_REQUIRED,
+            reason,
+        )
 
     # 8. PROCESSING_COMPLETE: terminal state
     if status == "PROCESSING_COMPLETE":

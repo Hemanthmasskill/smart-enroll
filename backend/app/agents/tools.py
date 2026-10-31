@@ -441,7 +441,7 @@ ALLOWED_STATUS_TRANSITIONS: dict[str, set[str]] = {
     "EXCEPTION": {"PROCESSING", "VERIFICATION_IN_PROGRESS", "ELIGIBILITY_CHECK", "INELIGIBLE"},
     "ELIGIBILITY_CHECK": {"ELIGIBLE", "INELIGIBLE", "EXCEPTION"},
     "ELIGIBLE": {"PROCESSING_COMPLETE"},
-    "INELIGIBLE": {"PROCESSING_COMPLETE"},
+    "INELIGIBLE": {"EXCEPTION", "PROCESSING_COMPLETE"},
     "PROCESSING_COMPLETE": set(),  # Terminal state
 }
 
@@ -669,6 +669,17 @@ def tool_update_application_status(
                 },
                 message="Cannot transition to 'PROCESSING_COMPLETE': required workflow-completion evidence is missing.",
             )
+        if completion_evidence.get("status") == "INELIGIBLE" or current_status == "INELIGIBLE":
+            return ToolExecutionResult(
+                tool=ToolName.UPDATE_APPLICATION_STATUS.value,
+                status=ToolStatus.FAILED.value,
+                data={
+                    "applicationId": app_id,
+                    "currentStatus": current_status,
+                    "targetStatus": status_clean,
+                },
+                message="Cannot transition to 'PROCESSING_COMPLETE': application is INELIGIBLE and requires administrative confirmation in EXCEPTION state.",
+            )
 
     # 6. Apply state transition atomically with active run fencing
     now = datetime.now(timezone.utc).isoformat()
@@ -677,9 +688,14 @@ def tool_update_application_status(
         filter_doc["activeRunId"] = run_id
         filter_doc["supersededRunIds"] = {"$ne": run_id}
 
+    set_fields: dict[str, Any] = {"status": status_clean, "updatedAt": now}
+    reason = kwargs.get("reason")
+    if reason:
+        set_fields["statusReason"] = reason
+
     updated = db["applications"].find_one_and_update(
         filter_doc,
-        {"$set": {"status": status_clean, "updatedAt": now}},
+        {"$set": set_fields},
         return_document=True,
         projection={"_id": 0},
     )
@@ -699,14 +715,18 @@ def tool_update_application_status(
             message=f"Failed to update status for application {app_id}.",
         )
 
+    ret_data = {
+        "applicationId": app_id,
+        "previousStatus": current_status,
+        "newStatus": status_clean,
+    }
+    if reason:
+        ret_data["reason"] = reason
+
     return ToolExecutionResult(
         tool=ToolName.UPDATE_APPLICATION_STATUS.value,
         status=ToolStatus.COMPLETED.value,
-        data={
-            "applicationId": app_id,
-            "previousStatus": current_status,
-            "newStatus": status_clean,
-        },
+        data=ret_data,
         message=f"Application {app_id} status updated from {current_status} to {status_clean}.",
     )
 
