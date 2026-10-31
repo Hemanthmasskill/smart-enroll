@@ -2633,3 +2633,111 @@ def test_list_orchestration_runs_active_and_recovering_null_outcome(api_client, 
     validated = OrchestrationRunResponse.model_validate(direct_dict)
     assert validated.status == OrchestrationRunStatus.RUNNING
     assert validated.outcome is None
+
+
+def test_agent_activity_role_based_access_control(api_client, admin_auth, applicant_auth, clean_db):
+    """
+    Verify RBAC on agent activity endpoints (/api/v1/agents/activity and /api/v1/agents/activity/{application_id}):
+    - Admin can view activity across all applications.
+    - Applicant can view only their own activity.
+    - Applicant requesting another application's activity receives 403.
+    - Reviewer receives 403 from both activity endpoints.
+    - Reviewer receives 403 even when no applicationId filter is supplied.
+    """
+    from app.core.security import create_access_token
+    from app.agents.tools import tool_record_audit_event, list_agent_activity
+    from fastapi import HTTPException
+
+    app_id_1 = applicant_auth["application"]["applicationId"]
+    app_id_2 = "SE20268888"
+
+    # Insert sample audit activity for applicant 1
+    tool_record_audit_event(
+        clean_db,
+        admin_auth["user"],
+        application_id=app_id_1,
+        stage="OBSERVE",
+        tool="get_application",
+        action="Load application 1",
+        result="Success",
+        status="COMPLETED",
+    )
+
+    # Insert sample audit activity for application 2
+    tool_record_audit_event(
+        clean_db,
+        admin_auth["user"],
+        application_id=app_id_2,
+        stage="ACT",
+        tool="check_document_completeness",
+        action="Load application 2",
+        result="Success",
+        status="COMPLETED",
+    )
+
+    # 1. Admin can view activity across applications
+    res_admin = api_client.get("/api/v1/agents/activity", headers=admin_auth["headers"])
+    assert res_admin.status_code == 200
+    app_ids = {item["applicationId"] for item in res_admin.json()}
+    assert app_id_1 in app_ids
+    assert app_id_2 in app_ids
+
+    # 2. Applicant can view only their own activity
+    res_applicant = api_client.get("/api/v1/agents/activity", headers=applicant_auth["headers"])
+    assert res_applicant.status_code == 200
+    applicant_items = res_applicant.json()
+    assert len(applicant_items) > 0
+    assert all(item["applicationId"] == app_id_1 for item in applicant_items)
+
+    # 3. Applicant requesting another application receives 403
+    res_applicant_forbidden = api_client.get(
+        f"/api/v1/agents/activity/{app_id_2}",
+        headers=applicant_auth["headers"],
+    )
+    assert res_applicant_forbidden.status_code == 403
+    assert "Not authorized" in res_applicant_forbidden.json().get("detail", "")
+
+    # Applicant passing another applicationId query param also receives 403
+    res_applicant_query_forbidden = api_client.get(
+        "/api/v1/agents/activity",
+        headers=applicant_auth["headers"],
+        params={"applicationId": app_id_2},
+    )
+    assert res_applicant_query_forbidden.status_code == 403
+
+    # Create reviewer user and token
+    reviewer_user = {
+        "full_name": "Admission Reviewer",
+        "email": "audit_reviewer@smartenroll.edu",
+        "role": "reviewer",
+    }
+    inserted_reviewer = clean_db["users"].insert_one(reviewer_user)
+    reviewer_token = create_access_token(subject=str(inserted_reviewer.inserted_id), role="reviewer")
+    reviewer_headers = {"Authorization": f"Bearer {reviewer_token}"}
+
+    # 4. Reviewer receives 403 from /api/v1/agents/activity without applicationId filter
+    res_rev_no_filter = api_client.get("/api/v1/agents/activity", headers=reviewer_headers)
+    assert res_rev_no_filter.status_code == 403
+    assert "Forbidden" in res_rev_no_filter.json().get("detail", "")
+
+    # 5. Reviewer receives 403 from /api/v1/agents/activity with applicationId filter
+    res_rev_filter = api_client.get(
+        "/api/v1/agents/activity",
+        headers=reviewer_headers,
+        params={"applicationId": app_id_1},
+    )
+    assert res_rev_filter.status_code == 403
+    assert "Forbidden" in res_rev_filter.json().get("detail", "")
+
+    # 6. Reviewer receives 403 from /api/v1/agents/activity/{application_id}
+    res_rev_param = api_client.get(
+        f"/api/v1/agents/activity/{app_id_1}",
+        headers=reviewer_headers,
+    )
+    assert res_rev_param.status_code == 403
+    assert "Forbidden" in res_rev_param.json().get("detail", "")
+
+    # 7. Direct list_agent_activity invocation with reviewer raises HTTPException 403
+    with pytest.raises(HTTPException) as exc_info:
+        list_agent_activity(clean_db, reviewer_user)
+    assert exc_info.value.status_code == 403
