@@ -48,6 +48,12 @@ If you discover a security vulnerability in Smart Enroll:
 - **Local Loopback Gating:** Connecting the LLM orchestrator to local loopback endpoints (such as `http://localhost:11434` or `http://127.0.0.1:11434` for Ollama/vLLM) is **disabled by default** (`LLM_ALLOW_LOCAL_ENDPOINTS=false`).
 - In multi-tenant and production deployments, local loopback calls are blocked to prevent Server-Side Request Forgery (SSRF) against host services.
 
+### 3.2.1 SSRF Pre-Flight URL Validation & DNS Rebinding Risk Acceptance
+- **Validation Scope:** Endpoint URLs configured in `LLM_API_BASE` are validated at client initialization via `validate_endpoint_url()`. This pre-flight validation resolves the target hostname via DNS, enforces HTTPS, and strictly blocks loopback, private, link-local, reserved, and cloud-metadata IP ranges.
+- **Accepted Risk (DNS Rebinding):** Standard HTTP/HTTPS client transports (`httpx` over `httpcore`) perform independent DNS resolution when creating socket connections. Pinning pre-resolved IP addresses at connection time while preserving valid TLS SNI and server certificate Common Name / SAN verification across rotating Anycast CDN endpoints (e.g., Cloudflare, OpenAI, Azure) is impractical within application-layer HTTP clients without breaking upstream TLS validation. Consequently, a potential Time-of-Check to Time-of-Use (TOCTOU) DNS rebinding window is documented and accepted as an architectural risk for externally managed endpoints.
+- **Architectural Clarification:** Endpoint verification is performed as application-level pre-flight URL schema and DNS resolution validation, **not socket-level connection enforcement**.
+- **Production Defense-in-Depth:** In production and staging deployments, infrastructure-level egress filtering (e.g., cloud VPC egress security groups and firewall policies restricting outbound egress to verified provider IP ranges) must be enforced to neutralize SSRF and DNS rebinding at the network layer.
+
 ### 3.3 Authentication & Authorization
 - **Argon2id Password Hashing:** User passwords are encrypted with Argon2id using secure salt and work factors. Weak passwords failing the 10+ character policy (uppercase, lowercase, digit, special character, common dictionary check) are rejected at registration and administration utilities.
 - **Constant-Time Verification:** Login attempts for non-existent accounts execute a dummy Argon2id verification (`DUMMY_HASH`) to prevent user enumeration via timing attacks.
