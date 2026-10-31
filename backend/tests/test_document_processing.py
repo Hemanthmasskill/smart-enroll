@@ -241,22 +241,24 @@ def test_image_processing_with_ocr_adapter():
 
 
 def test_cgpa_scale_extraction_from_text():
-    """Verify field extractor captures both CGPA and CGPA scale from various formatting styles."""
+    """Verify field extractor captures both CGPA and CGPA scale from various formatting styles, including deterministic scale inference."""
     from app.services.ocr.field_extractor import extract_fields_from_text
 
-    # Scale 4.0
+    # Scale 4.0 (explicit non-10 scale)
     fields_4 = extract_fields_from_text("Cumulative Grade Point Average: 3.5 / 4.0\nCandidate: Test")
     assert fields_4.cgpa is not None
     assert fields_4.cgpa.normalizedValue == 3.5
     assert fields_4.cgpaScale is not None
     assert fields_4.cgpaScale.normalizedValue == 4.0
+    assert fields_4.cgpaScale.rawValue == "4.0"
 
-    # Scale 10.0
+    # Scale 10.0 (explicit scale 10)
     fields_10 = extract_fields_from_text("Final CGPA: 8.5 out of 10.0\nCourse: BCA")
     assert fields_10.cgpa is not None
     assert fields_10.cgpa.normalizedValue == 8.5
     assert fields_10.cgpaScale is not None
     assert fields_10.cgpaScale.normalizedValue == 10.0
+    assert fields_10.cgpaScale.rawValue == "10.0"
 
     # Standalone scale label
     fields_scale_label = extract_fields_from_text("CGPA: 7.2\nGrade Scale: 10\nUniversity: Madras")
@@ -264,6 +266,30 @@ def test_cgpa_scale_extraction_from_text():
     assert fields_scale_label.cgpa.normalizedValue == 7.2
     assert fields_scale_label.cgpaScale is not None
     assert fields_scale_label.cgpaScale.normalizedValue == 10.0
+
+    # Inferred scale: CGPA 8.5 with no printed scale (7 < CGPA <= 10 -> infer scale 10)
+    fields_inferred = extract_fields_from_text("CGPA: 8.5\nCandidate: Jane Doe\nUniversity: Madras")
+    assert fields_inferred.cgpa is not None
+    assert fields_inferred.cgpa.normalizedValue == 8.5
+    assert fields_inferred.cgpaScale is not None
+    assert fields_inferred.cgpaScale.normalizedValue == 10.0
+    assert fields_inferred.cgpaScale.rawValue is None  # rawValue=None explicitly distinguishes inferred scale
+    assert "Inferred scale 10" in fields_inferred.cgpaScale.evidence
+
+    # No scale inferred: CGPA <= 7 with no printed scale
+    fields_low = extract_fields_from_text("CGPA: 3.5\nCandidate: Jane Doe\nUniversity: Madras")
+    assert fields_low.cgpa is not None
+    assert fields_low.cgpa.normalizedValue == 3.5
+    assert fields_low.cgpaScale is None
+
+    # No scale inferred: CGPA > 10
+    fields_high = extract_fields_from_text("CGPA: 10.01\nCandidate: Jane Doe\nUniversity: Madras")
+    assert fields_high.cgpaScale is None
+
+    # No scale inferred: non-numeric or missing
+    fields_none = extract_fields_from_text("Candidate: Jane Doe\nUniversity: Madras")
+    assert fields_none.cgpa is None
+    assert fields_none.cgpaScale is None
 
 
 def test_mathematics_extraction_rejects_zero_and_fail_markers():

@@ -475,23 +475,102 @@ def evaluate_eligibility(
             pct_reason = f"Extracted percentage '{raw_percentage}' is not a valid decimal number; manual review required."
 
     elif raw_cgpa is not None:
-        # Check scale first: convert CGPA only for scale 10; unknown or other scales give NEEDS_REVIEW
-        if raw_cgpa_scale is None:
-            pct_result = "NEEDS_REVIEW"
-            pct_reason = f"Extracted CGPA '{raw_cgpa}' has unknown grading scale; manual review required."
-            pct_observed["rawCgpa"] = str(raw_cgpa)
-            pct_observed["cgpaScale"] = None
+        # Determine whether scale was explicitly provided or missing
+        # 1. From "X/Y" syntax in raw_cgpa (e.g. "8.5/10" or "3.5/4.0") -> explicit
+        # 2. From extracted cgpaScale with non-None rawValue (e.g. from "/10", "out of 10", "scale: 10") -> explicit
+        # 3. If raw_cgpa_scale is present but scale_entry has rawValue=None -> inferred scale
+        # 4. If raw_cgpa_scale is None -> missing scale
+        scale_entry = marks_fields.get("cgpaScale") if isinstance(marks_fields, dict) else None
+        evidence_str = ""
+        if isinstance(scale_entry, dict):
+            evidence_str = str(scale_entry.get("evidence") or "")
+        elif hasattr(scale_entry, "evidence"):
+            evidence_str = str(getattr(scale_entry, "evidence", "") or "")
+
+        has_explicit_scale = False
+        if raw_cgpa_scale is not None:
+            if "Inferred scale 10" in evidence_str:
+                has_explicit_scale = False
+            else:
+                has_explicit_scale = True
+
+        if not has_explicit_scale:
+            # Case B – Missing scale
+            # - CGPA greater than 7 and less than or equal to 10 -> infer scale 10.
+            # - CGPA at or below 7 with no printed scale -> NEEDS_REVIEW.
+            # - Negative values -> NEEDS_REVIEW.
+            # - Values greater than 10 -> NEEDS_REVIEW.
+            # - Non-numeric values -> NEEDS_REVIEW.
+            try:
+                d_observed_cgpa = Decimal(str(raw_cgpa))
+                pct_observed["rawCgpa"] = str(d_observed_cgpa)
+                if d_observed_cgpa < Decimal("0") or d_observed_cgpa > Decimal("10"):
+                    pct_result = "NEEDS_REVIEW"
+                    pct_reason = f"Extracted CGPA {d_observed_cgpa} is outside valid 0 to 10 scale; manual review required."
+                    pct_observed["cgpaScale"] = None
+                    pct_observed["cgpaScaleInferred"] = False
+                elif d_observed_cgpa <= Decimal("7"):
+                    pct_result = "NEEDS_REVIEW"
+                    pct_reason = f"Extracted CGPA {d_observed_cgpa} has no printed scale and is <= 7 (cannot infer 10-point scale); manual review required."
+                    pct_observed["cgpaScale"] = None
+                    pct_observed["cgpaScaleInferred"] = False
+                else:
+                    # 7 < CGPA <= 10: infer scale 10
+                    d_scale = Decimal("10")
+                    pct_observed["cgpaScale"] = "10"
+                    pct_observed["cgpaScaleInferred"] = True
+                    pct_observed["cgpaToPercentageFactor"] = str(d_cgpa_factor)
+
+                    computed_pct = d_observed_cgpa * d_cgpa_factor
+                    pct_observed["computedPercentage"] = str(computed_pct)
+
+                    if computed_pct < Decimal("0") or computed_pct > Decimal("100"):
+                        pct_result = "NEEDS_REVIEW"
+                        pct_reason = f"Computed percentage {computed_pct}% from CGPA {d_observed_cgpa} is outside valid 0 to 100 range; manual review required."
+                    elif computed_pct >= d_min_percentage:
+                        pct_result = "PASSED"
+                        pct_reason = f"Computed percentage {computed_pct}% (CGPA {d_observed_cgpa} × {d_cgpa_factor}, inferred scale 10) meets or exceeds minimum {d_min_percentage}%."
+                    else:
+                        pct_result = "FAILED"
+                        pct_reason = f"Computed percentage {computed_pct}% (CGPA {d_observed_cgpa} × {d_cgpa_factor}, inferred scale 10) is below minimum required {d_min_percentage}%."
+
+                    if marks_doc:
+                        pct_evidence.append(
+                            RuleEvidence(
+                                documentId=marks_doc.get("documentId"),
+                                documentType=marks_doc.get("documentType", "UG_MARKSHEET"),
+                                field="cgpa",
+                                value=str(d_observed_cgpa),
+                                metadata={
+                                    "computedPercentage": str(pct_observed.get("computedPercentage")),
+                                    "cgpaToPercentageFactor": str(d_cgpa_factor),
+                                    "cgpaScale": str(d_scale),
+                                    "cgpaScaleInferred": True,
+                                },
+                            )
+                        )
+            except (InvalidOperation, ValueError, TypeError):
+                pct_result = "NEEDS_REVIEW"
+                pct_reason = f"Extracted CGPA '{raw_cgpa}' is not a valid decimal number; manual review required."
+                pct_observed["rawCgpa"] = str(raw_cgpa)
+                pct_observed["cgpaScale"] = None
+                pct_observed["cgpaScaleInferred"] = False
         else:
+            # Case A or Case C – Explicit scale
             try:
                 d_scale = Decimal(str(raw_cgpa_scale))
-                pct_observed["cgpaScale"] = str(d_scale)
                 if d_scale != Decimal("10"):
-                    # Other scale (e.g. 4.0 as in 3.5/4.0) gives NEEDS_REVIEW
+                    # Case C – Explicit non-10 scale (e.g. 3.5 / 4.0) -> NEEDS_REVIEW
                     pct_result = "NEEDS_REVIEW"
                     pct_reason = f"Extracted CGPA scale {d_scale} is not standard scale 10; manual review required."
+                    pct_observed["cgpaScale"] = str(d_scale)
+                    pct_observed["cgpaScaleInferred"] = False
                     pct_observed["rawCgpa"] = str(raw_cgpa)
                 else:
-                    # Scale 10: evaluate CGPA
+                    # Case A – Explicit scale of 10
+                    d_scale = Decimal("10")
+                    pct_observed["cgpaScale"] = "10"
+                    pct_observed["cgpaScaleInferred"] = False
                     try:
                         d_observed_cgpa = Decimal(str(raw_cgpa))
                         pct_observed["rawCgpa"] = str(d_observed_cgpa)
@@ -526,6 +605,7 @@ def evaluate_eligibility(
                                         "computedPercentage": str(pct_observed.get("computedPercentage")),
                                         "cgpaToPercentageFactor": str(d_cgpa_factor),
                                         "cgpaScale": str(d_scale),
+                                        "cgpaScaleInferred": False,
                                     },
                                 )
                             )

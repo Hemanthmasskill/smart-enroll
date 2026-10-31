@@ -921,7 +921,7 @@ def upload_all_six_documents(
     docs_to_upload = [
         ("10TH_MARKSHEET", ["Secondary School Certificate", marksheet_name, "Date of Birth: 15/05/2000", "Marks: 432 / 500", "Percentage: 86.4%", "State Board of Secondary Education"]),
         ("12TH_MARKSHEET", ["Higher Secondary Certificate", "Candidate Name: Hemanth M.P.", "Date of Birth: 15/05/2000", "Marks: 440 / 500", "Percentage: 88.0%", math_line, "State Board of Higher Secondary"]),
-        ("UG_MARKSHEET", ["Bachelor of Computer Applications Marksheet", "Candidate Name: Hemanth M.P.", "Date of Birth: 15/05/2000", "CGPA: 8.5 / 10", "Graduation Year: 2022", "University: Crescent"]),
+        ("UG_MARKSHEET", ["Bachelor of Computer Applications Marksheet", "Candidate Name: Hemanth M.P.", "Date of Birth: 15/05/2000", "CGPA: 8.5", "Graduation Year: 2022", "University: Crescent"]),
         ("DEGREE_CERTIFICATE", ["B.S. Abdur Rahman Crescent Institute of Science and Technology", "Degree of Bachelor of Computer Applications", "Candidate Name: Hemanth M.P.", "Conferred: 2022"]),
         ("TRANSFER_CERTIFICATE", ["Transfer Certificate", "Student Name: Hemanth M.P.", "Date of Birth: 15/05/2000", "Conduct: Good"]),
         ("GOVERNMENT_ID", ["Government of India Identity Card", "Name: Hemanth M.P.", "DOB: 15/05/2000", "Gender: Male"]),
@@ -3000,3 +3000,61 @@ def test_ineligible_routes_to_exception_and_rejects_processing_complete(admin_au
     assert res_exc.status == ToolStatus.COMPLETED.value
     assert clean_db["applications"].find_one({"applicationId": app_id})["status"] == "EXCEPTION"
     assert clean_db["applications"].find_one({"applicationId": app_id})["statusReason"] == "Requires admin check"
+
+
+def test_orchestration_reaches_eligible_with_unscaled_cgpa_marksheet(api_client, applicant_auth, clean_db):
+    """
+    Increment 16 Final Hardening (Issue 1):
+    Full orchestration-level regression test using a marksheet fixture containing
+    exactly: 'CGPA: 8.5' with NO printed scale.
+    When all other eligibility requirements are satisfied, the application must
+    successfully reach ELIGIBLE (and conclude at PROCESSING_COMPLETE).
+    """
+    app_id = applicant_auth["application"]["applicationId"]
+    clean_db["applications"].update_one({"applicationId": app_id}, {"$set": {"status": "SUBMITTED"}})
+
+    # Upload all 6 required documents where UG_MARKSHEET contains exactly "CGPA: 8.5" with no scale
+    marksheet_lines = [
+        "Bachelor of Computer Applications Marksheet",
+        "Candidate Name: Hemanth M.P.",
+        "Date of Birth: 15/05/2000",
+        "CGPA: 8.5",  # Exactly CGPA: 8.5 with no /10 or scale printed
+        "Graduation Year: 2022",
+        "University: Crescent",
+    ]
+    docs_to_upload = [
+        ("10TH_MARKSHEET", ["Secondary School Certificate", "Candidate Name: Hemanth M.P.", "Date of Birth: 15/05/2000", "Marks: 432 / 500", "Percentage: 86.4%", "State Board of Secondary Education"]),
+        ("12TH_MARKSHEET", ["Higher Secondary Certificate", "Candidate Name: Hemanth M.P.", "Date of Birth: 15/05/2000", "Marks: 440 / 500", "Percentage: 88.0%", "Mathematics: 95 / 100", "State Board of Higher Secondary"]),
+        ("UG_MARKSHEET", marksheet_lines),
+        ("DEGREE_CERTIFICATE", ["B.S. Abdur Rahman Crescent Institute of Science and Technology", "Degree of Bachelor of Computer Applications", "Candidate Name: Hemanth M.P.", "Conferred: 2022"]),
+        ("TRANSFER_CERTIFICATE", ["Transfer Certificate", "Student Name: Hemanth M.P.", "Date of Birth: 15/05/2000", "Conduct: Good"]),
+        ("GOVERNMENT_ID", ["Government of India Identity Card", "Name: Hemanth M.P.", "DOB: 15/05/2000", "Gender: Male"]),
+    ]
+    for doc_type, lines in docs_to_upload:
+        pdf_bytes = create_sample_pdf_bytes(lines)
+        extra_data = {"documentType": doc_type, "applicationId": app_id}
+        if doc_type == "DEGREE_CERTIFICATE":
+            extra_data["documentVariant"] = "ORIGINAL_DEGREE_CERTIFICATE"
+        up_res = api_client.post(
+            "/api/v1/documents/upload",
+            headers=applicant_auth["headers"],
+            data=extra_data,
+            files={"file": (f"{doc_type.lower()}.pdf", pdf_bytes, "application/pdf")},
+        )
+        assert up_res.status_code == 201
+
+    orchestrator = AgentOrchestrator(db=clean_db)
+    res = orchestrator.run(app_id, applicant_auth["user"])
+
+    assert res.outcome == OrchestrationOutcome.COMPLETED
+    assert res.currentApplicationStatus == "PROCESSING_COMPLETE"
+
+    # Verify eligibility evaluation was recorded with inferred scale 10
+    eval_rec = clean_db["eligibility_evaluations"].find_one({"applicationId": app_id})
+    assert eval_rec is not None
+    assert eval_rec["status"] == "ELIGIBLE"
+    rules_list = eval_rec["result"]["rules"] if "result" in eval_rec and "rules" in eval_rec["result"] else eval_rec.get("rules", [])
+    min_pct_rule = next(r for r in rules_list if r["ruleId"] == "MIN_PERCENTAGE")
+    assert min_pct_rule["result"] == "PASSED"
+    assert min_pct_rule["observed"]["cgpaScaleInferred"] is True
+    assert min_pct_rule["observed"]["cgpaScale"] == "10"

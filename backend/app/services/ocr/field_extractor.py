@@ -335,6 +335,23 @@ def extract_fields_from_text(text: str, document_type: str | None = None) -> Ext
                     )
                 break
 
+    # Deterministic Scale Inference (Increment 16):
+    # When no explicit scale is printed:
+    # - If CGPA > 7.0 and <= 10.0: infer scale 10 (rawValue=None distinguishes inferred from printed scale)
+    # - If CGPA <= 7.0, out of range (< 0 or > 10), or non-numeric: scale remains None (yielding NEEDS_REVIEW)
+    if not fields.cgpaScale and fields.cgpa and fields.cgpa.normalizedValue is not None:
+        try:
+            val_cgpa = float(fields.cgpa.normalizedValue)
+            if 7.0 < val_cgpa <= 10.0:
+                fields.cgpaScale = ExtractedField(
+                    rawValue=None,
+                    normalizedValue=10.0,
+                    confidence=0.80,
+                    evidence=f"Inferred scale 10 for CGPA {val_cgpa} (7.0 < CGPA <= 10.0 with no printed scale)",
+                )
+        except (ValueError, TypeError):
+            pass
+
     # 9. Certificate Number
     for pattern in CERTIFICATE_NO_PATTERNS:
         m = pattern.search(text)

@@ -240,12 +240,16 @@ def test_invalid_percentage_and_cgpa_rejection():
     pct_rule_cgpa_abc = next(r for r in res_cgpa_abc.rules if r.ruleId == "MIN_PERCENTAGE")
     assert pct_rule_cgpa_abc.result == "NEEDS_REVIEW"
 
-    # Unknown scale (cgpa_scale is None) -> NEEDS_REVIEW
-    res_cgpa_unknown = evaluate_eligibility(rules, app, build_test_documents(percentage=None, cgpa=8.5, cgpa_scale=None, degree_name="BCA"))
+    # Missing scale with CGPA <= 7 (cannot infer scale 10) -> NEEDS_REVIEW
+    res_cgpa_unknown = evaluate_eligibility(rules, app, build_test_documents(percentage=None, cgpa=3.5, cgpa_scale=None, degree_name="BCA"))
     assert res_cgpa_unknown.status == "NEEDS_REVIEW"
     pct_rule_unknown = next(r for r in res_cgpa_unknown.rules if r.ruleId == "MIN_PERCENTAGE")
     assert pct_rule_unknown.result == "NEEDS_REVIEW"
-    assert "unknown grading scale" in pct_rule_unknown.reason
+    assert "cannot infer 10-point scale" in pct_rule_unknown.reason
+
+    # Missing scale with 7 < CGPA <= 10 (infers scale 10) -> ELIGIBLE
+    res_cgpa_inferred = evaluate_eligibility(rules, app, build_test_documents(percentage=None, cgpa=8.5, cgpa_scale=None, degree_name="BCA"))
+    assert res_cgpa_inferred.status == "ELIGIBLE"
 
     # 3. FAILED is allowed ONLY for valid value below threshold:
     # Valid percentage 45% (< 50%) -> FAILED
@@ -589,6 +593,100 @@ def test_cgpa_calculation_edge_cases_and_invalid_data():
     pct_rule_high = next(r for r in res_high.rules if r.ruleId == "MIN_PERCENTAGE")
     assert pct_rule_high.result == "NEEDS_REVIEW"
     assert "outside valid 0 to 100 range" in pct_rule_high.reason
+
+
+def test_deterministic_cgpa_scale_inference_and_cases():
+    """
+    Increment 16 Final Hardening (Issue 1):
+    Verify deterministic CGPA scale inference across all required cases:
+    1. CGPA: 8.5 with no printed scale -> inferred scale 10 -> ELIGIBLE (meets 50%).
+    2. CGPA: 3.5 with no printed scale -> <= 7 with no scale -> NEEDS_REVIEW.
+    3. CGPA: 3.5 / 4.0 -> explicit non-10 scale -> NEEDS_REVIEW.
+    4. CGPA: 8.5 / 10 -> explicit scale 10 -> ELIGIBLE.
+    5. CGPA: -1 -> out of range -> NEEDS_REVIEW (never FAILED).
+    6. CGPA: 10.01 -> out of range -> NEEDS_REVIEW (never FAILED).
+    7. Non-numeric CGPA values -> NEEDS_REVIEW (never FAILED).
+    8. Missing CGPA evidence -> NEEDS_REVIEW (never FAILED).
+    """
+    rules = get_canonical_rule("mca")
+    app = {"applicationId": "APP-CGPA-INFER"}
+
+    # 1. CGPA: 8.5 with no printed scale (7 < CGPA <= 10 -> infer scale 10)
+    docs_8_5_no_scale = build_test_documents(percentage=None, cgpa=8.5, cgpa_scale=None)
+    res_1 = evaluate_eligibility(rules, app, docs_8_5_no_scale)
+    assert res_1.status == "ELIGIBLE"
+    r1 = next(r for r in res_1.rules if r.ruleId == "MIN_PERCENTAGE")
+    assert r1.result == "PASSED"
+    assert r1.observed["cgpaScaleInferred"] is True
+    assert r1.observed["cgpaScale"] == "10"
+    assert "inferred scale 10" in r1.reason
+    assert any(ev.metadata and ev.metadata.get("cgpaScaleInferred") is True for ev in r1.evidence)
+
+    # 2. CGPA: 3.5 with no printed scale (CGPA <= 7 with no printed scale -> NEEDS_REVIEW)
+    docs_3_5_no_scale = build_test_documents(percentage=None, cgpa=3.5, cgpa_scale=None)
+    res_2 = evaluate_eligibility(rules, app, docs_3_5_no_scale)
+    assert res_2.status == "NEEDS_REVIEW"
+    r2 = next(r for r in res_2.rules if r.ruleId == "MIN_PERCENTAGE")
+    assert r2.result == "NEEDS_REVIEW"
+    assert "cannot infer 10-point scale" in r2.reason
+
+    # 3. CGPA: 3.5 / 4.0 (explicit non-10 scale -> NEEDS_REVIEW)
+    docs_3_5_scale_4 = build_test_documents(percentage=None, cgpa="3.5/4.0", cgpa_scale=None)
+    res_3 = evaluate_eligibility(rules, app, docs_3_5_scale_4)
+    assert res_3.status == "NEEDS_REVIEW"
+    r3 = next(r for r in res_3.rules if r.ruleId == "MIN_PERCENTAGE")
+    assert r3.result == "NEEDS_REVIEW"
+    assert "not standard scale 10" in r3.reason
+
+    # Also test explicit scale passed via cgpa_scale
+    docs_3_5_scale_4b = build_test_documents(percentage=None, cgpa=3.5, cgpa_scale=4.0)
+    res_3b = evaluate_eligibility(rules, app, docs_3_5_scale_4b)
+    assert res_3b.status == "NEEDS_REVIEW"
+
+    # 4. CGPA: 8.5 / 10 (explicit scale 10 -> PASSED / ELIGIBLE)
+    docs_8_5_scale_10 = build_test_documents(percentage=None, cgpa=8.5, cgpa_scale=10.0)
+    res_4 = evaluate_eligibility(rules, app, docs_8_5_scale_10)
+    assert res_4.status == "ELIGIBLE"
+    r4 = next(r for r in res_4.rules if r.ruleId == "MIN_PERCENTAGE")
+    assert r4.result == "PASSED"
+    assert r4.observed["cgpaScaleInferred"] is False
+    assert r4.observed["cgpaScale"] == "10"
+
+    docs_8_5_scale_10_str = build_test_documents(percentage=None, cgpa="8.5/10", cgpa_scale=None)
+    res_4b = evaluate_eligibility(rules, app, docs_8_5_scale_10_str)
+    assert res_4b.status == "ELIGIBLE"
+
+    # 5. CGPA: -1 (negative value -> NEEDS_REVIEW, never FAILED)
+    docs_neg = build_test_documents(percentage=None, cgpa=-1.0, cgpa_scale=None)
+    res_5 = evaluate_eligibility(rules, app, docs_neg)
+    assert res_5.status == "NEEDS_REVIEW"
+    r5 = next(r for r in res_5.rules if r.ruleId == "MIN_PERCENTAGE")
+    assert r5.result == "NEEDS_REVIEW"
+    assert "outside valid 0 to 10 scale" in r5.reason
+
+    # 6. CGPA: 10.01 (greater than 10 -> NEEDS_REVIEW, never FAILED)
+    docs_high = build_test_documents(percentage=None, cgpa=10.01, cgpa_scale=None)
+    res_6 = evaluate_eligibility(rules, app, docs_high)
+    assert res_6.status == "NEEDS_REVIEW"
+    r6 = next(r for r in res_6.rules if r.ruleId == "MIN_PERCENTAGE")
+    assert r6.result == "NEEDS_REVIEW"
+    assert "outside valid 0 to 10 scale" in r6.reason
+
+    # 7. Non-numeric CGPA values ("abc" -> NEEDS_REVIEW, never FAILED)
+    docs_non_num = build_test_documents(percentage=None, cgpa="abc", cgpa_scale=None)
+    res_7 = evaluate_eligibility(rules, app, docs_non_num)
+    assert res_7.status == "NEEDS_REVIEW"
+    r7 = next(r for r in res_7.rules if r.ruleId == "MIN_PERCENTAGE")
+    assert r7.result == "NEEDS_REVIEW"
+    assert "not a valid decimal number" in r7.reason
+
+    # 8. Missing CGPA evidence (percentage=None, cgpa=None -> NEEDS_REVIEW, never FAILED)
+    docs_missing = build_test_documents(percentage=None, cgpa=None, cgpa_scale=None)
+    res_8 = evaluate_eligibility(rules, app, docs_missing)
+    assert res_8.status == "NEEDS_REVIEW"
+    r8 = next(r for r in res_8.rules if r.ruleId == "MIN_PERCENTAGE")
+    assert r8.result == "NEEDS_REVIEW"
+    assert "Neither aggregate percentage nor CGPA was found" in r8.reason
 
 
 def test_clean_for_hashing_and_entrance_required():
