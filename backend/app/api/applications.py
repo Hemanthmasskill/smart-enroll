@@ -28,7 +28,7 @@ from app.core.config import settings
 
 
 def verify_dev_seed_enabled():
-    if not (settings.ENABLE_DEV_SEED and settings.ENV.lower() != "production"):
+    if not (settings.ENABLE_DEV_SEED and settings.ENV.lower() == "development"):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Dev seed endpoint is disabled",

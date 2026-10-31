@@ -1,5 +1,5 @@
 from pathlib import Path
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -40,6 +40,17 @@ class Settings(BaseSettings):
     RETENTION_DAYS: int = 30
     UPLOAD_SCANNER: str = "noop"
 
+    @field_validator("ENV")
+    @classmethod
+    def validate_env(cls, v: str) -> str:
+        valid_envs = {"development", "staging", "production", "test"}
+        normalized = v.strip().lower()
+        if normalized not in valid_envs:
+            raise ValueError(
+                f"Invalid ENV '{v}'. Must be one of: {', '.join(sorted(valid_envs))}"
+            )
+        return normalized
+
     @field_validator("TRUSTED_PROXIES", mode="before")
     @classmethod
     def parse_trusted_proxies(cls, v: object) -> list[str]:
@@ -48,6 +59,41 @@ class Settings(BaseSettings):
         if isinstance(v, (list, tuple, set)):
             return [str(ip).strip() for ip in v if str(ip).strip()]
         return ["127.0.0.1", "::1"]
+
+    @model_validator(mode="after")
+    def validate_production_safety(self) -> "Settings":
+        env = self.ENV.lower()
+        is_dev = env == "development"
+
+        # Default-deny dev seed outside development
+        if not is_dev and self.ENABLE_DEV_SEED:
+            raise ValueError(
+                f"ENABLE_DEV_SEED is strictly forbidden when ENV is '{self.ENV}'."
+            )
+
+        # Enforce strong SECRET_KEY outside development
+        if not is_dev:
+            key = self.SECRET_KEY.strip() if self.SECRET_KEY else ""
+            insecure_keys = {
+                "your-secret-key-change-in-production",
+                "secret",
+                "secretkey",
+                "changeme",
+                "default",
+                "development",
+                "admin",
+                "password",
+            }
+            if len(key) < 32:
+                raise ValueError(
+                    f"SECRET_KEY must be at least 32 characters long when ENV is '{self.ENV}'."
+                )
+            if key.lower() in insecure_keys:
+                raise ValueError(
+                    f"Insecure placeholder SECRET_KEY is not allowed when ENV is '{self.ENV}'."
+                )
+
+        return self
 
     @property
     def storage_path(self) -> Path:

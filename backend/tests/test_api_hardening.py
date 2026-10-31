@@ -9,7 +9,9 @@ from fastapi.testclient import TestClient
 import jwt
 import pytest
 
-from app.core.config import settings
+from pydantic import ValidationError
+
+from app.core.config import Settings, settings
 from app.core.concurrency import acquire_ocr_worker
 from app.core.logging_config import SensitiveDataRedactionFilter
 from app.core.rate_limit import limiter, SlidingWindowRateLimiter, get_client_ip
@@ -501,4 +503,64 @@ def test_rate_limit_application_create_and_update(clean_db):
         )
         assert res.status_code == 429
         assert "Retry-After" in res.headers
+
+
+# =====================================================================
+# 7. Fail-Safe Production Configuration Tests (Follow-up Task 4)
+# =====================================================================
+
+def test_config_env_validation():
+    """Verify ENV only accepts development, staging, production, or test."""
+    for valid_env in ["development", "staging", "production", "test", "PRODUCTION", "Development "]:
+        cfg = Settings(ENV=valid_env, SECRET_KEY="a" * 32, ENABLE_DEV_SEED=False)
+        assert cfg.ENV in {"development", "staging", "production", "test"}
+
+    for invalid_env in ["local", "prod", "sandbox", "docker", ""]:
+        with pytest.raises(ValidationError) as exc:
+            Settings(ENV=invalid_env, SECRET_KEY="a" * 32)
+        assert "Invalid ENV" in str(exc.value)
+
+
+def test_config_secret_key_validation():
+    """Verify strong SECRET_KEY is enforced outside development."""
+    dev_cfg = Settings(ENV="development", SECRET_KEY="short-key")
+    assert dev_cfg.SECRET_KEY == "short-key"
+
+    with pytest.raises(ValidationError) as exc:
+        Settings(ENV="production", SECRET_KEY="too-short")
+    assert "at least 32 characters long" in str(exc.value)
+
+    with pytest.raises(ValidationError) as exc:
+        Settings(ENV="staging", SECRET_KEY="your-secret-key-change-in-production")
+    assert "Insecure placeholder SECRET_KEY" in str(exc.value)
+
+    prod_cfg = Settings(ENV="production", SECRET_KEY="super-secret-key-that-is-at-least-32-chars-long!")
+    assert len(prod_cfg.SECRET_KEY) >= 32
+
+
+def test_config_default_deny_dev_seed(clean_db):
+    """Verify ENABLE_DEV_SEED is strictly forbidden outside development and disabled by default."""
+    cfg = Settings(SECRET_KEY="a" * 32)
+    assert cfg.ENABLE_DEV_SEED is False
+
+    with pytest.raises(ValidationError) as exc:
+        Settings(ENV="production", SECRET_KEY="a" * 32, ENABLE_DEV_SEED=True)
+    assert "ENABLE_DEV_SEED is strictly forbidden" in str(exc.value)
+
+    admin_id = ObjectId()
+    clean_db["users"].insert_one({
+        "_id": admin_id,
+        "email": "seed_admin@example.com",
+        "role": "admin",
+        "tokenVersion": 1,
+    })
+    token = create_access_token(subject=str(admin_id), role="admin")
+
+    with TestClient(app) as client:
+        res = client.post(
+            "/api/v1/applications/seed",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert res.status_code == 404
+        assert "Dev seed endpoint is disabled" in res.json()["detail"]
 
