@@ -61,7 +61,7 @@ class AuditEventRecord(BaseModel):
     """
     id: str = Field(..., description="Unique event identifier, e.g. log-001 or act-uuid")
     timestamp: str = Field(..., description="Formatted timestamp string for frontend rendering")
-    applicationId: str = Field(..., description="Associated application identifier, e.g. SE20260001")
+    applicationId: str = Field(..., description="Associated application identifier in canonical 5-digit format, e.g. SE202600001")
     applicantName: str = Field(..., description="Applicant display name")
     stage: str = Field(..., description="OBSERVE, PLAN, ACT, VERIFY, or RE-PLAN")
     tool: str = Field(..., description="Canonical tool name invoked")
@@ -139,7 +139,7 @@ class OrchestrationStepRecord(BaseModel):
 
 class OrchestrationRunResponse(BaseModel):
     runId: str = Field(..., description="Unique run identifier, e.g. run-uuid")
-    applicationId: str
+    applicationId: str = Field(..., description="Associated application identifier in canonical 5-digit format, e.g. SE202600001")
     status: OrchestrationRunStatus = Field(
         default=OrchestrationRunStatus.COMPLETED,
         description="Execution lifecycle status (RUNNING, COMPLETED, FAILED, ABORTED)",

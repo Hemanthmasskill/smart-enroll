@@ -1,5 +1,5 @@
 import re
-from pydantic import BaseModel, ConfigDict, EmailStr, field_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
 VALID_PROGRAMMES = {"mca", "mba", "msc-cs", "mtech-cs"}
 VALID_GENDERS = {"female", "male", "other", "prefer not to say"}
@@ -221,7 +221,7 @@ class ApplicationUpdate(BaseModel):
 
 
 class ApplicationResponse(BaseModel):
-    applicationId: str
+    applicationId: str = Field(..., description="Canonical 5-digit sequential application identifier, e.g. SE202600001")
     applicantId: str
     userId: str | None = None
     programmeId: str
@@ -253,7 +253,7 @@ class ApplicationResponse(BaseModel):
 
 
 class ApplicationSummaryResponse(BaseModel):
-    applicationId: str
+    applicationId: str = Field(..., description="Canonical 5-digit sequential application identifier, e.g. SE202600001")
     applicantId: str
     applicantName: str | None = None
     fullName: str | None = None

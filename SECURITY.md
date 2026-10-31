@@ -84,3 +84,8 @@ If you discover a security vulnerability in Smart Enroll:
 - In-memory sliding window rate limiting throttles authentication endpoints (login: 5/min per IP+email; registration: 3/min per IP) and resource-heavy processing operations (document upload/process/verify: 10/min; orchestration: 5/min).
 - Sensitive credentials (passwords, tokens, API keys) are masked across all server logging via `SensitiveDataRedactionFilter`.
 - `X-Request-ID` correlation headers trace all requests from client through services.
+
+### 3.6 Application Identifier Specification
+- **Canonical Format:** Application IDs follow the strict 11-character sequential pattern `SE<YYYY><5-digit sequence>`, for example `SE202600001`.
+- **Atomic Concurrency Guarantee:** IDs are generated atomically using MongoDB `find_one_and_update` on the `counters` collection with `$inc: {seq: 1}`, ensuring gapless and collision-free identifiers under high concurrency.
+- **Exhaustion & Safety:** Supports up to 99,999 sequential applications per academic year; sequence exhaustion raises a hard runtime exception rather than wrapping or colliding.

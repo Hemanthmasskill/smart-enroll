@@ -421,7 +421,7 @@ def test_already_submitted_application_cannot_be_submitted_again():
 
         # Second submit: returns 409 Conflict
         res2 = client.post(f"/api/v1/applications/{app_id}/submit", headers=headers)
-        assert res2.status_code in (400, 409)
+        assert res2.status_code == 409
         assert "already submitted" in res2.json()["detail"].lower()
 
 
