@@ -86,7 +86,7 @@ jobs:
   real-backend-cypress:
     name: Real Backend Cypress E2E
     runs-on: ubuntu-latest
-    needs: [backend-test-suite, frontend-build-and-test]
+    needs: [backend-tests, frontend-build-and-test]
 
     services:
       mongodb:
