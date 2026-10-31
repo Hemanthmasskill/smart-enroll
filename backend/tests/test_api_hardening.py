@@ -12,7 +12,7 @@ import pytest
 from app.core.config import settings
 from app.core.concurrency import acquire_ocr_worker
 from app.core.logging_config import SensitiveDataRedactionFilter
-from app.core.rate_limit import limiter
+from app.core.rate_limit import limiter, SlidingWindowRateLimiter, get_client_ip
 from app.core.security import (
     create_access_token,
     get_password_hash,
@@ -84,7 +84,6 @@ def test_rate_limit_register(clean_db):
         assert res.status_code == 429
         assert "Retry-After" in res.headers
 
-
 def test_rate_limit_orchestrate(clean_db):
     """POST /agents/orchestrate/{id} throttles after 5 runs per user per minute."""
     limiter.reset()
@@ -122,7 +121,6 @@ def test_rate_limit_orchestrate(clean_db):
         )
         assert res.status_code == 429
         assert "Retry-After" in res.headers
-
 
 # =====================================================================
 # 2. Concurrency Limiter Tests (Finding H4)
@@ -321,4 +319,186 @@ def test_pagination_on_admin_applications(clean_db):
         data2 = res2.json()
         assert len(data2) == 2
         assert data[0]["applicationId"] != data2[0]["applicationId"]
+
+
+# =====================================================================
+# 6. Advanced Rate Limiting, Proxy, and Storage Tests (Follow-up Task 3)
+# =====================================================================
+
+def test_rate_limit_independent_ip_and_account(clean_db):
+    """Verify independent IP and account throttling on POST /auth/login."""
+    limiter.reset()
+    with TestClient(app) as client:
+        # 1. Account throttling across multiple forwarded IPs
+        for i in range(5):
+            res = client.post(
+                "/api/v1/auth/login",
+                json={"email": "target_account@example.com", "password": "WrongPassword123!", "role": "user"},
+                headers={"X-Forwarded-For": f"198.51.100.{i+1}"},
+            )
+            assert res.status_code == 401
+
+        # 6th attempt from a fresh IP still throttled due to account limit
+        res = client.post(
+            "/api/v1/auth/login",
+            json={"email": "target_account@example.com", "password": "WrongPassword123!", "role": "user"},
+            headers={"X-Forwarded-For": "198.51.100.99"},
+        )
+        assert res.status_code == 429
+        assert "login attempts for this account" in res.json()["detail"]
+
+    # 2. IP throttling across multiple accounts from single IP
+    limiter.reset()
+    with TestClient(app) as client:
+        for i in range(20):
+            res = client.post(
+                "/api/v1/auth/login",
+                json={"email": f"diff_account_{i}@example.com", "password": "WrongPassword123!", "role": "user"},
+            )
+            assert res.status_code == 401
+
+        # 21st attempt from same IP throttled even for a brand-new account
+        res = client.post(
+            "/api/v1/auth/login",
+            json={"email": "diff_account_fresh@example.com", "password": "WrongPassword123!", "role": "user"},
+        )
+        assert res.status_code == 429
+        assert "login attempts from this IP" in res.json()["detail"]
+
+
+def test_trusted_proxy_client_ip_resolution():
+    """Verify get_client_ip respects TRUSTED_PROXIES and rejects spoofed headers from untrusted clients."""
+    from fastapi import Request
+
+    class DummyClient:
+        def __init__(self, host):
+            self.host = host
+
+    # Trusted proxy scenario: peer is 127.0.0.1
+    scope_trusted = {
+        "type": "http",
+        "client": ("127.0.0.1", 12345),
+        "headers": [(b"x-forwarded-for", b"203.0.113.50, 10.0.0.1")],
+    }
+    req_trusted = Request(scope_trusted)
+    assert get_client_ip(req_trusted) == "203.0.113.50"
+
+    # Untrusted peer scenario: peer is 198.51.100.5 (not in TRUSTED_PROXIES)
+    scope_untrusted = {
+        "type": "http",
+        "client": ("198.51.100.5", 12345),
+        "headers": [(b"x-forwarded-for", b"1.1.1.1")],
+    }
+    req_untrusted = Request(scope_untrusted)
+    # Must ignore spoofed header and return peer IP
+    assert get_client_ip(req_untrusted) == "198.51.100.5"
+
+
+def test_rate_limit_sliding_window_bounded_and_pruning():
+    """Verify SlidingWindowRateLimiter limits maximum keys and prunes expired keys."""
+    bounded_limiter = SlidingWindowRateLimiter(max_keys=5)
+
+    # Insert 5 keys
+    for i in range(5):
+        allowed, _ = bounded_limiter.check(f"key_{i}", max_requests=10, window_seconds=60)
+        assert allowed is True
+
+    assert len(bounded_limiter._requests) == 5
+
+    # Insert a 6th key; capacity enforcement should prevent unbounded growth
+    allowed, _ = bounded_limiter.check("key_5", max_requests=10, window_seconds=60)
+    assert allowed is True
+    assert len(bounded_limiter._requests) <= 5
+
+    # Test pruning of stale keys
+    import time
+    bounded_limiter._requests["stale_key"] = [time.monotonic() - 400]
+    pruned = bounded_limiter.prune(max_idle_seconds=300)
+    assert pruned >= 1
+    assert "stale_key" not in bounded_limiter._requests
+
+
+def test_rate_limit_authoritative_verify(clean_db):
+    """Verify POST /documents/{id}/authoritative-verify is throttled after 10 requests/min."""
+    limiter.reset()
+    user_id = ObjectId()
+    doc_id = str(ObjectId())
+    clean_db["users"].insert_one({
+        "_id": user_id,
+        "email": "doc_auth_user@example.com",
+        "role": "applicant",
+        "tokenVersion": 1,
+    })
+    clean_db["documents"].insert_one({
+        "_id": ObjectId(doc_id),
+        "applicantId": str(user_id),
+        "documentType": "aadhaar",
+        "status": "UPLOADED",
+    })
+    token = create_access_token(subject=str(user_id), role="applicant")
+
+    with TestClient(app) as client:
+        with patch("app.api.documents.authoritative_verify_document") as mock_auth_verify:
+            mock_auth_verify.return_value = {
+                "documentId": doc_id,
+                "verified": True,
+                "status": "VALIDATED",
+                "source": "SIMULATED_UIDAI",
+                "authority": "Unique Identification Authority of India",
+                "timestamp": "2026-01-01T00:00:00Z",
+                "disclaimer": "Simulated",
+            }
+            # 10 allowed requests
+            for _ in range(10):
+                res = client.post(
+                    f"/api/v1/documents/{doc_id}/authoritative-verify",
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+                assert res.status_code == 200
+
+            # 11th request must be throttled
+            res = client.post(
+                f"/api/v1/documents/{doc_id}/authoritative-verify",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            assert res.status_code == 429
+            assert "Retry-After" in res.headers
+
+
+def test_rate_limit_application_create_and_update(clean_db):
+    """Verify application creation and update endpoints are rate-limited."""
+    limiter.reset()
+    user_id = ObjectId()
+    clean_db["users"].insert_one({
+        "_id": user_id,
+        "email": "app_rate_user@example.com",
+        "role": "applicant",
+        "tokenVersion": 1,
+    })
+    token = create_access_token(subject=str(user_id), role="applicant")
+
+    with TestClient(app) as client:
+        # Application creation limit is 10/min
+        for i in range(10):
+            limiter.check(f"app_create:{user_id}", max_requests=10, window_seconds=60)
+
+        # 11th call triggers 429
+        res = client.post(
+            "/api/v1/applications",
+            json={"programmeId": "mca"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert res.status_code == 429
+        assert "Retry-After" in res.headers
+        # Application update limit is 30/min
+        for i in range(30):
+            limiter.check(f"app_update:{user_id}", max_requests=30, window_seconds=60)
+
+        res = client.put(
+            "/api/v1/applications/SE202600001",
+            json={"personalDetails": {"nationality": "Indian"}},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert res.status_code == 429
+        assert "Retry-After" in res.headers
 

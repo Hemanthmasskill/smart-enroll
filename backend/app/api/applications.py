@@ -3,6 +3,7 @@ from pymongo.database import Database
 
 from app.api.deps import RequireRole, get_current_user
 from app.core.database import get_db
+from app.core.rate_limit import enforce_rate_limit
 from app.schemas.application import (
     ApplicationCreate,
     ApplicationResponse,
@@ -75,6 +76,13 @@ def create_new_application(
     Create a new application in DRAFT state for the authenticated applicant.
     Enforces single application per applicant (409 Conflict on duplicate).
     """
+    user_id = str(current_user.get("_id") or current_user.get("id"))
+    enforce_rate_limit(
+        f"app_create:{user_id}",
+        max_requests=10,
+        window_seconds=60,
+        action_description="application creation requests",
+    )
     return create_application(db, current_user, app_in)
 
 
@@ -128,6 +136,13 @@ def update_draft_application(
     Update editable fields of an application.
     Allowed only for the application owner and only while in DRAFT status.
     """
+    user_id = str(current_user.get("_id") or current_user.get("id"))
+    enforce_rate_limit(
+        f"app_update:{user_id}",
+        max_requests=30,
+        window_seconds=60,
+        action_description="application update requests",
+    )
     return update_application(db, current_user, application_id, app_update)
 
 

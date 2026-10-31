@@ -1,4 +1,5 @@
 from pathlib import Path
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -30,6 +31,7 @@ class Settings(BaseSettings):
     # API Hardening & Rate Limiting (Hardening Phase 4)
     CORS_ORIGINS: list[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
     RATE_LIMIT_ENABLED: bool = True
+    TRUSTED_PROXIES: list[str] = ["127.0.0.1", "::1"]
     MAX_CONCURRENT_OCR_WORKERS: int = 4
 
     # Data Retention & Upload Security (Hardening Requirement M5)
@@ -37,6 +39,15 @@ class Settings(BaseSettings):
     # Encryption-at-Rest Notice: STORAGE_DIR must be hosted on an encrypted volume (e.g., LUKS, BitLocker, or AWS EBS KMS).
     RETENTION_DAYS: int = 30
     UPLOAD_SCANNER: str = "noop"
+
+    @field_validator("TRUSTED_PROXIES", mode="before")
+    @classmethod
+    def parse_trusted_proxies(cls, v: object) -> list[str]:
+        if isinstance(v, str):
+            return [ip.strip() for ip in v.split(",") if ip.strip()]
+        if isinstance(v, (list, tuple, set)):
+            return [str(ip).strip() for ip in v if str(ip).strip()]
+        return ["127.0.0.1", "::1"]
 
     @property
     def storage_path(self) -> Path:

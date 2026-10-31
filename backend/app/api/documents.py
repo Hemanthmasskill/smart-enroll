@@ -263,6 +263,13 @@ def authoritative_verify_document_endpoint(
     Enforces ownership (only owning applicant permitted).
     Results are strictly simulated and cannot establish authentic government verification.
     """
+    user_id = str(current_user.get("_id") or current_user.get("id"))
+    enforce_rate_limit(
+        f"doc_auth_verify:{user_id}",
+        max_requests=10,
+        window_seconds=60,
+        action_description="authoritative verification requests",
+    )
     return authoritative_verify_document(
         db=db,
         current_user=current_user,

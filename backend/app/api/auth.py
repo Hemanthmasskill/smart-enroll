@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, Request, status
-from app.core.rate_limit import enforce_rate_limit
+from app.core.rate_limit import enforce_rate_limit, get_client_ip
 from pymongo.database import Database
 
 from app.core.database import get_db
@@ -21,8 +21,8 @@ router = APIRouter()
     status_code=status.HTTP_201_CREATED,
 )
 def register(user_in: UserCreate, request: Request, db: Database = Depends(get_db)):
-    ip = request.client.host if request.client else "unknown"
-    enforce_rate_limit(f"register:{ip}", max_requests=3, window_seconds=60, action_description="registration attempts")
+    ip = get_client_ip(request)
+    enforce_rate_limit(f"register:ip:{ip}", max_requests=3, window_seconds=60, action_description="registration attempts")
     """
     Public registration endpoint.
     Creates a new applicant, generates an access token, and returns
@@ -52,9 +52,12 @@ def register(user_in: UserCreate, request: Request, db: Database = Depends(get_d
     status_code=status.HTTP_200_OK,
 )
 def login(login_in: UserLogin, request: Request, db: Database = Depends(get_db)):
-    ip = request.client.host if request.client else "unknown"
+    ip = get_client_ip(request)
     normalized_email = login_in.email.strip().lower()
-    enforce_rate_limit(f"login:{ip}:{normalized_email}", max_requests=5, window_seconds=60, action_description="login attempts")
+    # Independent IP rate limit: max 20 attempts per IP per minute
+    enforce_rate_limit(f"login:ip:{ip}", max_requests=20, window_seconds=60, action_description="login attempts from this IP")
+    # Independent account rate limit: max 5 attempts per account per minute
+    enforce_rate_limit(f"login:account:{normalized_email}", max_requests=5, window_seconds=60, action_description="login attempts for this account")
     """
     User/Admin login endpoint.
     Authenticates against credentials and requested role, generates an
