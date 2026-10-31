@@ -9,7 +9,7 @@ const navItems = [
   { to: "/admin/applications", label: "Applications", icon: "☷" },
   { to: "/admin/exceptions", label: "Exceptions", icon: "!" },
   { to: "/admin/programs", label: "Programme Rules", icon: "≡" },
-  { to: "/admin/agent-activity", label: "Agent Activity", icon: "◎" },
+  { to: "/admin/agent-activity", label: "Project Status & Agent Activity", icon: "◎" },
   { to: "/admin/analytics", label: "Analytics", icon: "▥" },
 ];
 

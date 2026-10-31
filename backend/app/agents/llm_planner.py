@@ -187,6 +187,9 @@ class LLMPlanningStrategy(PlanningStrategy):
         self.fallback_enabled = fallback_enabled
         self.db = db
         self.planner_name = "LLM"
+        self._fallback_occurred_this_run = False
+        self.last_iteration_fallback = False
+        self.last_fallback_reason: str | None = None
 
     def plan_next_action(
         self,
@@ -197,9 +200,33 @@ class LLMPlanningStrategy(PlanningStrategy):
         Evaluate observation via LLM provider. On failure or out-of-policy output,
         falls back to deterministic planner if enabled.
         """
+        if iteration == 1:
+            self._fallback_occurred_this_run = False
+        self.last_iteration_fallback = False
+        self.last_fallback_reason = None
+
         if self.provider is None:
-            logger.info("LLM provider is not configured; using deterministic fallback planner.")
-            return self.fallback_strategy.plan_next_action(observation, iteration)
+            reason_summary = "LLM provider is not configured or unavailable"
+            logger.info("%s; using deterministic fallback planner.", reason_summary)
+            if self.fallback_enabled:
+                self.last_iteration_fallback = True
+                self._fallback_occurred_this_run = True
+                self.last_fallback_reason = reason_summary
+                self._record_fallback_audit(observation.application_id, reason_summary)
+                fallback_action, fallback_outcome, fallback_rationale = self.fallback_strategy.plan_next_action(
+                    observation, iteration
+                )
+                if fallback_action is not None:
+                    fallback_action.planner = "FALLBACK"
+                    fallback_action.fallback_used = True
+                    fallback_action.fallback_reason = reason_summary
+                return fallback_action, fallback_outcome, fallback_rationale
+
+            return (
+                None,
+                OrchestrationOutcome.FAILED,
+                f"Model-backed planning failed without fallback: {reason_summary}.",
+            )
 
         sanitized_obs = sanitize_observation_for_llm(observation)
         user_prompt = (
@@ -227,13 +254,23 @@ class LLMPlanningStrategy(PlanningStrategy):
                 safe_message = safe_message[:147] + "..."
 
             reason_summary = f"LLM planning rejected ({safe_error_type}): {safe_message}"
-            logger.warning("%s. Delegating to deterministic fallback planner.", reason_summary)
-
-            self._record_fallback_audit(observation.application_id, reason_summary)
 
             if self.fallback_enabled:
-                return self.fallback_strategy.plan_next_action(observation, iteration)
+                self.last_iteration_fallback = True
+                self._fallback_occurred_this_run = True
+                self.last_fallback_reason = reason_summary
+                logger.warning("%s. Delegating to deterministic fallback planner.", reason_summary)
+                self._record_fallback_audit(observation.application_id, reason_summary)
+                fallback_action, fallback_outcome, fallback_rationale = self.fallback_strategy.plan_next_action(
+                    observation, iteration
+                )
+                if fallback_action is not None:
+                    fallback_action.planner = "FALLBACK"
+                    fallback_action.fallback_used = True
+                    fallback_action.fallback_reason = reason_summary
+                return fallback_action, fallback_outcome, fallback_rationale
 
+            logger.warning("%s. Fallback is disabled; halting planning.", reason_summary)
             return (
                 None,
                 OrchestrationOutcome.FAILED,
@@ -625,6 +662,9 @@ class LLMPlanningStrategy(PlanningStrategy):
             stage=proposal.stage,
             is_terminal=proposal.is_terminal,
             terminal_outcome=proposal.terminal_outcome,
+            planner="LLM",
+            fallback_used=False,
+            fallback_reason=None,
         )
 
         terminal_outcome = proposal.terminal_outcome if proposal.is_terminal else None

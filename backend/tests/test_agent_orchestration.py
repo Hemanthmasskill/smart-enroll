@@ -2358,3 +2358,386 @@ def test_database_initialization_fails_safely_on_duplicate_active_runs(clean_db)
                 partial_idx_found = True
                 break
     assert partial_idx_found, "Unique partial index on status in ('RUNNING', 'RECOVERING') was not created!"
+
+
+def test_list_orchestration_runs_endpoint(api_client, admin_auth, applicant_auth, clean_db):
+    """
+    Verify GET /api/v1/agents/runs returns recent orchestration runs,
+    enforcing RBAC:
+    - Admin can view runs across all applications.
+    - Applicants can only view runs for their own application.
+    - Unsupported or unexpected roles receive HTTP 403 Forbidden.
+    """
+    from app.core.security import create_access_token
+
+    app_id_1 = applicant_auth["application"]["applicationId"]
+    app_id_2 = "app-other-applicant-99"
+
+    clean_db["orchestration_runs"].delete_many({})
+
+    # Insert run for applicant 1
+    clean_db["orchestration_runs"].insert_one({
+        "runId": "run-app-1",
+        "applicationId": app_id_1,
+        "status": OrchestrationRunStatus.COMPLETED.value,
+        "outcome": OrchestrationOutcome.WAITING_FOR_APPLICANT.value,
+        "currentApplicationStatus": "WAITING_FOR_DOCUMENTS",
+        "stepsCompleted": 2,
+        "summary": "Completed inspection for app 1",
+        "startedAt": datetime.now(timezone.utc).isoformat(),
+        "completedAt": datetime.now(timezone.utc).isoformat(),
+        "steps": [],
+        "planner": "DETERMINISTIC",
+    })
+
+    # Insert run for applicant 2
+    clean_db["orchestration_runs"].insert_one({
+        "runId": "run-app-2",
+        "applicationId": app_id_2,
+        "status": OrchestrationRunStatus.COMPLETED.value,
+        "outcome": OrchestrationOutcome.WAITING_FOR_APPLICANT.value,
+        "currentApplicationStatus": "WAITING_FOR_DOCUMENTS",
+        "stepsCompleted": 1,
+        "summary": "Completed inspection for app 2",
+        "startedAt": datetime.now(timezone.utc).isoformat(),
+        "completedAt": datetime.now(timezone.utc).isoformat(),
+        "steps": [],
+        "planner": "DETERMINISTIC",
+    })
+
+    # 1. Admin request sees runs across all applications
+    admin_res = api_client.get("/api/v1/agents/runs", headers=admin_auth["headers"])
+    assert admin_res.status_code == 200
+    runs = admin_res.json()
+    run_ids = [r["runId"] for r in runs]
+    assert "run-app-1" in run_ids
+    assert "run-app-2" in run_ids
+
+    # 2. Applicant request sees only own application run
+    applicant_res = api_client.get("/api/v1/agents/runs", headers=applicant_auth["headers"])
+    assert applicant_res.status_code == 200
+    app_runs = applicant_res.json()
+    assert len(app_runs) == 1
+    assert app_runs[0]["runId"] == "run-app-1"
+    assert app_runs[0]["applicationId"] == app_id_1
+
+    # 3. Unsupported role receives HTTP 403 Forbidden
+    reviewer_user = {
+        "full_name": "External Reviewer",
+        "email": "reviewer@smartenroll.edu",
+        "role": "reviewer",
+    }
+    inserted = clean_db["users"].insert_one(reviewer_user)
+    reviewer_token = create_access_token(subject=str(inserted.inserted_id), role="reviewer")
+
+    reviewer_res = api_client.get(
+        "/api/v1/agents/runs",
+        headers={"Authorization": f"Bearer {reviewer_token}"},
+    )
+    assert reviewer_res.status_code == 403
+    assert "Forbidden" in reviewer_res.json().get("detail", "")
+
+def test_list_orchestration_runs_backward_compatibility_with_legacy_records(api_client, admin_auth, clean_db):
+    """
+    Verify GET /api/v1/agents/runs handles legacy orchestration run records:
+    - Legacy records missing currentApplicationStatus do NOT produce Pydantic response validation errors.
+    - Legacy records with currentStage preserve currentStage in the API response.
+    - Legacy records with neither field serialize currentApplicationStatus=None and currentStage=None.
+    """
+    from datetime import datetime, timezone
+    from app.schemas.agent import OrchestrationRunResponse, OrchestrationRunStatus, OrchestrationOutcome
+
+    clean_db["orchestration_runs"].delete_many({})
+
+    # 1. Modern run record with currentApplicationStatus
+    clean_db["orchestration_runs"].insert_one({
+        "runId": "run-modern-01",
+        "applicationId": "SE20260001",
+        "status": OrchestrationRunStatus.COMPLETED.value,
+        "outcome": OrchestrationOutcome.COMPLETED.value,
+        "currentApplicationStatus": "PROCESSING_COMPLETE",
+        "stepsCompleted": 3,
+        "summary": "Modern completed run",
+        "startedAt": datetime.now(timezone.utc).isoformat(),
+        "completedAt": datetime.now(timezone.utc).isoformat(),
+        "steps": [],
+        "planner": "LLM",
+    })
+
+    # 2. Legacy run record with currentStage only (no currentApplicationStatus)
+    clean_db["orchestration_runs"].insert_one({
+        "runId": "run-legacy-stage-02",
+        "applicationId": "SE20260002",
+        "status": OrchestrationRunStatus.COMPLETED.value,
+        "outcome": OrchestrationOutcome.WAITING_FOR_APPLICANT.value,
+        "currentStage": "VERIFICATION_IN_PROGRESS",
+        "stepsCompleted": 2,
+        "summary": "Legacy run with currentStage only",
+        "startedAt": datetime.now(timezone.utc).isoformat(),
+        "completedAt": datetime.now(timezone.utc).isoformat(),
+        "steps": [],
+        "planner": "DETERMINISTIC",
+    })
+
+    # 3. Legacy run record with neither currentApplicationStatus nor currentStage
+    clean_db["orchestration_runs"].insert_one({
+        "runId": "run-legacy-empty-03",
+        "applicationId": "SE20260003",
+        "status": OrchestrationRunStatus.COMPLETED.value,
+        "outcome": OrchestrationOutcome.FAILED.value,
+        "stepsCompleted": 1,
+        "summary": "Legacy run with neither status nor stage",
+        "startedAt": datetime.now(timezone.utc).isoformat(),
+        "completedAt": datetime.now(timezone.utc).isoformat(),
+        "steps": [],
+        "planner": "DETERMINISTIC",
+    })
+
+    # Execute endpoint call as admin
+    res = api_client.get("/api/v1/agents/runs", headers=admin_auth["headers"])
+    assert res.status_code == 200, f"Expected 200 but got {res.status_code}: {res.text}"
+    runs_by_id = {r["runId"]: r for r in res.json()}
+
+    # Assert modern run
+    modern = runs_by_id["run-modern-01"]
+    assert modern["currentApplicationStatus"] == "PROCESSING_COMPLETE"
+    assert modern.get("currentStage") is None
+
+    # Assert legacy run with currentStage preserves currentStage without validation failure
+    legacy_stage = runs_by_id["run-legacy-stage-02"]
+    assert legacy_stage.get("currentApplicationStatus") is None
+    assert legacy_stage.get("currentStage") == "VERIFICATION_IN_PROGRESS"
+
+    # Assert legacy run with neither field
+    legacy_empty = runs_by_id["run-legacy-empty-03"]
+    assert legacy_empty.get("currentApplicationStatus") is None
+    assert legacy_empty.get("currentStage") is None
+
+    # Direct Pydantic model validation check for legacy dict
+    legacy_dict = {
+        "runId": "run-direct-legacy",
+        "applicationId": "SE20269999",
+        "status": "COMPLETED",
+        "outcome": "COMPLETED",
+        "currentStage": "ACT",
+        "stepsCompleted": 1,
+        "summary": "Direct legacy model validation",
+        "startedAt": datetime.now(timezone.utc).isoformat(),
+        "completedAt": datetime.now(timezone.utc).isoformat(),
+        "steps": [],
+    }
+    validated = OrchestrationRunResponse.model_validate(legacy_dict)
+    assert validated.currentApplicationStatus is None
+    assert validated.currentStage == "ACT"
+
+
+def test_list_orchestration_runs_active_and_recovering_null_outcome(api_client, admin_auth, clean_db):
+    """
+    Ensure active (RUNNING) and recovering (RECOVERING) orchestration runs
+    with outcome=None validate cleanly across Pydantic schemas, GET /agents/runs,
+    and GET /agents/orchestrate/runs/{run_id}.
+    """
+    clean_db["orchestration_runs"].delete_many({})
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    # 1. RUNNING run with outcome=None (persisted initially by _claim_or_recover_run)
+    clean_db["orchestration_runs"].insert_one({
+        "runId": "run-active-01",
+        "applicationId": "SE20261001",
+        "status": OrchestrationRunStatus.RUNNING.value,
+        "outcome": None,
+        "currentApplicationStatus": "PROCESSING",
+        "stepsCompleted": 0,
+        "summary": "Orchestration in progress",
+        "startedAt": now_iso,
+        "completedAt": None,
+        "steps": [],
+        "planner": "DETERMINISTIC",
+    })
+
+    # 2. RECOVERING run with outcome=None (persisted during stale run recovery)
+    clean_db["orchestration_runs"].insert_one({
+        "runId": "run-recovering-02",
+        "applicationId": "SE20261002",
+        "status": OrchestrationRunStatus.RECOVERING.value,
+        "outcome": None,
+        "currentApplicationStatus": "WAITING_FOR_DOCUMENTS",
+        "stepsCompleted": 2,
+        "summary": "Stale run undergoing recovery",
+        "startedAt": now_iso,
+        "completedAt": None,
+        "steps": [],
+        "planner": "DETERMINISTIC",
+    })
+
+    # 3. COMPLETED run with normal outcome
+    clean_db["orchestration_runs"].insert_one({
+        "runId": "run-completed-03",
+        "applicationId": "SE20261003",
+        "status": OrchestrationRunStatus.COMPLETED.value,
+        "outcome": OrchestrationOutcome.COMPLETED.value,
+        "currentApplicationStatus": "PROCESSING_COMPLETE",
+        "stepsCompleted": 5,
+        "summary": "Orchestration completed successfully",
+        "startedAt": now_iso,
+        "completedAt": now_iso,
+        "steps": [],
+        "planner": "DETERMINISTIC",
+    })
+
+    # Execute endpoint call as admin to fetch recent runs
+    res = api_client.get("/api/v1/agents/runs", headers=admin_auth["headers"])
+    assert res.status_code == 200, f"Expected 200 but got {res.status_code}: {res.text}"
+    runs_by_id = {r["runId"]: r for r in res.json()}
+
+    # Assert active run returns 200 and outcome is None
+    active = runs_by_id["run-active-01"]
+    assert active["status"] == "RUNNING"
+    assert active["outcome"] is None
+    assert active["currentApplicationStatus"] == "PROCESSING"
+
+    # Assert recovering run returns 200 and outcome is None
+    recovering = runs_by_id["run-recovering-02"]
+    assert recovering["status"] == "RECOVERING"
+    assert recovering["outcome"] is None
+    assert recovering["currentApplicationStatus"] == "WAITING_FOR_DOCUMENTS"
+
+    # Assert completed run returns 200 and outcome is COMPLETED
+    completed = runs_by_id["run-completed-03"]
+    assert completed["status"] == "COMPLETED"
+    assert completed["outcome"] == "COMPLETED"
+    assert completed["currentApplicationStatus"] == "PROCESSING_COMPLETE"
+
+    # Single-run endpoint check for the active run
+    single_res = api_client.get(
+        "/api/v1/agents/orchestrate/runs/run-active-01",
+        headers=admin_auth["headers"],
+    )
+    assert single_res.status_code == 200, f"Expected 200 but got {single_res.status_code}: {single_res.text}"
+    single_run = single_res.json()
+    assert single_run["runId"] == "run-active-01"
+    assert single_run["status"] == "RUNNING"
+    assert single_run["outcome"] is None
+
+    # Direct Pydantic model validation with outcome=None
+    direct_dict = {
+        "runId": "run-direct-active",
+        "applicationId": "SE20269998",
+        "status": "RUNNING",
+        "outcome": None,
+        "stepsCompleted": 0,
+        "summary": "Active run direct validation",
+        "startedAt": now_iso,
+    }
+    validated = OrchestrationRunResponse.model_validate(direct_dict)
+    assert validated.status == OrchestrationRunStatus.RUNNING
+    assert validated.outcome is None
+
+
+def test_agent_activity_role_based_access_control(api_client, admin_auth, applicant_auth, clean_db):
+    """
+    Verify RBAC on agent activity endpoints (/api/v1/agents/activity and /api/v1/agents/activity/{application_id}):
+    - Admin can view activity across all applications.
+    - Applicant can view only their own activity.
+    - Applicant requesting another application's activity receives 403.
+    - Reviewer receives 403 from both activity endpoints.
+    - Reviewer receives 403 even when no applicationId filter is supplied.
+    """
+    from app.core.security import create_access_token
+    from app.agents.tools import tool_record_audit_event, list_agent_activity
+    from fastapi import HTTPException
+
+    app_id_1 = applicant_auth["application"]["applicationId"]
+    app_id_2 = "SE20268888"
+
+    # Insert sample audit activity for applicant 1
+    tool_record_audit_event(
+        clean_db,
+        admin_auth["user"],
+        application_id=app_id_1,
+        stage="OBSERVE",
+        tool="get_application",
+        action="Load application 1",
+        result="Success",
+        status="COMPLETED",
+    )
+
+    # Insert sample audit activity for application 2
+    tool_record_audit_event(
+        clean_db,
+        admin_auth["user"],
+        application_id=app_id_2,
+        stage="ACT",
+        tool="check_document_completeness",
+        action="Load application 2",
+        result="Success",
+        status="COMPLETED",
+    )
+
+    # 1. Admin can view activity across applications
+    res_admin = api_client.get("/api/v1/agents/activity", headers=admin_auth["headers"])
+    assert res_admin.status_code == 200
+    app_ids = {item["applicationId"] for item in res_admin.json()}
+    assert app_id_1 in app_ids
+    assert app_id_2 in app_ids
+
+    # 2. Applicant can view only their own activity
+    res_applicant = api_client.get("/api/v1/agents/activity", headers=applicant_auth["headers"])
+    assert res_applicant.status_code == 200
+    applicant_items = res_applicant.json()
+    assert len(applicant_items) > 0
+    assert all(item["applicationId"] == app_id_1 for item in applicant_items)
+
+    # 3. Applicant requesting another application receives 403
+    res_applicant_forbidden = api_client.get(
+        f"/api/v1/agents/activity/{app_id_2}",
+        headers=applicant_auth["headers"],
+    )
+    assert res_applicant_forbidden.status_code == 403
+    assert "Not authorized" in res_applicant_forbidden.json().get("detail", "")
+
+    # Applicant passing another applicationId query param also receives 403
+    res_applicant_query_forbidden = api_client.get(
+        "/api/v1/agents/activity",
+        headers=applicant_auth["headers"],
+        params={"applicationId": app_id_2},
+    )
+    assert res_applicant_query_forbidden.status_code == 403
+
+    # Create reviewer user and token
+    reviewer_user = {
+        "full_name": "Admission Reviewer",
+        "email": "audit_reviewer@smartenroll.edu",
+        "role": "reviewer",
+    }
+    inserted_reviewer = clean_db["users"].insert_one(reviewer_user)
+    reviewer_token = create_access_token(subject=str(inserted_reviewer.inserted_id), role="reviewer")
+    reviewer_headers = {"Authorization": f"Bearer {reviewer_token}"}
+
+    # 4. Reviewer receives 403 from /api/v1/agents/activity without applicationId filter
+    res_rev_no_filter = api_client.get("/api/v1/agents/activity", headers=reviewer_headers)
+    assert res_rev_no_filter.status_code == 403
+    assert "Forbidden" in res_rev_no_filter.json().get("detail", "")
+
+    # 5. Reviewer receives 403 from /api/v1/agents/activity with applicationId filter
+    res_rev_filter = api_client.get(
+        "/api/v1/agents/activity",
+        headers=reviewer_headers,
+        params={"applicationId": app_id_1},
+    )
+    assert res_rev_filter.status_code == 403
+    assert "Forbidden" in res_rev_filter.json().get("detail", "")
+
+    # 6. Reviewer receives 403 from /api/v1/agents/activity/{application_id}
+    res_rev_param = api_client.get(
+        f"/api/v1/agents/activity/{app_id_1}",
+        headers=reviewer_headers,
+    )
+    assert res_rev_param.status_code == 403
+    assert "Forbidden" in res_rev_param.json().get("detail", "")
+
+    # 7. Direct list_agent_activity invocation with reviewer raises HTTPException 403
+    with pytest.raises(HTTPException) as exc_info:
+        list_agent_activity(clean_db, reviewer_user)
+    assert exc_info.value.status_code == 403

@@ -689,6 +689,12 @@ def list_agent_activity(
     Applicants can ONLY query audit records belonging to their own application.
     """
     role = current_user.get("role")
+    if role not in ("admin", "applicant"):
+        raise HTTPException(
+            status_code=403,
+            detail="Forbidden: insufficient role permissions to view agent activity.",
+        )
+
     user_id = str(current_user["_id"])
 
     query: dict[str, Any] = {}
@@ -697,11 +703,16 @@ def list_agent_activity(
         # Resolve applicant's own application
         app = db["applications"].find_one({"userId": user_id})
         if not app:
+            if application_id:
+                raise HTTPException(
+                    status_code=403,
+                    detail="Not authorized to access agent activity for another application.",
+                )
             return []
         own_app_id = app.get("applicationId")
         if application_id and application_id != own_app_id:
             raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN if hasattr(status, "HTTP_403_FORBIDDEN") else 403,
+                status_code=403,
                 detail="Not authorized to access agent activity for another application.",
             )
         query["applicationId"] = own_app_id

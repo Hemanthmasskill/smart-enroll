@@ -130,6 +130,8 @@ class OrchestrationStepRecord(BaseModel):
     status: str
     executedAt: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     planner: str | None = None
+    fallbackUsed: bool = False
+    fallbackReason: str | None = None
 
     model_config = ConfigDict(extra="ignore")
 
@@ -141,11 +143,12 @@ class OrchestrationRunResponse(BaseModel):
         default=OrchestrationRunStatus.COMPLETED,
         description="Execution lifecycle status (RUNNING, COMPLETED, FAILED, ABORTED)",
     )
-    outcome: OrchestrationOutcome = Field(
-        ...,
+    outcome: OrchestrationOutcome | None = Field(
+        default=None,
         description="Business workflow outcome (COMPLETED, WAITING_FOR_APPLICANT, MANUAL_REVIEW_REQUIRED, DEPENDENCY_PENDING, FAILED, ALREADY_RUNNING)",
     )
-    currentApplicationStatus: str
+    currentApplicationStatus: str | None = None
+    currentStage: str | None = None
     stepsCompleted: int
     summary: str
     failureReason: str | None = None
@@ -154,6 +157,27 @@ class OrchestrationRunResponse(BaseModel):
     completedAt: str | None = None
     steps: list[OrchestrationStepRecord] = Field(default_factory=list)
     planner: str | None = None
+    fallbackOccurred: bool = False
+    fallbackCount: int = 0
+
+    model_config = ConfigDict(extra="ignore")
+
+
+class AgentSystemStatusResponse(BaseModel):
+    """
+    Sanitized system-level agent and LLM provider configuration status.
+    Strictly excludes API keys, secrets, or internal credentials.
+    """
+    llmProvider: str
+    llmEnabled: bool
+    llmModel: str
+    isLocalEndpoint: bool
+    allowLocalEndpoints: bool
+    fallbackEnabled: bool
+    timeoutSeconds: float
+    temperature: float
+    availableToolsCount: int = 13
+    registeredTools: list[str] = Field(default_factory=list)
 
     model_config = ConfigDict(extra="ignore")
 
