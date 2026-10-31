@@ -2436,3 +2436,96 @@ def test_list_orchestration_runs_endpoint(api_client, admin_auth, applicant_auth
     )
     assert reviewer_res.status_code == 403
     assert "Forbidden" in reviewer_res.json().get("detail", "")
+
+def test_list_orchestration_runs_backward_compatibility_with_legacy_records(api_client, admin_auth, clean_db):
+    """
+    Verify GET /api/v1/agents/runs handles legacy orchestration run records:
+    - Legacy records missing currentApplicationStatus do NOT produce Pydantic response validation errors.
+    - Legacy records with currentStage preserve currentStage in the API response.
+    - Legacy records with neither field serialize currentApplicationStatus=None and currentStage=None.
+    """
+    from datetime import datetime, timezone
+    from app.schemas.agent import OrchestrationRunResponse, OrchestrationRunStatus, OrchestrationOutcome
+
+    clean_db["orchestration_runs"].delete_many({})
+
+    # 1. Modern run record with currentApplicationStatus
+    clean_db["orchestration_runs"].insert_one({
+        "runId": "run-modern-01",
+        "applicationId": "SE20260001",
+        "status": OrchestrationRunStatus.COMPLETED.value,
+        "outcome": OrchestrationOutcome.COMPLETED.value,
+        "currentApplicationStatus": "PROCESSING_COMPLETE",
+        "stepsCompleted": 3,
+        "summary": "Modern completed run",
+        "startedAt": datetime.now(timezone.utc).isoformat(),
+        "completedAt": datetime.now(timezone.utc).isoformat(),
+        "steps": [],
+        "planner": "LLM",
+    })
+
+    # 2. Legacy run record with currentStage only (no currentApplicationStatus)
+    clean_db["orchestration_runs"].insert_one({
+        "runId": "run-legacy-stage-02",
+        "applicationId": "SE20260002",
+        "status": OrchestrationRunStatus.COMPLETED.value,
+        "outcome": OrchestrationOutcome.WAITING_FOR_APPLICANT.value,
+        "currentStage": "VERIFICATION_IN_PROGRESS",
+        "stepsCompleted": 2,
+        "summary": "Legacy run with currentStage only",
+        "startedAt": datetime.now(timezone.utc).isoformat(),
+        "completedAt": datetime.now(timezone.utc).isoformat(),
+        "steps": [],
+        "planner": "DETERMINISTIC",
+    })
+
+    # 3. Legacy run record with neither currentApplicationStatus nor currentStage
+    clean_db["orchestration_runs"].insert_one({
+        "runId": "run-legacy-empty-03",
+        "applicationId": "SE20260003",
+        "status": OrchestrationRunStatus.COMPLETED.value,
+        "outcome": OrchestrationOutcome.FAILED.value,
+        "stepsCompleted": 1,
+        "summary": "Legacy run with neither status nor stage",
+        "startedAt": datetime.now(timezone.utc).isoformat(),
+        "completedAt": datetime.now(timezone.utc).isoformat(),
+        "steps": [],
+        "planner": "DETERMINISTIC",
+    })
+
+    # Execute endpoint call as admin
+    res = api_client.get("/api/v1/agents/runs", headers=admin_auth["headers"])
+    assert res.status_code == 200, f"Expected 200 but got {res.status_code}: {res.text}"
+    runs_by_id = {r["runId"]: r for r in res.json()}
+
+    # Assert modern run
+    modern = runs_by_id["run-modern-01"]
+    assert modern["currentApplicationStatus"] == "PROCESSING_COMPLETE"
+    assert modern.get("currentStage") is None
+
+    # Assert legacy run with currentStage preserves currentStage without validation failure
+    legacy_stage = runs_by_id["run-legacy-stage-02"]
+    assert legacy_stage.get("currentApplicationStatus") is None
+    assert legacy_stage.get("currentStage") == "VERIFICATION_IN_PROGRESS"
+
+    # Assert legacy run with neither field
+    legacy_empty = runs_by_id["run-legacy-empty-03"]
+    assert legacy_empty.get("currentApplicationStatus") is None
+    assert legacy_empty.get("currentStage") is None
+
+    # Direct Pydantic model validation check for legacy dict
+    legacy_dict = {
+        "runId": "run-direct-legacy",
+        "applicationId": "SE20269999",
+        "status": "COMPLETED",
+        "outcome": "COMPLETED",
+        "currentStage": "ACT",
+        "stepsCompleted": 1,
+        "summary": "Direct legacy model validation",
+        "startedAt": datetime.now(timezone.utc).isoformat(),
+        "completedAt": datetime.now(timezone.utc).isoformat(),
+        "steps": [],
+    }
+    validated = OrchestrationRunResponse.model_validate(legacy_dict)
+    assert validated.currentApplicationStatus is None
+    assert validated.currentStage == "ACT"

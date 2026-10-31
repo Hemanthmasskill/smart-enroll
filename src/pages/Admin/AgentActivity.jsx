@@ -22,6 +22,68 @@ const STATUS_TONE = {
   FAILED: "danger",
 };
 
+export function getPlannerStrategyLabel(status) {
+  if (!status || status.isLive === false || !status.isLive) {
+    return "Configuration Unavailable";
+  }
+  if (status.llmEnabled) {
+    return status.fallbackEnabled
+      ? "LLM with Deterministic Fallback"
+      : "LLM (Fallback Disabled)";
+  }
+  return "Deterministic Only";
+}
+
+export function getEndpointSecurityLabel(status) {
+  if (!status || status.isLive === false || !status.isLive) {
+    return "Configuration Unavailable";
+  }
+  if (status.isLocalEndpoint) {
+    return status.allowLocalEndpoints
+      ? "Local Endpoint Permitted"
+      : "Local Endpoint Rejected by Configuration";
+  }
+  return "Remote Endpoint Configured";
+}
+
+export function getRunStatusDisplay(run) {
+  if (!run) {
+    return {
+      title: "Application Status",
+      value: "Application Status Unavailable",
+      tagClass: "stage-UNAVAILABLE",
+    };
+  }
+  if (run.currentApplicationStatus) {
+    return {
+      title: "Application Status",
+      value: run.currentApplicationStatus,
+      tagClass: `stage-${run.currentApplicationStatus}`,
+    };
+  }
+  if (run.currentStage) {
+    return {
+      title: "Legacy Workflow Stage",
+      value: run.currentStage,
+      tagClass: `stage-${run.currentStage}`,
+    };
+  }
+  return {
+    title: "Application Status",
+    value: "Application Status Unavailable",
+    tagClass: "stage-UNAVAILABLE",
+  };
+}
+
+if (typeof window !== "undefined" && window.Cypress) {
+  window.__smartEnrollAgentActivity = {
+    getPlannerStrategyLabel,
+    getEndpointSecurityLabel,
+    getRunStatusDisplay,
+  };
+}
+
+
 export default function AgentActivity() {
   const { session } = useAuth();
 
@@ -276,13 +338,13 @@ export default function AgentActivity() {
           <div className="system-status-item">
             <span className="system-status-label">Planner Strategy:</span>
             <span className="system-status-value">
-              {systemStatus?.llmEnabled ? "LLMWithFallback" : "DeterministicFallback"}
+              {getPlannerStrategyLabel(systemStatus)}
             </span>
           </div>
           <div className="system-status-item">
-            <span className="system-status-label">Loopback Security:</span>
+            <span className="system-status-label">Endpoint Security:</span>
             <span className="system-status-value">
-              {systemStatus?.allowLocalEndpoints ? "Loopback Enforced" : "Remote Only"}
+              {getEndpointSecurityLabel(systemStatus)}
             </span>
           </div>
           <div className="system-status-item">
@@ -631,17 +693,22 @@ export default function AgentActivity() {
                     <div className="admin-muted">{selectedRun.applicantName || "Applicant Record"}</div>
                   </div>
 
-                  <div className="run-meta-item">
-                    <div className="run-meta-title">Workflow Stage</div>
-                    <div className="run-meta-value">
-                      <span className={`stage-tag stage-${selectedRun.currentStage || "PROCESSING"}`}>
-                        {selectedRun.currentStage || "PROCESSING"}
-                      </span>
-                    </div>
-                    <div className="admin-muted">
-                      Status: {selectedRun.status} | Outcome: {selectedRun.outcome || "N/A"}
-                    </div>
-                  </div>
+                  {(() => {
+                    const statusDisplay = getRunStatusDisplay(selectedRun);
+                    return (
+                      <div className="run-meta-item">
+                        <div className="run-meta-title">{statusDisplay.title}</div>
+                        <div className="run-meta-value">
+                          <span className={`stage-tag ${statusDisplay.tagClass}`}>
+                            {statusDisplay.value}
+                          </span>
+                        </div>
+                        <div className="admin-muted">
+                          Status: {selectedRun.status} | Outcome: {selectedRun.outcome || "N/A"}
+                        </div>
+                      </div>
+                    );
+                  })()}
 
                   <div className="run-meta-item">
                     <div className="run-meta-title">Planner Strategy</div>

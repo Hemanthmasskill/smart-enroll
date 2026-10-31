@@ -147,7 +147,8 @@ class OrchestrationRunResponse(BaseModel):
         ...,
         description="Business workflow outcome (COMPLETED, WAITING_FOR_APPLICANT, MANUAL_REVIEW_REQUIRED, DEPENDENCY_PENDING, FAILED, ALREADY_RUNNING)",
     )
-    currentApplicationStatus: str
+    currentApplicationStatus: str | None = None
+    currentStage: str | None = None
     stepsCompleted: int
     summary: str
     failureReason: str | None = None
