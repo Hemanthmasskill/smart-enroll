@@ -20,6 +20,9 @@ from app.services.document import (
     process_document,
     verify_document,
 )
+from app.services.eligibility.engine import compute_input_hash
+from app.services.eligibility.service import run_eligibility_evaluation
+from app.services.programme_rules import get_programme_rules
 
 logger = logging.getLogger(__name__)
 
@@ -319,7 +322,7 @@ def tool_compare_applicant_details(
 
 
 # =====================================================================
-# Tool 8: check_eligibility (Integration Dependency: Increment 16)
+# Tool 8: check_eligibility (Increment 16 Deterministic Engine)
 # =====================================================================
 def tool_check_eligibility(
     db: Database,
@@ -328,20 +331,48 @@ def tool_check_eligibility(
     **kwargs: Any,
 ) -> ToolExecutionResult:
     """
-    Contract interface for deterministic eligibility evaluation.
-    Explicitly documents dependency on Increment 16 without fabricating results.
+    Execute deterministic eligibility evaluation via Increment 16 Eligibility Engine.
+    Evaluates academic admission eligibility against canonical programme rules.
     """
-    return ToolExecutionResult(
-        tool=ToolName.CHECK_ELIGIBILITY.value,
-        status=ToolStatus.DEPENDENCY_PENDING.value,
-        data={
-            "applicationId": application_id,
-            "status": "DEPENDENCY_PENDING",
-            "evaluator": "DeterministicEligibilityEngine",
-        },
-        message="Deterministic eligibility evaluation service is pending backend implementation in Increment 16.",
-        dependency="Increment 16: Eligibility Engine",
-    )
+    try:
+        run_id = kwargs.get("run_id")
+        result = run_eligibility_evaluation(
+            db=db,
+            current_user=current_user,
+            application_id=application_id,
+            run_id=run_id,
+        )
+        return ToolExecutionResult(
+            tool=ToolName.CHECK_ELIGIBILITY.value,
+            status=ToolStatus.COMPLETED.value,
+            data={
+                "applicationId": application_id,
+                "eligibilityResult": result.model_dump(),
+                "status": result.status,
+            },
+            message=f"Deterministic eligibility evaluation completed with status: {result.status}.",
+        )
+    except HTTPException as e:
+        return ToolExecutionResult(
+            tool=ToolName.CHECK_ELIGIBILITY.value,
+            status=ToolStatus.FAILED.value,
+            data={
+                "applicationId": application_id,
+                "error": e.detail,
+            },
+            message=f"Eligibility evaluation failed: {e.detail}",
+        )
+    except Exception as e:
+        logger.exception("Unexpected error during eligibility evaluation for %s", application_id)
+        return ToolExecutionResult(
+            tool=ToolName.CHECK_ELIGIBILITY.value,
+            status=ToolStatus.FAILED.value,
+            data={
+                "applicationId": application_id,
+                "error": str(e),
+            },
+            message=f"Eligibility evaluation encountered an error: {str(e)}",
+        )
 
 
 # =====================================================================
@@ -410,7 +441,7 @@ ALLOWED_STATUS_TRANSITIONS: dict[str, set[str]] = {
     "EXCEPTION": {"PROCESSING", "VERIFICATION_IN_PROGRESS", "ELIGIBILITY_CHECK", "INELIGIBLE"},
     "ELIGIBILITY_CHECK": {"ELIGIBLE", "INELIGIBLE", "EXCEPTION"},
     "ELIGIBLE": {"PROCESSING_COMPLETE"},
-    "INELIGIBLE": {"PROCESSING_COMPLETE"},
+    "INELIGIBLE": {"EXCEPTION", "PROCESSING_COMPLETE"},
     "PROCESSING_COMPLETE": set(),  # Terminal state
 }
 
@@ -573,20 +604,55 @@ def tool_update_application_status(
                 message="Cannot transition to 'ELIGIBILITY_CHECK': not all uploaded documents have verified validation evidence.",
             )
 
-    # 5. Enforce deterministic eligibility gate for terminal eligibility states
+    # 5. Enforce deterministic eligibility gate for terminal eligibility states (Increment 16 / D9)
     if status_clean in ("ELIGIBLE", "INELIGIBLE"):
         eligibility_result = app.get("eligibilityResult")
-        if not eligibility_result or not isinstance(eligibility_result, dict) or eligibility_result.get("status") != status_clean:
+        if not eligibility_result or not isinstance(eligibility_result, dict):
             return ToolExecutionResult(
                 tool=ToolName.UPDATE_APPLICATION_STATUS.value,
-                status=ToolStatus.DEPENDENCY_PENDING.value,
+                status=ToolStatus.FAILED.value,
                 data={
                     "applicationId": app_id,
                     "currentStatus": current_status,
                     "targetStatus": status_clean,
                 },
-                message=f"Transition to '{status_clean}' requires deterministic eligibility evaluation from Increment 16.",
-                dependency="Increment 16: Eligibility Engine",
+                message=f"Transition to '{status_clean}' requires prior deterministic eligibility evaluation result.",
+            )
+        if eligibility_result.get("status") != status_clean:
+            return ToolExecutionResult(
+                tool=ToolName.UPDATE_APPLICATION_STATUS.value,
+                status=ToolStatus.FAILED.value,
+                data={
+                    "applicationId": app_id,
+                    "currentStatus": current_status,
+                    "targetStatus": status_clean,
+                    "evaluatedStatus": eligibility_result.get("status"),
+                },
+                message=f"Cannot transition to '{status_clean}': evaluated eligibility status is '{eligibility_result.get('status')}'.",
+            )
+
+        # D9 Stale evaluation protection
+        programme_id = app.get("programmeId")
+        rules = get_programme_rules(db, programme_id=programme_id)
+        if not rules:
+            return ToolExecutionResult(
+                tool=ToolName.UPDATE_APPLICATION_STATUS.value,
+                status=ToolStatus.FAILED.value,
+                data={"applicationId": app_id},
+                message=f"No active programme rules found for programme '{programme_id}'.",
+            )
+        current_docs = list(db["documents"].find({"applicationId": app_id}))
+        fresh_hash = compute_input_hash(rules=rules, application_snapshot=app, documents_snapshot=current_docs)
+        if fresh_hash != eligibility_result.get("inputHash"):
+            return ToolExecutionResult(
+                tool=ToolName.UPDATE_APPLICATION_STATUS.value,
+                status=ToolStatus.FAILED.value,
+                data={
+                    "applicationId": app_id,
+                    "persistedHash": eligibility_result.get("inputHash"),
+                    "freshHash": fresh_hash,
+                },
+                message=f"Cannot transition to '{status_clean}': eligibility evaluation is stale. Documents or application data were modified after evaluation.",
             )
 
     # 5. Enforce workflow-completion evidence for PROCESSING_COMPLETE
@@ -603,6 +669,17 @@ def tool_update_application_status(
                 },
                 message="Cannot transition to 'PROCESSING_COMPLETE': required workflow-completion evidence is missing.",
             )
+        if completion_evidence.get("status") == "INELIGIBLE" or current_status == "INELIGIBLE":
+            return ToolExecutionResult(
+                tool=ToolName.UPDATE_APPLICATION_STATUS.value,
+                status=ToolStatus.FAILED.value,
+                data={
+                    "applicationId": app_id,
+                    "currentStatus": current_status,
+                    "targetStatus": status_clean,
+                },
+                message="Cannot transition to 'PROCESSING_COMPLETE': application is INELIGIBLE and requires administrative confirmation in EXCEPTION state.",
+            )
 
     # 6. Apply state transition atomically with active run fencing
     now = datetime.now(timezone.utc).isoformat()
@@ -611,9 +688,14 @@ def tool_update_application_status(
         filter_doc["activeRunId"] = run_id
         filter_doc["supersededRunIds"] = {"$ne": run_id}
 
+    set_fields: dict[str, Any] = {"status": status_clean, "updatedAt": now}
+    reason = kwargs.get("reason")
+    if reason:
+        set_fields["statusReason"] = reason
+
     updated = db["applications"].find_one_and_update(
         filter_doc,
-        {"$set": {"status": status_clean, "updatedAt": now}},
+        {"$set": set_fields},
         return_document=True,
         projection={"_id": 0},
     )
@@ -633,14 +715,18 @@ def tool_update_application_status(
             message=f"Failed to update status for application {app_id}.",
         )
 
+    ret_data = {
+        "applicationId": app_id,
+        "previousStatus": current_status,
+        "newStatus": status_clean,
+    }
+    if reason:
+        ret_data["reason"] = reason
+
     return ToolExecutionResult(
         tool=ToolName.UPDATE_APPLICATION_STATUS.value,
         status=ToolStatus.COMPLETED.value,
-        data={
-            "applicationId": app_id,
-            "previousStatus": current_status,
-            "newStatus": status_clean,
-        },
+        data=ret_data,
         message=f"Application {app_id} status updated from {current_status} to {status_clean}.",
     )
 

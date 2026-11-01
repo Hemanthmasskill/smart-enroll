@@ -86,6 +86,7 @@ TOOL_PARAM_SCHEMAS: dict[str, dict[str, type | tuple[type, ...]]] = {
     ToolName.UPDATE_APPLICATION_STATUS.value: {
         "application_id": str,
         "new_status": str,
+        "reason": str,
     },
     ToolName.SEND_NOTIFICATION.value: {
         "title": str,
@@ -128,6 +129,7 @@ ALLOWED_TOOLS_BY_STATUS = {
         ToolName.CHECK_ELIGIBILITY.value,
         ToolName.GET_APPLICATION.value,
         ToolName.GET_PROGRAM_REQUIREMENTS.value,
+        ToolName.UPDATE_APPLICATION_STATUS.value,
     },
     "EXCEPTION": {
         ToolName.CREATE_EXCEPTION.value,
@@ -151,10 +153,10 @@ ALLOWED_TERMINAL_OUTCOMES_BY_STATUS = {
     "WAITING_FOR_DOCUMENTS": {OrchestrationOutcome.WAITING_FOR_APPLICANT},
     "PROCESSING": {OrchestrationOutcome.MANUAL_REVIEW_REQUIRED, OrchestrationOutcome.WAITING_FOR_APPLICANT},
     "VERIFICATION_IN_PROGRESS": set(),
-    "ELIGIBILITY_CHECK": {OrchestrationOutcome.DEPENDENCY_PENDING},
+    "ELIGIBILITY_CHECK": {OrchestrationOutcome.DEPENDENCY_PENDING, OrchestrationOutcome.MANUAL_REVIEW_REQUIRED},
     "EXCEPTION": {OrchestrationOutcome.MANUAL_REVIEW_REQUIRED},
     "ELIGIBLE": {OrchestrationOutcome.COMPLETED, OrchestrationOutcome.DEPENDENCY_PENDING},
-    "INELIGIBLE": {OrchestrationOutcome.COMPLETED, OrchestrationOutcome.DEPENDENCY_PENDING},
+    "INELIGIBLE": {OrchestrationOutcome.MANUAL_REVIEW_REQUIRED, OrchestrationOutcome.DEPENDENCY_PENDING},
     "PROCESSING_COMPLETE": {OrchestrationOutcome.COMPLETED},
 }
 
@@ -240,9 +242,13 @@ CRITICAL WORKFLOW INVARIANTS & STATE-PRIORITY RULES (MUST FOLLOW IN ORDER):
 5. Academic Eligibility Check:
    - If currentStatus is 'VERIFICATION_IN_PROGRESS': call update_application_status with new_status='ELIGIBILITY_CHECK'.
    - If currentStatus is 'ELIGIBILITY_CHECK': call check_eligibility with application_id.
-6. Completion:
-   - If currentStatus is 'ELIGIBLE' or 'INELIGIBLE' and eligibility result is present:
+6. Academic Eligibility Evaluation & Completion:
+   - If currentStatus is 'ELIGIBLE' and deterministic eligibility result is ELIGIBLE:
      call update_application_status with new_status='PROCESSING_COMPLETE', is_terminal=true, terminal_outcome='COMPLETED'.
+   - If deterministic eligibility evaluation is 'INELIGIBLE':
+     call update_application_status with new_status='EXCEPTION', parameters containing reason, is_terminal=true, terminal_outcome='MANUAL_REVIEW_REQUIRED' (requires administrative confirmation before final rejection until Increment 17).
+   - If deterministic eligibility evaluation is 'NEEDS_REVIEW':
+     call update_application_status with new_status='EXCEPTION', parameters containing reason, is_terminal=true, terminal_outcome='MANUAL_REVIEW_REQUIRED'.
 
 Available Registered Tools:
 1. get_application: {"application_id": "string"}
@@ -255,7 +261,7 @@ Available Registered Tools:
 8. check_eligibility: {"application_id": "string"}
 9. create_exception: {"application_id": "string", "exception_type": "string", "description": "string", "severity": "MEDIUM"}
 10. request_missing_document: {"application_id": "string", "document_type": "string"}
-11. update_application_status: {"application_id": "string", "new_status": "string"}
+11. update_application_status: {"application_id": "string", "new_status": "string", "reason": "string (optional)"}
 12. send_notification: {"user_id": "string", "title": "string", "description": "string"}
 (Note: Internal system tools such as 'record_audit_event' are managed by the orchestrator and must not be proposed.)
 
@@ -263,7 +269,7 @@ Strict Security & Guardrail Policies:
 - You must NEVER make direct database modifications.
 - You must NEVER declare document authenticity or override verification results.
 - You must NEVER decide academic eligibility yourself; always invoke check_eligibility.
-- You must NEVER propose status transitions to ELIGIBLE or INELIGIBLE directly.
+- You must NEVER propose status transitions to ELIGIBLE or INELIGIBLE directly; INELIGIBLE evaluations must be routed to EXCEPTION for administrative confirmation.
 - You must NEVER jump to PROCESSING_COMPLETE without a deterministic eligibility result.
 - Do NOT include hidden chain-of-thought or reasoning tokens. The rationale must be a single concise sentence.
 
@@ -482,6 +488,7 @@ class LLMPlanningStrategy(PlanningStrategy):
                 "VERIFICATION_IN_PROGRESS",
                 "ELIGIBILITY_CHECK",
                 "EXCEPTION",
+                "INELIGIBLE",
             )
             if observation.current_status in unfinished_statuses:
                 raise ValueError(
@@ -489,9 +496,9 @@ class LLMPlanningStrategy(PlanningStrategy):
                 )
 
             # A completion outcome must never bypass deterministic eligibility evaluation or required evidence
-            if not observation.eligibility_result:
+            if not observation.eligibility_result or observation.eligibility_result.get("status") != "ELIGIBLE":
                 raise ValueError(
-                    "Invalid terminal outcome: Model cannot report 'COMPLETED' without deterministic eligibility result evidence."
+                    "Invalid terminal outcome: Model cannot report 'COMPLETED' without a deterministic eligibility result of 'ELIGIBLE'."
                 )
 
             # If proposed via TOOL_CALL, tool must transition to PROCESSING_COMPLETE
@@ -535,18 +542,22 @@ class LLMPlanningStrategy(PlanningStrategy):
         elif outcome_val == OrchestrationOutcome.MANUAL_REVIEW_REQUIRED.value:
             # Valid only when independent backend workflow evidence exists:
             # an existing EXCEPTION status, failed documents, validation mismatches,
-            # or manual-review documents. A proposed status change or bare tool call
+            # manual-review documents, or eligibility NEEDS_REVIEW/INELIGIBLE. A proposed status change or bare tool call
             # cannot serve as its own justification.
             has_independent_evidence = (
-                observation.current_status == "EXCEPTION"
+                observation.current_status in ("EXCEPTION", "INELIGIBLE")
                 or bool(observation.failed_documents)
                 or bool(observation.mismatched_documents)
                 or bool(observation.manual_review_documents)
+                or (
+                    bool(observation.eligibility_result)
+                    and observation.eligibility_result.get("status") in ("NEEDS_REVIEW", "INELIGIBLE")
+                )
             )
             if not has_independent_evidence:
                 raise ValueError(
                     f"Invalid terminal outcome: 'MANUAL_REVIEW_REQUIRED' requires independent workflow evidence "
-                    f"(existing EXCEPTION status, failed documents, validation mismatches, or manual-review documents). "
+                    f"(existing EXCEPTION or INELIGIBLE status, failed documents, validation mismatches, manual-review documents, or eligibility NEEDS_REVIEW/INELIGIBLE). "
                     f"Current status '{observation.current_status}' lacks independent failure or exception evidence."
                 )
 
@@ -656,8 +667,15 @@ class LLMPlanningStrategy(PlanningStrategy):
                         f"Document ID '{doc_id}' is not in unprocessed documents list for application '{observation.application_id}'."
                     )
 
-        # Hard-gate on ELIGIBILITY_CHECK
-        if (tool_clean == ToolName.CHECK_ELIGIBILITY.value) or (
+        # Hard-gate on CHECK_ELIGIBILITY tool invocation
+        if tool_clean == ToolName.CHECK_ELIGIBILITY.value:
+            if observation.current_status != "ELIGIBILITY_CHECK":
+                raise ValueError(
+                    f"Forbidden transition: check_eligibility can only be executed when application is in 'ELIGIBILITY_CHECK' status (current status: '{observation.current_status}')."
+                )
+
+        # Hard-gate on transition to ELIGIBILITY_CHECK
+        if (
             tool_clean == ToolName.UPDATE_APPLICATION_STATUS.value
             and proposal.parameters.get("new_status") == "ELIGIBILITY_CHECK"
         ):
@@ -760,17 +778,41 @@ class LLMPlanningStrategy(PlanningStrategy):
             if not new_status or new_status not in ALLOWED_APPLICATION_STATUSES:
                 raise ValueError(f"Invalid or missing new_status '{new_status}' in application status update.")
 
-            # Model cannot jump directly to ELIGIBLE or INELIGIBLE
-            if new_status in ("ELIGIBLE", "INELIGIBLE"):
+            # Issue 3: When stored eligibility result is ELIGIBLE and application is in ELIGIBILITY_CHECK,
+            # accept ONLY new_status = ELIGIBLE. Reject all other proposed statuses, including PROCESSING_COMPLETE.
+            if (
+                observation.current_status == "ELIGIBILITY_CHECK"
+                and observation.eligibility_result
+                and observation.eligibility_result.get("status") == "ELIGIBLE"
+            ):
+                if new_status != "ELIGIBLE":
+                    raise ValueError(
+                        f"Forbidden transition: When application is in 'ELIGIBILITY_CHECK' with deterministic eligibility 'ELIGIBLE', "
+                        f"only transition to 'ELIGIBLE' is permitted. Proposed status '{new_status}' is rejected."
+                    )
+
+            # Model cannot jump directly to ELIGIBLE without matching deterministic result
+            if new_status == "ELIGIBLE":
+                if not observation.eligibility_result or observation.eligibility_result.get("status") != "ELIGIBLE":
+                    raise ValueError(
+                        f"Forbidden transition: Model cannot arbitrarily set status to 'ELIGIBLE'. Must invoke check_eligibility."
+                    )
+            # In Increment 16, INELIGIBLE evaluations route to EXCEPTION for admin confirmation
+            if new_status == "INELIGIBLE":
                 raise ValueError(
-                    f"Forbidden transition: Model cannot arbitrarily set status to '{new_status}'. Must invoke check_eligibility."
+                    "Forbidden transition: Applications evaluated as INELIGIBLE must be routed to 'EXCEPTION' for administrative confirmation."
                 )
 
-            # Model cannot jump to PROCESSING_COMPLETE without deterministic eligibility result
-            if new_status == "PROCESSING_COMPLETE" and not observation.eligibility_result:
-                raise ValueError(
-                    "Forbidden transition: Cannot transition to 'PROCESSING_COMPLETE' without deterministic eligibility result."
-                )
+            # Model cannot jump to PROCESSING_COMPLETE without deterministic eligibility result indicating ELIGIBLE, AND application must already be in ELIGIBLE status
+            if new_status == "PROCESSING_COMPLETE":
+                if not observation.eligibility_result or observation.eligibility_result.get("status") != "ELIGIBLE":
+                    raise ValueError(
+                        "Forbidden transition: Cannot transition to 'PROCESSING_COMPLETE' unless eligibility result is deterministically 'ELIGIBLE'."
+                    )
+                if observation.current_status != "ELIGIBLE":
+                    raise ValueError(
+                        f"Forbidden transition: Cannot transition directly to 'PROCESSING_COMPLETE' from '{observation.current_status}'. Application must be in 'ELIGIBLE' status first."
+                    )
 
             # Model cannot jump to VERIFICATION_IN_PROGRESS if documents are unprocessed or failing
             if new_status == "VERIFICATION_IN_PROGRESS" and (
@@ -785,14 +827,18 @@ class LLMPlanningStrategy(PlanningStrategy):
 
             # Model cannot transition status to EXCEPTION without independent evidence
             if new_status == "EXCEPTION" and not (
-                observation.current_status == "EXCEPTION"
+                observation.current_status in ("EXCEPTION", "INELIGIBLE")
                 or bool(observation.failed_documents)
                 or bool(observation.mismatched_documents)
                 or bool(observation.manual_review_documents)
+                or (
+                    bool(observation.eligibility_result)
+                    and observation.eligibility_result.get("status") in ("NEEDS_REVIEW", "INELIGIBLE")
+                )
             ):
                 raise ValueError(
                     "Forbidden transition: Cannot transition application to 'EXCEPTION' without independent evidence of "
-                    "document failure, validation mismatch, or manual-review condition."
+                    "document failure, validation mismatch, manual-review condition, or eligibility review/ineligibility."
                 )
 
         # Guardrails on process_document, extract_document_data, verify_document

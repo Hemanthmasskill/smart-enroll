@@ -39,6 +39,7 @@ from app.agents.orchestrator import (
 )
 from app.core.config import settings
 from app.core.database import DatabaseInitializationError, connect_to_mongo, get_db
+from app.services.programme_rules import seed_programme_rules
 from app.main import app
 from app.schemas.agent import (
     OrchestrationOutcome,
@@ -85,6 +86,8 @@ def clean_db():
     db["documents"].delete_many({})
     db["agent_activity"].delete_many({})
     db["orchestration_runs"].delete_many({})
+    db["programme_rules"].delete_many({})
+    seed_programme_rules(db)
     try:
         existing_indexes = db["orchestration_runs"].index_information()
         for idx_name, idx_info in existing_indexes.items():
@@ -309,11 +312,11 @@ def test_dependency_pending_tools_do_not_fabricate_results(applicant_auth, clean
     app_id = applicant_auth["application"]["applicationId"]
     user = applicant_auth["user"]
 
-    # Tool 8: check_eligibility -> depends on Increment 16
+    # Tool 8: check_eligibility -> Increment 16 deterministic engine replaces stub.
+    # When application is in DRAFT, check_eligibility fails deterministically (not permitted in DRAFT).
     res_elig = tool_check_eligibility(clean_db, user, app_id)
-    assert res_elig.status == ToolStatus.DEPENDENCY_PENDING.value
-    assert res_elig.dependency == "Increment 16: Eligibility Engine"
-    assert "Increment 16" in res_elig.message
+    assert res_elig.status == ToolStatus.FAILED.value
+    assert "ELIGIBILITY_CHECK" in res_elig.message
 
     # Tool 9: create_exception -> depends on Increment 17
     res_exc = tool_create_exception(clean_db, user, app_id, "MISSING_DOCUMENT", "Missing Transfer Certificate")
@@ -568,18 +571,16 @@ def test_eligible_or_ineligible_requires_deterministic_result(admin_auth, applic
         assert res.status == ToolStatus.COMPLETED.value
 
     # Application is in ELIGIBILITY_CHECK with no deterministic eligibilityResult in MongoDB
-    # 5a. Attempt transition to ELIGIBLE
+    # 5a. Attempt transition to ELIGIBLE without deterministic result fails
     res_el = tool_update_application_status(clean_db, admin_auth["user"], app_id, "ELIGIBLE")
-    assert res_el.status == ToolStatus.DEPENDENCY_PENDING.value
-    assert res_el.dependency == "Increment 16: Eligibility Engine"
-    assert "Increment 16" in res_el.message
+    assert res_el.status == ToolStatus.FAILED.value
+    assert "deterministic eligibility evaluation" in res_el.message
     assert clean_db["applications"].find_one({"applicationId": app_id})["status"] == "ELIGIBILITY_CHECK"
 
-    # 5b. Attempt transition to INELIGIBLE
+    # 5b. Attempt transition to INELIGIBLE without deterministic result fails
     res_inel = tool_update_application_status(clean_db, admin_auth["user"], app_id, "INELIGIBLE")
-    assert res_inel.status == ToolStatus.DEPENDENCY_PENDING.value
-    assert res_inel.dependency == "Increment 16: Eligibility Engine"
-    assert "Increment 16" in res_inel.message
+    assert res_inel.status == ToolStatus.FAILED.value
+    assert "deterministic eligibility evaluation" in res_inel.message
     assert clean_db["applications"].find_one({"applicationId": app_id})["status"] == "ELIGIBILITY_CHECK"
 
 
@@ -907,12 +908,19 @@ def test_authorized_audit_log_queries(api_client, applicant_auth, admin_auth, cl
 # Task 15.2: Autonomous Orchestrator Loop Tests
 # =====================================================================
 
-def upload_all_six_documents(api_client, applicant_auth, app_id, mismatch_marksheet: bool = False):
+def upload_all_six_documents(
+    api_client,
+    applicant_auth,
+    app_id,
+    mismatch_marksheet: bool = False,
+    include_math: bool = True,
+):
     """Helper to upload all 6 required canonical documents."""
     marksheet_name = "Candidate Name: Ramesh Kumar" if mismatch_marksheet else "Candidate Name: Hemanth M.P."
+    math_line = "Mathematics: 95 / 100" if include_math else "General Knowledge: 75 / 100"
     docs_to_upload = [
         ("10TH_MARKSHEET", ["Secondary School Certificate", marksheet_name, "Date of Birth: 15/05/2000", "Marks: 432 / 500", "Percentage: 86.4%", "State Board of Secondary Education"]),
-        ("12TH_MARKSHEET", ["Higher Secondary Certificate", "Candidate Name: Hemanth M.P.", "Date of Birth: 15/05/2000", "Marks: 440 / 500", "Percentage: 88.0%", "State Board of Higher Secondary"]),
+        ("12TH_MARKSHEET", ["Higher Secondary Certificate", "Candidate Name: Hemanth M.P.", "Date of Birth: 15/05/2000", "Marks: 440 / 500", "Percentage: 88.0%", math_line, "State Board of Higher Secondary"]),
         ("UG_MARKSHEET", ["Bachelor of Computer Applications Marksheet", "Candidate Name: Hemanth M.P.", "Date of Birth: 15/05/2000", "CGPA: 8.5", "Graduation Year: 2022", "University: Crescent"]),
         ("DEGREE_CERTIFICATE", ["B.S. Abdur Rahman Crescent Institute of Science and Technology", "Degree of Bachelor of Computer Applications", "Candidate Name: Hemanth M.P.", "Conferred: 2022"]),
         ("TRANSFER_CERTIFICATE", ["Transfer Certificate", "Student Name: Hemanth M.P.", "Date of Birth: 15/05/2000", "Conduct: Good"]),
@@ -961,15 +969,14 @@ def test_orchestration_successful_multi_step_path(api_client, applicant_auth, cl
     app_id = applicant_auth["application"]["applicationId"]
 
     clean_db["applications"].update_one({"applicationId": app_id}, {"$set": {"status": "SUBMITTED"}})
-    upload_all_six_documents(api_client, applicant_auth, app_id)
+    upload_all_six_documents(api_client, applicant_auth, app_id, include_math=True)
 
     orchestrator = AgentOrchestrator(db=clean_db)
     res = orchestrator.run(app_id, applicant_auth["user"])
 
-    assert res.outcome == OrchestrationOutcome.DEPENDENCY_PENDING
-    assert res.pendingDependency == "Increment 16: Eligibility Engine"
-    assert res.currentApplicationStatus == "ELIGIBILITY_CHECK"
-    assert clean_db["applications"].find_one({"applicationId": app_id})["status"] == "ELIGIBILITY_CHECK"
+    assert res.outcome == OrchestrationOutcome.COMPLETED
+    assert res.currentApplicationStatus == "PROCESSING_COMPLETE"
+    assert clean_db["applications"].find_one({"applicationId": app_id})["status"] == "PROCESSING_COMPLETE"
     assert res.stepsCompleted >= 8
 
 
@@ -1029,21 +1036,22 @@ def test_orchestration_ocr_failure_does_not_trigger_false_verification(api_clien
     assert clean_db["applications"].find_one({"applicationId": app_id})["status"] == "EXCEPTION"
 
 
-# 6. Eligibility dependency-pending does not mark the application eligible.
+# 6. Eligibility evaluation requiring review does not mark the application eligible.
 def test_orchestration_eligibility_dependency_pending_does_not_mark_eligible(api_client, applicant_auth, clean_db):
     app_id = applicant_auth["application"]["applicationId"]
 
     clean_db["applications"].update_one({"applicationId": app_id}, {"$set": {"status": "SUBMITTED"}})
-    upload_all_six_documents(api_client, applicant_auth, app_id)
+    upload_all_six_documents(api_client, applicant_auth, app_id, include_math=False)
 
     orchestrator = AgentOrchestrator(db=clean_db)
     res = orchestrator.run(app_id, applicant_auth["user"])
 
-    assert res.outcome == OrchestrationOutcome.DEPENDENCY_PENDING
-    assert clean_db["applications"].find_one({"applicationId": app_id})["status"] == "ELIGIBILITY_CHECK"
+    assert res.outcome == OrchestrationOutcome.MANUAL_REVIEW_REQUIRED
+    assert res.currentApplicationStatus == "EXCEPTION"
+    assert clean_db["applications"].find_one({"applicationId": app_id})["status"] == "EXCEPTION"
     # Must NOT be marked ELIGIBLE or INELIGIBLE or PROCESSING_COMPLETE
     final_status = clean_db["applications"].find_one({"applicationId": app_id})["status"]
-    assert final_status not in ("ELIGIBLE", "INELIGIBLE", "PROCESSING_COMPLETE")
+    assert final_status not in ("ELIGIBLE", "PROCESSING_COMPLETE")
 
 
 # 7. Notification/exception dependencies do not fabricate records.
@@ -1470,16 +1478,16 @@ def test_orchestration_lifecycle_status_and_outcome_mapping(api_client, applican
     assert run_doc_waiting["status"] == OrchestrationRunStatus.COMPLETED.value
     assert run_doc_waiting["outcome"] == OrchestrationOutcome.WAITING_FOR_APPLICANT.value
 
-    # 2. DEPENDENCY_PENDING outcome -> lifecycle status is COMPLETED
-    upload_all_six_documents(api_client, applicant_auth, app_id)
+    # 2. Multi-step outcome -> lifecycle status is COMPLETED
+    upload_all_six_documents(api_client, applicant_auth, app_id, include_math=True)
     clean_db["applications"].update_one({"applicationId": app_id}, {"$set": {"status": "SUBMITTED"}})
     res_dep = AgentOrchestrator(db=clean_db).run(app_id, applicant_auth["user"])
-    assert res_dep.outcome == OrchestrationOutcome.DEPENDENCY_PENDING
+    assert res_dep.outcome == OrchestrationOutcome.COMPLETED
     assert res_dep.status == OrchestrationRunStatus.COMPLETED
 
     run_doc_dep = clean_db["orchestration_runs"].find_one({"runId": res_dep.runId})
     assert run_doc_dep["status"] == OrchestrationRunStatus.COMPLETED.value
-    assert run_doc_dep["outcome"] == OrchestrationOutcome.DEPENDENCY_PENDING.value
+    assert run_doc_dep["outcome"] == OrchestrationOutcome.COMPLETED.value
 
     # 3. All runs cleared the partial unique index on RUNNING
     running_runs = list(clean_db["orchestration_runs"].find({"applicationId": app_id, "status": "RUNNING"}))
@@ -2931,3 +2939,243 @@ def test_agent_activity_role_based_access_control(api_client, admin_auth, applic
     with pytest.raises(HTTPException) as exc_info:
         list_agent_activity(clean_db, reviewer_user)
     assert exc_info.value.status_code == 403
+
+
+# 8. Increment 16: INELIGIBLE routing to EXCEPTION with administrative confirmation
+def test_ineligible_routes_to_exception_and_rejects_processing_complete(admin_auth, applicant_auth, clean_db):
+    app_id = applicant_auth["application"]["applicationId"]
+    user_id = applicant_auth["application"]["userId"]
+
+    # Seed all six required documents in VALIDATED state
+    clean_db["documents"].delete_many({"applicationId": app_id})
+    for dtype in REQUIRED_DOCUMENT_TYPES:
+        clean_db["documents"].insert_one({
+            "applicationId": app_id,
+            "userId": user_id,
+            "documentType": dtype,
+            "status": "VALIDATED",
+            "processingStatus": "COMPLETED",
+            "validationStatus": "VALIDATED",
+        })
+
+    # Set application in ELIGIBILITY_CHECK with INELIGIBLE evaluation
+    elig_result = {
+        "status": "INELIGIBLE",
+        "summary": "Candidate marks below minimum programme threshold",
+        "overallPassed": False,
+        "criteria": [],
+    }
+    clean_db["applications"].update_one(
+        {"applicationId": app_id},
+        {"$set": {"status": "INELIGIBLE", "eligibilityResult": elig_result}},
+    )
+
+    # 1. Direct tool transition from INELIGIBLE to PROCESSING_COMPLETE must be rejected
+    res_comp = tool_update_application_status(clean_db, admin_auth["user"], app_id, "PROCESSING_COMPLETE")
+    assert res_comp.status == ToolStatus.FAILED.value
+    assert "INELIGIBLE and requires administrative confirmation" in res_comp.message
+
+    # Reset to ELIGIBILITY_CHECK for orchestrator test
+    clean_db["applications"].update_one(
+        {"applicationId": app_id},
+        {"$set": {"status": "ELIGIBILITY_CHECK"}},
+    )
+
+    # 2. Orchestrator observation and planning must route INELIGIBLE to EXCEPTION
+    strat = DeterministicPlanningStrategy()
+    obs = AgentOrchestrator(db=clean_db).observe(app_id)
+    action, outcome, reason = strat.plan_next_action(obs, 1)
+
+    assert action is not None
+    assert action.tool == ToolName.UPDATE_APPLICATION_STATUS
+    assert action.parameters["new_status"] == "EXCEPTION"
+    assert "INELIGIBLE" in action.parameters.get("reason", "")
+    assert action.is_terminal is True
+    assert action.terminal_outcome == OrchestrationOutcome.MANUAL_REVIEW_REQUIRED
+    assert outcome == OrchestrationOutcome.MANUAL_REVIEW_REQUIRED
+
+    # 3. Transition from INELIGIBLE to EXCEPTION via tool
+    clean_db["applications"].update_one({"applicationId": app_id}, {"$set": {"status": "INELIGIBLE"}})
+    res_exc = tool_update_application_status(clean_db, admin_auth["user"], app_id, "EXCEPTION", reason="Requires admin check")
+    assert res_exc.status == ToolStatus.COMPLETED.value
+    assert clean_db["applications"].find_one({"applicationId": app_id})["status"] == "EXCEPTION"
+    assert clean_db["applications"].find_one({"applicationId": app_id})["statusReason"] == "Requires admin check"
+
+
+def test_orchestration_reaches_eligible_with_unscaled_cgpa_marksheet(api_client, applicant_auth, clean_db):
+    """
+    Increment 16 Final Hardening (Issue 1):
+    Full orchestration-level regression test using a marksheet fixture containing
+    exactly: 'CGPA: 8.5' with NO printed scale.
+    When all other eligibility requirements are satisfied, the application must
+    successfully reach ELIGIBLE (and conclude at PROCESSING_COMPLETE).
+    """
+    app_id = applicant_auth["application"]["applicationId"]
+    clean_db["applications"].update_one({"applicationId": app_id}, {"$set": {"status": "SUBMITTED"}})
+
+    # Upload all 6 required documents where UG_MARKSHEET contains exactly "CGPA: 8.5" with no scale
+    marksheet_lines = [
+        "Bachelor of Computer Applications Marksheet",
+        "Candidate Name: Hemanth M.P.",
+        "Date of Birth: 15/05/2000",
+        "CGPA: 8.5",  # Exactly CGPA: 8.5 with no /10 or scale printed
+        "Graduation Year: 2022",
+        "University: Crescent",
+    ]
+    docs_to_upload = [
+        ("10TH_MARKSHEET", ["Secondary School Certificate", "Candidate Name: Hemanth M.P.", "Date of Birth: 15/05/2000", "Marks: 432 / 500", "Percentage: 86.4%", "State Board of Secondary Education"]),
+        ("12TH_MARKSHEET", ["Higher Secondary Certificate", "Candidate Name: Hemanth M.P.", "Date of Birth: 15/05/2000", "Marks: 440 / 500", "Percentage: 88.0%", "Mathematics: 95 / 100", "State Board of Higher Secondary"]),
+        ("UG_MARKSHEET", marksheet_lines),
+        ("DEGREE_CERTIFICATE", ["B.S. Abdur Rahman Crescent Institute of Science and Technology", "Degree of Bachelor of Computer Applications", "Candidate Name: Hemanth M.P.", "Conferred: 2022"]),
+        ("TRANSFER_CERTIFICATE", ["Transfer Certificate", "Student Name: Hemanth M.P.", "Date of Birth: 15/05/2000", "Conduct: Good"]),
+        ("GOVERNMENT_ID", ["Government of India Identity Card", "Name: Hemanth M.P.", "DOB: 15/05/2000", "Gender: Male"]),
+    ]
+    for doc_type, lines in docs_to_upload:
+        pdf_bytes = create_sample_pdf_bytes(lines)
+        extra_data = {"documentType": doc_type, "applicationId": app_id}
+        if doc_type == "DEGREE_CERTIFICATE":
+            extra_data["documentVariant"] = "ORIGINAL_DEGREE_CERTIFICATE"
+        up_res = api_client.post(
+            "/api/v1/documents/upload",
+            headers=applicant_auth["headers"],
+            data=extra_data,
+            files={"file": (f"{doc_type.lower()}.pdf", pdf_bytes, "application/pdf")},
+        )
+        assert up_res.status_code == 201
+
+    orchestrator = AgentOrchestrator(db=clean_db)
+    res = orchestrator.run(app_id, applicant_auth["user"])
+
+    assert res.outcome == OrchestrationOutcome.COMPLETED
+    assert res.currentApplicationStatus == "PROCESSING_COMPLETE"
+
+    # Verify eligibility evaluation was recorded with inferred scale 10
+    eval_rec = clean_db["eligibility_evaluations"].find_one({"applicationId": app_id})
+    assert eval_rec is not None
+    assert eval_rec["status"] == "ELIGIBLE"
+    rules_list = eval_rec["result"]["rules"] if "result" in eval_rec and "rules" in eval_rec["result"] else eval_rec.get("rules", [])
+    min_pct_rule = next(r for r in rules_list if r["ruleId"] == "MIN_PERCENTAGE")
+    assert min_pct_rule["result"] == "PASSED"
+    assert min_pct_rule["observed"]["cgpaScaleInferred"] is True
+    assert min_pct_rule["observed"]["cgpaScale"] == "10"
+
+
+def test_orchestration_malformed_cgpa_108_5_routes_to_exception_never_eligible(api_client, applicant_auth, clean_db):
+    """
+    Final CGPA Hardening:
+    Prove that a marksheet containing 'CGPA: 108.5' is NOT partially parsed as '10'
+    and CANNOT result in an eligible application.
+    Must route to EXCEPTION with MANUAL_REVIEW_REQUIRED.
+    """
+    app_id = applicant_auth["application"]["applicationId"]
+    clean_db["applications"].update_one({"applicationId": app_id}, {"$set": {"status": "SUBMITTED"}})
+
+    marksheet_lines = [
+        "Bachelor of Computer Applications Marksheet",
+        "Candidate Name: Hemanth M.P.",
+        "Date of Birth: 15/05/2000",
+        "CGPA: 108.5",  # Out of range, must NOT be truncated to 10
+        "Graduation Year: 2022",
+        "University: Crescent",
+    ]
+    docs_to_upload = [
+        ("10TH_MARKSHEET", ["Secondary School Certificate", "Candidate Name: Hemanth M.P.", "Date of Birth: 15/05/2000", "Marks: 432 / 500", "Percentage: 86.4%", "State Board of Secondary Education"]),
+        ("12TH_MARKSHEET", ["Higher Secondary Certificate", "Candidate Name: Hemanth M.P.", "Date of Birth: 15/05/2000", "Marks: 440 / 500", "Percentage: 88.0%", "Mathematics: 95 / 100", "State Board of Higher Secondary"]),
+        ("UG_MARKSHEET", marksheet_lines),
+        ("DEGREE_CERTIFICATE", ["B.S. Abdur Rahman Crescent Institute of Science and Technology", "Degree of Bachelor of Computer Applications", "Candidate Name: Hemanth M.P.", "Conferred: 2022"]),
+        ("TRANSFER_CERTIFICATE", ["Transfer Certificate", "Student Name: Hemanth M.P.", "Date of Birth: 15/05/2000", "Conduct: Good"]),
+        ("GOVERNMENT_ID", ["Government of India Identity Card", "Name: Hemanth M.P.", "DOB: 15/05/2000", "Gender: Male"]),
+    ]
+    for doc_type, lines in docs_to_upload:
+        pdf_bytes = create_sample_pdf_bytes(lines)
+        extra_data = {"documentType": doc_type, "applicationId": app_id}
+        if doc_type == "DEGREE_CERTIFICATE":
+            extra_data["documentVariant"] = "ORIGINAL_DEGREE_CERTIFICATE"
+        up_res = api_client.post(
+            "/api/v1/documents/upload",
+            headers=applicant_auth["headers"],
+            data=extra_data,
+            files={"file": (f"{doc_type.lower()}.pdf", pdf_bytes, "application/pdf")},
+        )
+        assert up_res.status_code == 201
+
+    orchestrator = AgentOrchestrator(db=clean_db)
+    res = orchestrator.run(app_id, applicant_auth["user"])
+
+    # Must NOT be COMPLETED or ELIGIBLE
+    assert res.outcome == OrchestrationOutcome.MANUAL_REVIEW_REQUIRED
+    assert res.currentApplicationStatus == "EXCEPTION"
+    assert clean_db["applications"].find_one({"applicationId": app_id})["status"] == "EXCEPTION"
+
+    # Verify extracted field captured the full 108.5 (not 10) and document flagged MANUAL_REVIEW
+    ug_doc = clean_db["documents"].find_one({"applicationId": app_id, "documentType": "UG_MARKSHEET"})
+    assert ug_doc is not None
+    cgpa_data = ug_doc["processingResult"]["fields"]["cgpa"]
+    assert cgpa_data["rawValue"] == "108.5"
+    assert cgpa_data["normalizedValue"] == 108.5
+    assert ug_doc["validationStatus"] == "MANUAL_REVIEW"
+    assert any("out of standard 10-point scale" in r for r in ug_doc.get("validationResult", {}).get("reasons", []))
+
+    # Application was never deemed ELIGIBLE
+    eval_rec = clean_db["eligibility_evaluations"].find_one({"applicationId": app_id})
+    assert eval_rec is None or eval_rec.get("status") != "ELIGIBLE"
+
+
+def test_orchestration_negative_cgpa_hyphen_separator_routes_to_exception_never_eligible(api_client, applicant_auth, clean_db):
+    """
+    Final CGPA Hardening:
+    Prove that a marksheet containing 'CGPA -1 / 10' preserves the minus sign
+    (it is NOT consumed as a label separator) and routes to EXCEPTION (never ELIGIBLE and never FAILED).
+    """
+    app_id = applicant_auth["application"]["applicationId"]
+    clean_db["applications"].update_one({"applicationId": app_id}, {"$set": {"status": "SUBMITTED"}})
+
+    marksheet_lines = [
+        "Bachelor of Computer Applications Marksheet",
+        "Candidate Name: Hemanth M.P.",
+        "Date of Birth: 15/05/2000",
+        "CGPA -1 / 10",  # Negative CGPA with hyphen separator; minus sign must be preserved
+        "Graduation Year: 2022",
+        "University: Crescent",
+    ]
+    docs_to_upload = [
+        ("10TH_MARKSHEET", ["Secondary School Certificate", "Candidate Name: Hemanth M.P.", "Date of Birth: 15/05/2000", "Marks: 432 / 500", "Percentage: 86.4%", "State Board of Secondary Education"]),
+        ("12TH_MARKSHEET", ["Higher Secondary Certificate", "Candidate Name: Hemanth M.P.", "Date of Birth: 15/05/2000", "Marks: 440 / 500", "Percentage: 88.0%", "Mathematics: 95 / 100", "State Board of Higher Secondary"]),
+        ("UG_MARKSHEET", marksheet_lines),
+        ("DEGREE_CERTIFICATE", ["B.S. Abdur Rahman Crescent Institute of Science and Technology", "Degree of Bachelor of Computer Applications", "Candidate Name: Hemanth M.P.", "Conferred: 2022"]),
+        ("TRANSFER_CERTIFICATE", ["Transfer Certificate", "Student Name: Hemanth M.P.", "Date of Birth: 15/05/2000", "Conduct: Good"]),
+        ("GOVERNMENT_ID", ["Government of India Identity Card", "Name: Hemanth M.P.", "DOB: 15/05/2000", "Gender: Male"]),
+    ]
+    for doc_type, lines in docs_to_upload:
+        pdf_bytes = create_sample_pdf_bytes(lines)
+        extra_data = {"documentType": doc_type, "applicationId": app_id}
+        if doc_type == "DEGREE_CERTIFICATE":
+            extra_data["documentVariant"] = "ORIGINAL_DEGREE_CERTIFICATE"
+        up_res = api_client.post(
+            "/api/v1/documents/upload",
+            headers=applicant_auth["headers"],
+            data=extra_data,
+            files={"file": (f"{doc_type.lower()}.pdf", pdf_bytes, "application/pdf")},
+        )
+        assert up_res.status_code == 201
+
+    orchestrator = AgentOrchestrator(db=clean_db)
+    res = orchestrator.run(app_id, applicant_auth["user"])
+
+    # Must NOT be COMPLETED or ELIGIBLE
+    assert res.outcome == OrchestrationOutcome.MANUAL_REVIEW_REQUIRED
+    assert res.currentApplicationStatus == "EXCEPTION"
+    assert clean_db["applications"].find_one({"applicationId": app_id})["status"] == "EXCEPTION"
+
+    # Verify extracted field preserved the negative sign (-1) and document flagged MANUAL_REVIEW
+    ug_doc = clean_db["documents"].find_one({"applicationId": app_id, "documentType": "UG_MARKSHEET"})
+    assert ug_doc is not None
+    cgpa_data = ug_doc["processingResult"]["fields"]["cgpa"]
+    assert cgpa_data["rawValue"] == "-1"
+    assert cgpa_data["normalizedValue"] == -1.0
+    assert ug_doc["validationStatus"] == "MANUAL_REVIEW"
+    assert any("out of standard 10-point scale" in r for r in ug_doc.get("validationResult", {}).get("reasons", []))
+
+    # Application was never deemed ELIGIBLE
+    eval_rec = clean_db["eligibility_evaluations"].find_one({"applicationId": app_id})
+    assert eval_rec is None or eval_rec.get("status") != "ELIGIBLE"

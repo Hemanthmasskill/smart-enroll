@@ -19,6 +19,11 @@ from app.services.application import (
     submit_application,
     update_application,
 )
+from app.services.eligibility.engine import EligibilityEvaluationResult
+from app.services.eligibility.service import (
+    get_application_eligibility_result,
+    run_eligibility_evaluation,
+)
 from app.utils.seed_data import MOCK_APPLICATION
 
 router = APIRouter()
@@ -161,3 +166,45 @@ def submit_draft_application(
     Validates completeness and programme selection, then transitions status to SUBMITTED.
     """
     return submit_application(db, current_user, application_id)
+
+
+@router.get(
+    "/{application_id}/eligibility",
+    tags=["Applications"],
+    summary="Get application eligibility evaluation result",
+)
+def get_application_eligibility(
+    application_id: str,
+    current_user: dict = Depends(get_current_user),
+    db: Database = Depends(get_db),
+):
+    """
+    Retrieve deterministic eligibility evaluation result for an application.
+    Accessible to the application owner (by userId) or an administrator.
+    """
+    return get_application_eligibility_result(db, current_user, application_id)
+
+
+@router.post(
+    "/{application_id}/eligibility/evaluate",
+    response_model=EligibilityEvaluationResult,
+    tags=["Applications"],
+    summary="Trigger deterministic eligibility evaluation",
+)
+def trigger_eligibility_evaluation(
+    application_id: str,
+    current_user: dict = Depends(RequireRole(["admin"])),
+    db: Database = Depends(get_db),
+):
+    """
+    Run the deterministic eligibility engine for an application in ELIGIBILITY_CHECK status.
+    Administrative endpoint protected by rate limiting.
+    """
+    user_id = str(current_user.get("_id") or current_user.get("id"))
+    enforce_rate_limit(
+        f"eligibility_eval:{user_id}",
+        max_requests=30,
+        window_seconds=60,
+        action_description="eligibility evaluation requests",
+    )
+    return run_eligibility_evaluation(db, current_user, application_id)

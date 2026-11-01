@@ -4,7 +4,7 @@ import logging
 from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import agents, applications, auth, documents
+from app.api import agents, applications, auth, documents, programmes
 from app.api.deps import RequireRole
 from app.core.config import settings
 from app.core.database import close_mongo_connection, connect_to_mongo, get_db
@@ -67,6 +67,12 @@ app.include_router(
     agents.router,
     prefix=f"{settings.API_V1_STR}/agents",
     tags=["Agent Orchestration"],
+)
+
+app.include_router(
+    programmes.router,
+    prefix=f"{settings.API_V1_STR}/programmes",
+    tags=["Programmes"],
 )
 
 # Admin alias for direct frontend compatibility: GET /api/v1/admin/agent-activity

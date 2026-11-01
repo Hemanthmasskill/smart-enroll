@@ -14,6 +14,7 @@ export const APPLICATION_STATES = {
   ELIGIBILITY_CHECK: "Eligibility Check",
   ELIGIBLE: "Eligible",
   INELIGIBLE: "Not Eligible",
+  NEEDS_REVIEW: "Needs Manual Review",
   PROCESSING_COMPLETE: "Processing Complete",
 };
 
@@ -41,6 +42,7 @@ export const ELIGIBILITY_RESULT_STATES = {
   PASSED: "Passed",
   PENDING: "Pending",
   FAILED: "Failed",
+  NEEDS_REVIEW: "Needs Manual Review",
   NOT_APPLICABLE: "Not Applicable",
   DEPENDENCY_PENDING: "Dependency Pending",
 };
@@ -57,6 +59,7 @@ const TONE_MAP = {
   ELIGIBILITY_CHECK: "info",
   ELIGIBLE: "success",
   INELIGIBLE: "danger",
+  NEEDS_REVIEW: "warning",
   PROCESSING_COMPLETE: "success",
   // document states
   NOT_UPLOADED: "neutral",
@@ -76,6 +79,7 @@ const TONE_MAP = {
   PASSED: "success",
   PENDING: "warning",
   FAILED: "danger",
+  NEEDS_REVIEW: "warning",
   NOT_APPLICABLE: "neutral",
   DEPENDENCY_PENDING: "neutral",
 };

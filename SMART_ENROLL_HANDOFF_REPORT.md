@@ -309,3 +309,38 @@ With all audit findings C1–C3, H1–H6, M1–M11 resolved and verified:
    - Add frontend "Trigger Autonomous Processing" button and connect remaining UI views.
 7. **Increment 21 — Final Academic Deliverables & Demo Hardening:**
    - Multi-applicant demo execution, MCA mini-project documentation, and final benchmarks.
+
+---
+
+## 9. Increment 16 Implementation & Verification Checkpoint
+
+Increment 16 replaced the `DEPENDENCY_PENDING` stub `tool_check_eligibility` with a deterministic, pure, server-side eligibility engine. The LLM never decides academic eligibility.
+
+### Implemented Scope:
+1. **D1 Programme Rules Store (`backend/app/services/programme_rules.py`):** Canonical rules seeded idempotently for `mca`, `mba`, `msc-cs`, `mtech-cs` with compound unique index on `("programmeId", 1), ("version", 1)`. Exposed via `GET /api/v1/programmes/{programmeId}/rules`.
+2. **D2–D7 Pure Deterministic Engine (`backend/app/services/eligibility/engine.py`):**
+   - Pure function `evaluate_eligibility(rules, app_snapshot, docs_snapshot)` with zero side-effects.
+   - Evidence hierarchy (D2): Evaluates solely on extracted fields from `VALIDATED` documents.
+   - Decimal percentage comparison (D3): Inclusive comparison ($\ge$), no rounding up, bounds $[0, 100]$, CGPA conversion (`CGPA * factor`, default 9.5).
+   - Degree normalization (D4): Canonical mapping table covering engineering, science, commerce, management, arts. M.Tech CS requires Engineering family. Unknown degrees yield `NEEDS_REVIEW`.
+   - Mathematics requirement (D5): ReDoS-safe OCR extraction for 12th/UG marksheet. Absence yields `NEEDS_REVIEW`, never `FAILED`.
+   - Outcome hierarchy (D6): Any `FAILED` $\to$ `INELIGIBLE`; otherwise any `NEEDS_REVIEW` $\to$ `NEEDS_REVIEW`; otherwise `ELIGIBLE`.
+   - Auditable canonical SHA-256 `inputHash` (D7).
+3. **D8 Persistence & Endpoints (`backend/app/services/eligibility/service.py`):**
+   - `GET /api/v1/applications/{id}/eligibility` enforcing horizontal ownership (`assert_owner`).
+   - `POST /api/v1/applications/{id}/eligibility/evaluate` (admin only, rate-limited, allowed in `ELIGIBILITY_CHECK`).
+   - Atomic persistence with active run fencing and append-only `eligibility_evaluations` audit trail.
+4. **D9 Stale Protection & Orchestrator Integration:**
+   - `tool_check_eligibility` executes deterministic evaluation.
+   - `compute_expected_action` progresses `ELIGIBILITY_CHECK` $\to$ `ELIGIBLE`, `INELIGIBLE`, or `EXCEPTION` (`MANUAL_REVIEW_REQUIRED`).
+   - `tool_update_application_status` enforces D9: status update to `ELIGIBLE` or `INELIGIBLE` is rejected if documents or application data were altered after evaluation (`inputHash` mismatch).
+5. **Frontend UI Integration (`src/pages/Applicant/Eligibility.jsx`, `src/services/api.js`):**
+   - Real backend integration calling `/api/v1/applications/{id}/eligibility`.
+   - Displays per-rule breakdown with observed values and evidence tags.
+   - Clear banner and badge for `NEEDS_REVIEW` state.
+   - Updated prototype notices and status utilities.
+6. **Test Coverage & Verification:**
+   - Pure engine coverage: **99%** (exceeds >= 95% gate).
+   - Total backend coverage: **86%** (exceeds >= 80% gate).
+   - Full test suite: **365 passed, 2 skipped, 0 failed**.
+

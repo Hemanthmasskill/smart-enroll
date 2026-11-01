@@ -235,8 +235,120 @@ def test_image_processing_with_ocr_adapter():
     assert res.fields.candidateName.normalizedValue == "Ananya Krishnan"
     assert res.fields.registrationNumber.normalizedValue == "312219205001"
     assert res.fields.cgpa.normalizedValue == 8.75
+    assert res.fields.cgpaScale.normalizedValue == 10.0
     assert res.fields.passingYear.normalizedValue == 2023
     assert res.overallConfidence > 0.70
+
+
+def test_cgpa_scale_extraction_from_text():
+    """Verify field extractor captures both CGPA and CGPA scale from various formatting styles, including deterministic scale inference."""
+    from app.services.ocr.field_extractor import extract_fields_from_text
+
+    # Scale 4.0 (explicit non-10 scale)
+    fields_4 = extract_fields_from_text("Cumulative Grade Point Average: 3.5 / 4.0\nCandidate: Test")
+    assert fields_4.cgpa is not None
+    assert fields_4.cgpa.normalizedValue == 3.5
+    assert fields_4.cgpaScale is not None
+    assert fields_4.cgpaScale.normalizedValue == 4.0
+    assert fields_4.cgpaScale.rawValue == "4.0"
+
+    # Scale 10.0 (explicit scale 10)
+    fields_10 = extract_fields_from_text("Final CGPA: 8.5 out of 10.0\nCourse: BCA")
+    assert fields_10.cgpa is not None
+    assert fields_10.cgpa.normalizedValue == 8.5
+    assert fields_10.cgpaScale is not None
+    assert fields_10.cgpaScale.normalizedValue == 10.0
+    assert fields_10.cgpaScale.rawValue == "10.0"
+
+    # Standalone scale label
+    fields_scale_label = extract_fields_from_text("CGPA: 7.2\nGrade Scale: 10\nUniversity: Madras")
+    assert fields_scale_label.cgpa is not None
+    assert fields_scale_label.cgpa.normalizedValue == 7.2
+    assert fields_scale_label.cgpaScale is not None
+    assert fields_scale_label.cgpaScale.normalizedValue == 10.0
+
+    # Inferred scale: CGPA 8.5 with no printed scale (7 < CGPA <= 10 -> infer scale 10)
+    fields_inferred = extract_fields_from_text("CGPA: 8.5\nCandidate: Jane Doe\nUniversity: Madras")
+    assert fields_inferred.cgpa is not None
+    assert fields_inferred.cgpa.normalizedValue == 8.5
+    assert fields_inferred.cgpaScale is not None
+    assert fields_inferred.cgpaScale.normalizedValue == 10.0
+    assert fields_inferred.cgpaScale.rawValue is None  # rawValue=None explicitly distinguishes inferred scale
+    assert "Inferred scale 10" in fields_inferred.cgpaScale.evidence
+
+    # No scale inferred: CGPA <= 7 with no printed scale
+    fields_low = extract_fields_from_text("CGPA: 3.5\nCandidate: Jane Doe\nUniversity: Madras")
+    assert fields_low.cgpa is not None
+    assert fields_low.cgpa.normalizedValue == 3.5
+    assert fields_low.cgpaScale is None
+
+    # No scale inferred: CGPA > 10
+    fields_high = extract_fields_from_text("CGPA: 10.01\nCandidate: Jane Doe\nUniversity: Madras")
+    assert fields_high.cgpaScale is None
+
+    # No scale inferred: non-numeric or missing
+    fields_none = extract_fields_from_text("Candidate: Jane Doe\nUniversity: Madras")
+    assert fields_none.cgpa is None
+    assert fields_none.cgpaScale is None
+
+    # Hardening: Prevent partial numeric matches and preserve negative signs
+    # 1. CGPA: 108.5 must not be partially matched as 10
+    fields_108_5 = extract_fields_from_text("CGPA: 108.5\nCandidate: Test")
+    assert fields_108_5.cgpa is not None
+    assert fields_108_5.cgpa.rawValue == "108.5"
+    assert fields_108_5.cgpa.normalizedValue == 108.5
+    assert fields_108_5.cgpaScale is None  # > 10, scale must not be inferred
+
+    # 2. CGPA: 100 must not be partially matched as 10
+    fields_100 = extract_fields_from_text("CGPA: 100\nCandidate: Test")
+    assert fields_100.cgpa is not None
+    assert fields_100.cgpa.rawValue == "100"
+    assert fields_100.cgpa.normalizedValue == 100.0
+    assert fields_100.cgpaScale is None  # > 10, scale must not be inferred
+
+    # 3. CGPA: 8.555 must not be silently truncated to 8.55
+    fields_8555 = extract_fields_from_text("CGPA: 8.555\nCandidate: Test")
+    assert fields_8555.cgpa is not None
+    assert fields_8555.cgpa.rawValue == "8.555"
+    assert fields_8555.cgpa.normalizedValue == 8.555
+
+    # 4. CGPA: -1 / 10 must be recognized as invalid negative evidence
+    fields_neg_colon = extract_fields_from_text("CGPA: -1 / 10\nCandidate: Test")
+    assert fields_neg_colon.cgpa is not None
+    assert fields_neg_colon.cgpa.rawValue == "-1"
+    assert fields_neg_colon.cgpa.normalizedValue == -1.0
+    assert fields_neg_colon.cgpaScale is not None
+    assert fields_neg_colon.cgpaScale.normalizedValue == 10.0
+
+    # 5. CGPA -1 / 10 must not lose its negative sign to the label separator
+    fields_neg_hyphen = extract_fields_from_text("CGPA -1 / 10\nCandidate: Test")
+    assert fields_neg_hyphen.cgpa is not None
+    assert fields_neg_hyphen.cgpa.rawValue == "-1"
+    assert fields_neg_hyphen.cgpa.normalizedValue == -1.0
+    assert fields_neg_hyphen.cgpaScale is not None
+    assert fields_neg_hyphen.cgpaScale.normalizedValue == 10.0
+
+
+def test_mathematics_extraction_rejects_zero_and_fail_markers():
+    """Verify mathematics extraction requires mark > 0 and rejects fail/absent indicators."""
+    from app.services.ocr.field_extractor import extract_fields_from_text
+
+    # Passing mark > 0
+    f_pass = extract_fields_from_text("Subject: Mathematics 85 / 100", document_type="12TH_MARKSHEET")
+    assert f_pass.mathematics is not None
+    assert f_pass.mathematics.normalizedValue is True
+
+    # Zero mark (0 / 100) -> rejected
+    f_zero = extract_fields_from_text("Subject: Mathematics 0 / 100", document_type="12TH_MARKSHEET")
+    assert f_zero.mathematics is None
+
+    # Fail marker -> rejected
+    f_fail = extract_fields_from_text("Mathematics 35 FAIL", document_type="12TH_MARKSHEET")
+    assert f_fail.mathematics is None
+
+    # Absent marker -> rejected
+    f_abs = extract_fields_from_text("Maths AB absent", document_type="12TH_MARKSHEET")
+    assert f_abs.mathematics is None
 
 
 def test_ocr_engine_unavailable_graceful_failure():
@@ -971,3 +1083,53 @@ def test_pipeline_returns_failed_state_with_http_200_and_allows_retry():
 
     stored_doc_after = db["documents"].find_one({"documentId": doc_id})
     assert stored_doc_after.get("processingStatus") == "COMPLETED"
+
+
+def test_mathematics_evidence_extraction():
+    """Verify deterministic, ReDoS-safe mathematics subject and marks extraction for 12th and UG marksheets."""
+    # 1. 12th Marksheet with Mathematics
+    text_12th = (
+        "BOARD OF HIGHER SECONDARY EDUCATION\n"
+        "Candidate Name: Rahul Sharma\n"
+        "Roll No: 1234567\n"
+        "Physics: 82\n"
+        "Chemistry: 78\n"
+        "Mathematics: 91\n"
+        "English: 85\n"
+    )
+    fields_12th = extract_fields_from_text(text_12th, document_type="12TH_MARKSHEET")
+    assert fields_12th.mathematics is not None
+    assert fields_12th.mathematics.normalizedValue is True
+    assert fields_12th.mathematics.rawValue == "91"
+    assert "Mathematics: 91" in fields_12th.mathematics.evidence
+
+    # 2. UG Marksheet with Maths abbreviation
+    text_ug = (
+        "STATE TECHNICAL UNIVERSITY\n"
+        "Semester Examination\n"
+        "Candidate Name: Priya Patel\n"
+        "Engineering Maths - I: 88.5\n"
+        "Computer Programming: 92\n"
+    )
+    fields_ug = extract_fields_from_text(text_ug, document_type="UG_MARKSHEET")
+    assert fields_ug.mathematics is not None
+    assert fields_ug.mathematics.normalizedValue is True
+    assert fields_ug.mathematics.rawValue == "88.5"
+
+    # 3. Marksheet without mathematics
+    text_no_math = (
+        "HIGHER SECONDARY EXAMINATION\n"
+        "History: 75\n"
+        "Political Science: 80\n"
+        "Economics: 85\n"
+    )
+    fields_no_math = extract_fields_from_text(text_no_math, document_type="12TH_MARKSHEET")
+    assert fields_no_math.mathematics is None
+
+    # 4. ReDoS resistance & input length cap
+    adversarial_math_text = "Mathematics " * 50_000 + " 95"
+    start_time = datetime.now()
+    res_adv = extract_fields_from_text(adversarial_math_text, document_type="12TH_MARKSHEET")
+    duration = (datetime.now() - start_time).total_seconds()
+    assert duration < 2.0
+

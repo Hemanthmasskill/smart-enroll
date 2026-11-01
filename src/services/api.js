@@ -684,42 +684,53 @@ export async function useVerifiedDigiLockerRecord(applicantId, recordId) {
 // fixed rules. It never invents or adjusts a rule; that is exactly
 // what a real backend rule engine would do, just computed here so
 // the demo can't drift out of sync with the Documents page.
+export async function getApplicationEligibility(applicationId, token) {
+  const headers = authHeaders(token);
+  return await apiClient.get(`/applications/${applicationId}/eligibility`, { headers });
+}
+
 export async function getEligibility(applicantId, token) {
   if (USE_MOCKS) {
     await delay(500);
     return getSynchronousEligibility(applicantId);
   }
 
-  // Live backend path: do not derive eligibility in browser code
+  // Live backend path: call real backend eligibility endpoints (Increment 16)
   const app = await getApplication(applicantId, token);
   if (!app) return null;
 
-  if (app.status === "ELIGIBLE") {
+  try {
+    const result = await getApplicationEligibility(app.applicationId, token);
     return {
+      applicationId: app.applicationId,
       programmeId: app.programmeId,
-      overall: "ELIGIBLE",
+      overall: result.status,
+      ruleVersion: result.ruleVersion,
+      evaluatorVersion: result.evaluatorVersion,
+      inputHash: result.inputHash,
+      summary: result.summary,
+      evaluatedAt: result.evaluatedAt,
+      evaluation: (result.rules || []).map((r) => ({
+        ruleId: r.ruleId,
+        label: r.ruleId.replace(/_/g, " "),
+        configured: r.configured,
+        observed: r.observed,
+        result: r.result,
+        reason: r.reason,
+        evidence: r.evidence || [],
+      })),
+      rawResult: result,
+    };
+  } catch {
+    // If not yet evaluated, report evaluation pending with application status
+    return {
+      applicationId: app.applicationId,
+      programmeId: app.programmeId,
+      overall: app.status === "ELIGIBLE" || app.status === "INELIGIBLE" ? app.status : "ELIGIBILITY_CHECK",
       evaluation: [],
+      summary: "Eligibility has not been evaluated for this application yet.",
     };
   }
-  if (app.status === "INELIGIBLE") {
-    return {
-      programmeId: app.programmeId,
-      overall: "INELIGIBLE",
-      evaluation: [],
-    };
-  }
-
-  return {
-    programmeId: app.programmeId,
-    overall: "DEPENDENCY_PENDING",
-    evaluation: [
-      {
-        label: "Autonomous Eligibility Engine",
-        configured: "Increments 16+ Backend Service",
-        result: "DEPENDENCY_PENDING",
-      },
-    ],
-  };
 }
 
 /* ----------------------------- Integrated Workflow ----------------------------- */
@@ -1001,7 +1012,16 @@ export async function getAdminExceptions() {
 // getEligibility() reads from, so the Admin Programme Rules screen
 // can never show different criteria than what Applicant Eligibility
 // evaluates against.
-export async function getProgrammeRules() {
+export async function getProgrammeRules(programmeId, token) {
+  if (programmeId) {
+    if (USE_MOCKS) {
+      await delay(200);
+      return mockEligibilityRules[programmeId] ?? null;
+    }
+    const headers = authHeaders(token);
+    return await apiClient.get(`/programmes/${programmeId}/rules`, { headers });
+  }
+
   await delay(350);
   return mockPrograms.map((programme) => ({
     programme,

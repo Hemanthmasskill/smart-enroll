@@ -1661,6 +1661,7 @@ def test_agent_system_status_endpoint(clean_db):
     admin_id = ObjectId()
     applicant_id = ObjectId()
 
+    clean_db["users"].delete_many({"email": {"$in": ["admin-sys-status@example.com", "applicant-sys-status@example.com"]}})
     clean_db["users"].insert_one({
         "_id": admin_id,
         "email": "admin-sys-status@example.com",
@@ -2252,3 +2253,179 @@ def test_security_tool_execution_strips_internal_keys(clean_db):
         run_id=server_run_id,
     )
     assert res.status in ("FAILED", "COMPLETED")
+
+
+def test_planner_rejects_ineligible_status_proposal_and_completed_outcome(clean_db):
+    """
+    Increment 16: INELIGIBLE evaluations route to EXCEPTION for administrative confirmation.
+    - Proposing new_status='INELIGIBLE' is rejected.
+    - Proposing terminal_outcome='COMPLETED' for INELIGIBLE is rejected.
+    - Proposing new_status='EXCEPTION' with outcome='MANUAL_REVIEW_REQUIRED' is accepted.
+    """
+    obs_ineligible = make_test_observation(
+        application_id="app-inel-plan-1",
+        current_status="ELIGIBILITY_CHECK",
+        eligibility_result={"status": "INELIGIBLE", "summary": "Marks below threshold"},
+    )
+
+    # 1. Proposal to set new_status='INELIGIBLE' directly must be rejected
+    proposal_inel_status = {
+        "action_type": "TOOL_CALL",
+        "tool": "update_application_status",
+        "parameters": {"application_id": "app-inel-plan-1", "new_status": "INELIGIBLE"},
+        "rationale": "Directly setting INELIGIBLE status.",
+        "stage": "ACT",
+        "is_terminal": False,
+        "terminal_outcome": None,
+    }
+    transport1 = make_mock_transport_for_json(make_openai_response(proposal_inel_status))
+    provider1 = OpenAICompatibleProvider(api_key="sk-test", api_base="https://api.openai.com/v1", transport=transport1)
+    strategy1 = LLMPlanningStrategy(provider=provider1, db=clean_db, fallback_enabled=True)
+    action1, outcome1, _ = strategy1.plan_next_action(obs_ineligible, iteration=1)
+
+    assert action1 is not None
+    assert action1.planner == "FALLBACK"
+    audit1 = clean_db["agent_activity"].find_one({"applicationId": "app-inel-plan-1", "status": "FALLBACK"})
+    assert audit1 is not None
+    assert "ineligible" in audit1["result"].lower()
+    provider1.close()
+
+    # 2. Proposal to report COMPLETED for an INELIGIBLE application must be rejected
+    proposal_completed = {
+        "action_type": "TOOL_CALL",
+        "tool": "update_application_status",
+        "parameters": {"application_id": "app-inel-plan-1", "new_status": "PROCESSING_COMPLETE"},
+        "rationale": "Prematurely completing ineligible application.",
+        "stage": "ACT",
+        "is_terminal": True,
+        "terminal_outcome": "COMPLETED",
+    }
+    transport2 = make_mock_transport_for_json(make_openai_response(proposal_completed))
+    provider2 = OpenAICompatibleProvider(api_key="sk-test", api_base="https://api.openai.com/v1", transport=transport2)
+    strategy2 = LLMPlanningStrategy(provider=provider2, db=clean_db, fallback_enabled=True)
+    action2, outcome2, _ = strategy2.plan_next_action(obs_ineligible, iteration=1)
+
+    assert action2 is not None
+    assert action2.planner == "FALLBACK"
+    provider2.close()
+
+    # 3. Proposal to transition to EXCEPTION with MANUAL_REVIEW_REQUIRED must be accepted
+    proposal_exception = {
+        "action_type": "TOOL_CALL",
+        "tool": "update_application_status",
+        "parameters": {
+            "application_id": "app-inel-plan-1",
+            "new_status": "EXCEPTION",
+            "reason": "Evaluated as INELIGIBLE; awaiting administrative confirmation.",
+        },
+        "rationale": "Routing ineligible application to exception management for confirmation.",
+        "stage": "ACT",
+        "is_terminal": True,
+        "terminal_outcome": "MANUAL_REVIEW_REQUIRED",
+    }
+    transport3 = make_mock_transport_for_json(make_openai_response(proposal_exception))
+    provider3 = OpenAICompatibleProvider(api_key="sk-test", api_base="https://api.openai.com/v1", transport=transport3)
+    strategy3 = LLMPlanningStrategy(provider=provider3, db=clean_db, fallback_enabled=True)
+    action3, outcome3, _ = strategy3.plan_next_action(obs_ineligible, iteration=1)
+
+    assert action3 is not None
+    assert action3.planner == "LLM"
+    assert action3.fallback_used is False
+    assert action3.parameters["new_status"] == "EXCEPTION"
+    assert action3.terminal_outcome == OrchestrationOutcome.MANUAL_REVIEW_REQUIRED
+    provider3.close()
+
+
+def test_planner_strict_eligibility_check_proposal_validation(clean_db):
+    """
+    Increment 16 Final Hardening (Issue 3):
+    Strict LLM Planner Eligibility Proposal Validation:
+    1. ELIGIBLE result + ELIGIBILITY_CHECK + proposed ELIGIBLE -> accepted by LLM planner.
+    2. ELIGIBLE result + ELIGIBILITY_CHECK + proposed PROCESSING_COMPLETE -> rejected during planner validation.
+    3. The rejected proposal triggers deterministic fallback.
+    4. The fallback selects the correct permitted action (new_status='ELIGIBLE').
+    5. The invalid proposal never reaches the downstream status-transition tool.
+    """
+    app_id = "app-plan-strict-elig-1"
+    obs_elig_check = make_test_observation(
+        application_id=app_id,
+        current_status="ELIGIBILITY_CHECK",
+        eligibility_result={"status": "ELIGIBLE", "summary": "All academic criteria met"},
+    )
+
+    # 1. Proposal for new_status='ELIGIBLE' while in ELIGIBILITY_CHECK must be accepted by LLM
+    proposal_valid_eligible = {
+        "action_type": "TOOL_CALL",
+        "tool": "update_application_status",
+        "parameters": {"application_id": app_id, "new_status": "ELIGIBLE"},
+        "rationale": "Advancing status to ELIGIBLE based on deterministic evaluation.",
+        "stage": "ACT",
+        "is_terminal": False,
+        "terminal_outcome": None,
+    }
+    transport1 = make_mock_transport_for_json(make_openai_response(proposal_valid_eligible))
+    provider1 = OpenAICompatibleProvider(api_key="sk-test", api_base="https://api.openai.com/v1", transport=transport1)
+    strategy1 = LLMPlanningStrategy(provider=provider1, db=clean_db, fallback_enabled=True)
+    action1, outcome1, _ = strategy1.plan_next_action(obs_elig_check, iteration=1)
+
+    assert action1 is not None
+    assert action1.planner == "LLM"
+    assert action1.fallback_used is False
+    assert action1.parameters["new_status"] == "ELIGIBLE"
+    assert action1.tool == ToolName.UPDATE_APPLICATION_STATUS
+    provider1.close()
+
+    # 2 & 3 & 4. Proposal for new_status='PROCESSING_COMPLETE' while in ELIGIBILITY_CHECK must be rejected
+    # and trigger deterministic fallback which selects new_status='ELIGIBLE'
+    proposal_invalid_complete = {
+        "action_type": "TOOL_CALL",
+        "tool": "update_application_status",
+        "parameters": {"application_id": app_id, "new_status": "PROCESSING_COMPLETE"},
+        "rationale": "Prematurely skipping to PROCESSING_COMPLETE while in ELIGIBILITY_CHECK.",
+        "stage": "ACT",
+        "is_terminal": True,
+        "terminal_outcome": "COMPLETED",
+    }
+    transport2 = make_mock_transport_for_json(make_openai_response(proposal_invalid_complete))
+    provider2 = OpenAICompatibleProvider(api_key="sk-test", api_base="https://api.openai.com/v1", transport=transport2)
+    strategy2 = LLMPlanningStrategy(provider=provider2, db=clean_db, fallback_enabled=True)
+    action2, outcome2, _ = strategy2.plan_next_action(obs_elig_check, iteration=1)
+
+    # 3. Triggers fallback
+    assert action2 is not None
+    assert action2.planner == "FALLBACK"
+    assert action2.fallback_used is True
+
+    # 4. Fallback selects the correct permitted action (new_status='ELIGIBLE', NOT PROCESSING_COMPLETE)
+    assert action2.tool == ToolName.UPDATE_APPLICATION_STATUS
+    assert action2.parameters["new_status"] == "ELIGIBLE"
+    assert action2.parameters.get("new_status") != "PROCESSING_COMPLETE"
+
+    # 5. Invalid proposal never reaches downstream tool:
+    # Audit log verifies that the model proposed an invalid transition which was intercepted and audited as FALLBACK
+    audit = clean_db["agent_activity"].find_one({"applicationId": app_id, "status": "FALLBACK"})
+    assert audit is not None
+    assert "only transition to 'eligible'" in audit["result"].lower()
+
+    # The returned action is the fallback action with new_status='ELIGIBLE' (never PROCESSING_COMPLETE)
+    assert action2.parameters["new_status"] == "ELIGIBLE"
+    assert action2.parameters.get("new_status") != "PROCESSING_COMPLETE"
+
+    # Verify that if PROCESSING_COMPLETE were passed to the downstream tool from ELIGIBILITY_CHECK,
+    # it would have failed with an invalid transition error; fallback prevented this tool failure.
+    from app.agents.tools import tool_update_application_status, ToolStatus
+    clean_db["applications"].insert_one({
+        "applicationId": app_id,
+        "status": "ELIGIBILITY_CHECK",
+        "userId": "user-test",
+        "programmeId": "mca",
+    })
+    res_tool_invalid = tool_update_application_status(
+        db=clean_db,
+        current_user={"id": "admin-1", "role": "admin"},
+        application_id=app_id,
+        new_status="PROCESSING_COMPLETE",
+    )
+    assert res_tool_invalid.status == ToolStatus.FAILED.value
+    assert "Invalid status transition from 'ELIGIBILITY_CHECK' to 'PROCESSING_COMPLETE'" in res_tool_invalid.message
+    provider2.close()

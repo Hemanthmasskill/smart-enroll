@@ -38,6 +38,7 @@
 | **Increment 15** | Agentic Orchestration | **PR #4** (`e703803`) | **COMPLETE** | Bounded autonomous orchestrator (`OBSERVE` $\rightarrow$ `PLAN` $\rightarrow$ `ACT` $\rightarrow$ `VERIFY` $\rightarrow$ `RE-PLAN`), deterministic planning strategy, LLM provider integration with OpenAI-compatible API, zero-PII observation sanitizer, server-side guardrails, concurrency fencing, and recovery. |
 | **PR #5** | Project Status & Agent Dashboard | **PR #5** (`4991b8e`) | **COMPLETE** | System status contract alignment, legacy orchestration run compatibility, active run nullable outcome support, role-based agent activity query restrictions (`admin`, `applicant`). |
 | **Comprehensive Audit Remediation** | Security, Architecture, & Integrity Hardening | Branch `hardening/audit-fixes` | **COMPLETE** | Comprehensive resolution of findings C1–C3, H1–H6, M1–M11 (Phases 0–7), CI workflow, and security policy. |
+| **Increment 16** | Deterministic Eligibility Engine | Branch `feature/increment-16-eligibility-engine` | **COMPLETE** | Pure deterministic evaluation engine (D2–D7), versioned `programme_rules` store (D1), ReDoS-safe mathematics OCR extraction (D5), atomic persistence (D8), D9 stale protection with SHA-256 canonical hashing, real frontend UI integration, and 99% engine test coverage. |
 
 ---
 
@@ -149,7 +150,7 @@
 | Increment | Title | Status | Notes & Readiness |
 | :--- | :--- | :---: | :--- |
 | **Increment 15** | Agentic Orchestration | **COMPLETE** | Merged in PR #4 and hardened in PR #5 + audit remediation. |
-| **Increment 16** | Eligibility Engine | `DEPENDENCY_PENDING` | Frontend prototype displays clear `DEPENDENCY_PENDING` status. Deterministic rules evaluation engine and programme rules persistence pending backend implementation. |
+| **Increment 16** | Eligibility Engine | **COMPLETE** | Pure deterministic server-side evaluation engine implemented (D1–D9), D9 stale protection via SHA-256 inputHash, live frontend integration, ReDoS-safe OCR math extraction, and 99% engine coverage. |
 | **Increment 17** | Exception Management | `DEPENDENCY_PENDING` | UI displays explicit Prototype Notice. Backend exception tracking (9 exception types, severity mapping, auto-resumption) pending implementation. |
 | **Increment 18** | Notifications | `DEPENDENCY_PENDING` | UI displays explicit Prototype Notice. Milestone notifications and delivery tracking pending backend service. |
 | **Increment 19** | Analytics & Intelligence | `DEPENDENCY_PENDING` | UI displays explicit Prototype Notice. Aggregation pipelines designed; live backend dashboard endpoints pending integration. |

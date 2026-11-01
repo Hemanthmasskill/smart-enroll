@@ -37,9 +37,11 @@ class ExtractedFields(BaseModel):
     maxMarks: ExtractedField | None = None
     percentage: ExtractedField | None = None
     cgpa: ExtractedField | None = None
+    cgpaScale: ExtractedField | None = None
     certificateNumber: ExtractedField | None = None
     issueDate: ExtractedField | None = None
     passingYear: ExtractedField | None = None
+    mathematics: ExtractedField | None = None
 
     model_config = ConfigDict(extra="ignore")
 

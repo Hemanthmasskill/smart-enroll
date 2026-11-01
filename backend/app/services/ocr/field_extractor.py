@@ -46,7 +46,23 @@ PERCENTAGE_PATTERNS = [
 ]
 
 CGPA_PATTERNS = [
-    re.compile(r"(?:cgpa|cumulative\s*grade\s*point\s*average|ogpa|final\s*cgpa)\s*[:\-–]?\s*(\d{1,2}(?:\.\d{1,2})?)(?:\s*(?:\/|\s*out\s*of\s*)\s*10(?:\.0)?)?", re.I),
+    re.compile(
+        r"(?:cgpa|cumulative\s*grade\s*point\s*average|ogpa|final\s*cgpa)\s*(?:[:–]|-(?!\d))?\s*"
+        r"(-?\d+(?:\.\d+)?(?![0-9.]))"
+        r"(?:\s*(?:\/|\s*out\s*of\s*)\s*(-?\d+(?:\.\d+)?(?![0-9.])))?",
+        re.I,
+    ),
+    re.compile(
+        r"(?:(?<=\s)|^|\b)(-?\d+(?:\.\d+)?(?![0-9.]))\s*(?:\/|\s*out\s*of\s*)\s*(-?\d+(?:\.\d+)?(?![0-9.]))\s*(?:cgpa|grade\s*point)\b",
+        re.I,
+    ),
+]
+
+CGPA_SCALE_PATTERNS = [
+    re.compile(
+        r"(?:cgpa\s*scale|grade\s*point\s*scale|grade\s*scale|scale)\s*(?:[:–]|-(?!\d))?\s*(?:out\s*of\s*)?(-?\d+(?:\.\d+)?(?![0-9.]))",
+        re.I,
+    ),
 ]
 
 CERTIFICATE_NO_PATTERNS = [
@@ -281,20 +297,63 @@ def extract_fields_from_text(text: str, document_type: str | None = None) -> Ext
                 evidence=f"Derived from marks {obt} / {max_m}",
             )
 
-    # 8. CGPA
+    # 8. CGPA and CGPA Scale
     for pattern in CGPA_PATTERNS:
         m = pattern.search(text)
         if m:
             raw = m.group(1).strip()
             val = normalize_numeric_string(raw)
-            if val is not None and 0.0 <= val <= 10.0:
+            if val is not None:
                 fields.cgpa = ExtractedField(
                     rawValue=raw,
                     normalizedValue=val,
                     confidence=0.88,
                     evidence=m.group(0).strip()[:60],
                 )
+            if len(m.groups()) >= 2 and m.group(2):
+                raw_scale = m.group(2).strip()
+                val_scale = normalize_numeric_string(raw_scale)
+                if val_scale is not None:
+                    fields.cgpaScale = ExtractedField(
+                        rawValue=raw_scale,
+                        normalizedValue=val_scale,
+                        confidence=0.88,
+                        evidence=m.group(0).strip()[:60],
+                    )
+            break
+
+    # If cgpaScale not captured in CGPA line, check standalone scale patterns
+    if not fields.cgpaScale:
+        for pattern in CGPA_SCALE_PATTERNS:
+            m = pattern.search(text)
+            if m:
+                raw_scale = m.group(1).strip()
+                val_scale = normalize_numeric_string(raw_scale)
+                if val_scale is not None:
+                    fields.cgpaScale = ExtractedField(
+                        rawValue=raw_scale,
+                        normalizedValue=val_scale,
+                        confidence=0.85,
+                        evidence=m.group(0).strip()[:60],
+                    )
                 break
+
+    # Deterministic Scale Inference (Increment 16):
+    # When no explicit scale is printed:
+    # - If CGPA > 7.0 and <= 10.0: infer scale 10 (rawValue=None distinguishes inferred from printed scale)
+    # - If CGPA <= 7.0, out of range (< 0 or > 10), or non-numeric: scale remains None (yielding NEEDS_REVIEW)
+    if not fields.cgpaScale and fields.cgpa and fields.cgpa.normalizedValue is not None:
+        try:
+            val_cgpa = float(fields.cgpa.normalizedValue)
+            if 7.0 < val_cgpa <= 10.0:
+                fields.cgpaScale = ExtractedField(
+                    rawValue=None,
+                    normalizedValue=10.0,
+                    confidence=0.80,
+                    evidence=f"Inferred scale 10 for CGPA {val_cgpa} (7.0 < CGPA <= 10.0 with no printed scale)",
+                )
+        except (ValueError, TypeError):
+            pass
 
     # 9. Certificate Number
     for pattern in CERTIFICATE_NO_PATTERNS:
@@ -342,5 +401,34 @@ def extract_fields_from_text(text: str, document_type: str | None = None) -> Ext
                 evidence=m.group(0).strip()[:60],
             )
             break
+
+    # 12. Mathematics Evidence (D5)
+    # Extracts 'Mathematics' or 'Maths' with numeric marks on 12TH_MARKSHEET and UG_MARKSHEET
+    if document_type in (None, "12TH_MARKSHEET", "UG_MARKSHEET"):
+        for line in text.splitlines():
+            line_clean = line.strip()
+            if not line_clean:
+                continue
+            # ReDoS-safe linear check: look for mathematics or maths
+            if re.search(r"(?i)\b(?:mathematics|maths)\b", line_clean):
+                # Reject if line contains fail or absent markers
+                if re.search(r"(?i)\b(?:fail|failed|f|ab|abs|absent|withheld)\b", line_clean):
+                    continue
+                mark_match = re.search(r"\b(\d{1,3}(?:\.\d{1,2})?)\b", line_clean)
+                if mark_match:
+                    raw_mark = mark_match.group(1)
+                    try:
+                        numeric_mark = float(raw_mark)
+                        # Require a mark strictly above zero (> 0) and <= 100
+                        if 0 < numeric_mark <= 100:
+                            fields.mathematics = ExtractedField(
+                                rawValue=raw_mark,
+                                normalizedValue=True,
+                                confidence=0.88,
+                                evidence=line_clean[:120],
+                            )
+                            break
+                    except ValueError:
+                        pass
 
     return fields
