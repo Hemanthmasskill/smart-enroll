@@ -1,17 +1,17 @@
 # Smart Enroll — Current Implementation State Tracking
 
 **Maintained Project State Checkpoint**
-**Last Updated:** October 31, 2026
+**Last Updated:** November 1, 2026
 **Repository:** [https://github.com/Hemanthmasskill/smart-enroll](https://github.com/Hemanthmasskill/smart-enroll)
-**Branch:** `hardening/audit-fixes`
-**Base Commit on `main`:** `4991b8e810bdc97858bfecf992efaf1b5c69713c` (PR #5 merged)
+**Branch:** `main` (three Increment 17–19 feature branches created from this checkpoint)
+**Base Commit on `main`:** `8ab6af5801d06f28994d929145a26cd8410d5606` (Increment 16 merged via PR #8)
 
 ---
 
 ## 1. Verified Main Checkpoint
 - **Base Branch:** `main`
-- **Base Commit Hash:** `4991b8e810bdc97858bfecf992efaf1b5c69713c`
-- **Active Hardening Branch:** `hardening/audit-fixes`
+- **Base Commit Hash:** `8ab6af5801d06f28994d929145a26cd8410d5606`
+- **Active Feature Branches:** `feature/increment-17-exceptions`, `feature/increment-18-notifications`, `feature/increment-19-analytics` (all created from the Increment 16 merge checkpoint)
 - **Scope:** Complete architectural, security, and data integrity remediation addressing audit findings C1–C3, H1–H6, M1–M11 across backend, frontend, test suites, and repository hygiene.
 
 ---
@@ -38,30 +38,21 @@
 | **Increment 15** | Agentic Orchestration | **PR #4** (`e703803`) | **COMPLETE** | Bounded autonomous orchestrator (`OBSERVE` $\rightarrow$ `PLAN` $\rightarrow$ `ACT` $\rightarrow$ `VERIFY` $\rightarrow$ `RE-PLAN`), deterministic planning strategy, LLM provider integration with OpenAI-compatible API, zero-PII observation sanitizer, server-side guardrails, concurrency fencing, and recovery. |
 | **PR #5** | Project Status & Agent Dashboard | **PR #5** (`4991b8e`) | **COMPLETE** | System status contract alignment, legacy orchestration run compatibility, active run nullable outcome support, role-based agent activity query restrictions (`admin`, `applicant`). |
 | **Comprehensive Audit Remediation** | Security, Architecture, & Integrity Hardening | Branch `hardening/audit-fixes` | **COMPLETE** | Comprehensive resolution of findings C1–C3, H1–H6, M1–M11 (Phases 0–7), CI workflow, and security policy. |
-| **Increment 16** | Deterministic Eligibility Engine | Branch `feature/increment-16-eligibility-engine` | **COMPLETE** | Pure deterministic evaluation engine (D2–D7), versioned `programme_rules` store (D1), ReDoS-safe mathematics OCR extraction (D5), atomic persistence (D8), D9 stale protection with SHA-256 canonical hashing, real frontend UI integration, and 99% engine test coverage. |
+| **Increment 16** | Deterministic Eligibility Engine | **PR #8** (squash commit `8ab6af5`) | **COMPLETE** | Pure deterministic eligibility evaluation, versioned `programme_rules`, ReDoS-safe mathematics/CGPA OCR extraction, D9 SHA-256 stale-input protection, authenticated API, orchestration guardrails, and frontend integration. |
 
 ---
 
 ## 4. Verified Test Evidence (Current Hardened Baseline)
 
-### Freshly Executed Test Runs (October 31, 2026)
+### Latest Test Evidence (November 1, 2026)
 - **Backend Test Suite (Pytest):**
   - **Command:** `backend\.venv\Scripts\python -m pytest backend/tests -v`
-  - **Result:** **308 passed, 2 skipped, 1 warning in ~43s** (100% pass rate).
+  - **Latest implementation report:** **378 passed, 2 skipped, 1 warning in 108.07s**. The reported result is from the implementation agent; latest GitHub Actions backend checks on the merged PR head completed successfully.
   - **Test Database:** Strictly confined to isolated `smartenroll_test` database.
-  - **Suite Breakdown:**
-    - `test_applications.py`: 19 passed
-    - `test_auth.py`: 23 passed
-    - `test_document_processing.py`: 27 passed
-    - `test_document_verification.py`: 52 passed
-    - `test_documents.py`: 34 passed
-    - `test_agent_orchestration.py`: 60 passed
-    - `test_agent_llm_planner.py`: 81 passed
-    - `test_audit_unreviewed.py`: 9 passed
-    - `test_security_audit_regressions.py`: 3 passed
+  - Detailed per-file breakdown was not included in the latest consolidated report; do not infer it from the earlier 308-test breakdown.
 - **Frontend E2E Test Suite (Cypress):**
   - **Command:** `npx cypress run` (against Vite dev server on `http://localhost:5173`)
-  - **Result:** **58 passed across all 12 spec files in 2m 33s** (100% pass rate, 0 failed, 0 skipped).
+  - **Latest implementation report:** **58 passed across all 12 spec files**, 0 failed. A separate real-backend Cypress run reported **6 passed**. The latest GitHub Actions frontend and real-backend Cypress checks on the merged PR head completed successfully.
   - **Spec Files:**
     - `01-auth.cy.js`: 4 passed
     - `02-application-form.cy.js`: 4 passed
@@ -77,7 +68,7 @@
     - `12-notifications.cy.js`: 4 passed
 - **Frontend Production Build:**
   - **Command:** `npm run build`
-  - **Result:** Built in ~800ms with **0 errors** (104 modules transformed).
+  - **Latest implementation report:** Production build succeeded with 0 errors (106 modules transformed).
 - **Service Connectivity:**
   - MongoDB connection verified: `mongodb://localhost:27017`.
   - Tesseract OCR binary verified present at `C:/Program Files/Tesseract-OCR/tesseract.exe`.
@@ -151,9 +142,9 @@
 | :--- | :--- | :---: | :--- |
 | **Increment 15** | Agentic Orchestration | **COMPLETE** | Merged in PR #4 and hardened in PR #5 + audit remediation. |
 | **Increment 16** | Eligibility Engine | **COMPLETE** | Pure deterministic server-side evaluation engine implemented (D1–D9), D9 stale protection via SHA-256 inputHash, live frontend integration, ReDoS-safe OCR math extraction, and 99% engine coverage. |
-| **Increment 17** | Exception Management | `DEPENDENCY_PENDING` | UI displays explicit Prototype Notice. Backend exception tracking (9 exception types, severity mapping, auto-resumption) pending implementation. |
-| **Increment 18** | Notifications | `DEPENDENCY_PENDING` | UI displays explicit Prototype Notice. Milestone notifications and delivery tracking pending backend service. |
-| **Increment 19** | Analytics & Intelligence | `DEPENDENCY_PENDING` | UI displays explicit Prototype Notice. Aggregation pipelines designed; live backend dashboard endpoints pending integration. |
+| **Increment 17** | Exception Management | `IN_PROGRESS` | Feature branch `feature/increment-17-exceptions` created from main commit `8ab6af5`; implementation not yet started/verified. |
+| **Increment 18** | Notifications | `IN_PROGRESS` | Feature branch `feature/increment-18-notifications` created from main commit `8ab6af5`; implementation not yet started/verified. In-app notifications are the deadline MVP; external email/SMS are out of scope. |
+| **Increment 19** | Analytics & Intelligence | `IN_PROGRESS` | Feature branch `feature/increment-19-analytics` created from main commit `8ab6af5`; implementation not yet started/verified. |
 | **Increment 20** | Full System Integration | `DEPENDENCY_PENDING` | Wire remaining prototype screens to backend APIs once Increments 16–19 engines are deployed. |
 | **Increment 21** | Final Testing, Demo & Academic Deliverables | `DEPENDENCY_PENDING` | End-to-end multi-applicant demo scenarios, performance benchmarks, and MCA mini-project documentation. |
 
