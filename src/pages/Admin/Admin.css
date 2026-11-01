@@ -30,6 +30,7 @@
 .admin-stage.completed .admin-stage-dot { background:var(--color-success); }
 .admin-stage.current .admin-stage-dot { background:var(--color-primary-dark); box-shadow:0 0 0 4px var(--color-primary-tint); }
 .admin-stage-label { font-size:13.5px; font-weight:500; }
+.severity-CRITICAL { color:#b91c1c; font-weight:800; }
 .severity-HIGH { color:var(--color-danger); font-weight:700; }
 .severity-MEDIUM { color:var(--color-warning); font-weight:700; }
 .severity-LOW { color:var(--color-text-secondary); font-weight:700; }
