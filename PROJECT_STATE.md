@@ -142,9 +142,9 @@
 | :--- | :--- | :---: | :--- |
 | **Increment 15** | Agentic Orchestration | **COMPLETE** | Merged in PR #4 and hardened in PR #5 + audit remediation. |
 | **Increment 16** | Eligibility Engine | **COMPLETE** | Pure deterministic server-side evaluation engine implemented (D1–D9), D9 stale protection via SHA-256 inputHash, live frontend integration, ReDoS-safe OCR math extraction, and 99% engine coverage. |
-| **Increment 17** | Exception Management | `IN_PROGRESS` | Feature branch `feature/increment-17-exceptions` created from main commit `8ab6af5`; implementation not yet started/verified. |
-| **Increment 18** | Notifications | `IN_PROGRESS` | Feature branch `feature/increment-18-notifications` created from main commit `8ab6af5`; implementation not yet started/verified. In-app notifications are the deadline MVP; external email/SMS are out of scope. |
-| **Increment 19** | Analytics & Intelligence | `IN_PROGRESS` | Feature branch `feature/increment-19-analytics` created from main commit `8ab6af5`; implementation not yet started/verified. |
+| **Increment 17** | Exception Management | `READY_TO_START` | Feature branch `feature/increment-17-exceptions` created from main commit `8ab6af5`; implementation not yet started/verified. |
+| **Increment 18** | Notifications | `READY_TO_START` | Feature branch `feature/increment-18-notifications` created from main commit `8ab6af5`; implementation not yet started/verified. In-app notifications are the deadline MVP; external email/SMS are out of scope. |
+| **Increment 19** | Analytics & Intelligence | `READY_TO_START` | Feature branch `feature/increment-19-analytics` created from main commit `8ab6af5`; implementation not yet started/verified. |
 | **Increment 20** | Full System Integration | `DEPENDENCY_PENDING` | Wire remaining prototype screens to backend APIs once Increments 16–19 engines are deployed. |
 | **Increment 21** | Final Testing, Demo & Academic Deliverables | `DEPENDENCY_PENDING` | End-to-end multi-applicant demo scenarios, performance benchmarks, and MCA mini-project documentation. |
 
